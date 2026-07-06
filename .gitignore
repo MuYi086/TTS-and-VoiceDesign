@@ -1,0 +1,38 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local runtime caches
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local virtual environments
+.venv/
+venv/
+env/
+
+# Generated/uploaded audio
+prompts/
+qwen_test*.wav
+synth*.wav
+*.tmp.wav
+
+# Third-party source clones and side-loaded Python packages
+vendor/
+
+# Local/cloud workspace config not needed for GitHub local runtime
+.cnb/
+.cnb.yml
+
+# Logs and local env files
+*.log
+.env
+.env.*
+
+# Editor/OS noise
+.DS_Store
+.idea/
+.vscode/
