@@ -4,6 +4,7 @@
 
 - IndexTTS2：参考音频 + 文本合成
 - Qwen3-TTS VoiceDesign：根据音色描述生成参考音频
+- MiMo TTS VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/mimo/design`
 
 ## 本地环境
 
@@ -13,14 +14,20 @@
 conda activate unitale-tts-local
 ```
 
-主 API、IndexTTS2 和 Qwen 守护进程使用同一个 conda 环境启动。由于 IndexTTS2 需要
+主 API、IndexTTS2 和 Qwen 子进程使用同一个 conda 环境启动。由于 IndexTTS2 需要
 `transformers==4.52.1/tokenizers==0.21.0`，而 Qwen3-TTS 需要更新版本，Qwen 依赖被侧载到：
 
 ```text
 vendor/qwen_libs
 ```
 
-该目录只会在 Qwen 子进程中加入 `sys.path`，不会污染 IndexTTS2 主进程。
+该目录只会在 Qwen 子进程中加入 `sys.path`，不会污染 IndexTTS2 主进程。Qwen 和 IndexTTS2 都是请求到来时加载，请求结束后卸载。
+
+```bash
+export MIMO_API_KEY=...
+```
+
+MiMo 是云端 API，不加载本地模型；默认使用 `https://api.xiaomimimo.com/v1` 和 `mimo-v2.5-tts-voicedesign`。
 
 ## 模型路径
 
@@ -65,6 +72,13 @@ curl -X POST http://127.0.0.1:8300/v1/qwen/design \
   -o qwen_test.wav
 ```
 
+```bash
+curl -X POST http://127.0.0.1:8300/v1/mimo/design \
+  -H 'Content-Type: application/json' \
+  -d '{"voice_description":"成年女性，声音清晰自然，语速中等。","text":"你好。"}' \
+  -o mimo_test.wav
+```
+
 上传参考音频：
 
 ```bash
@@ -84,8 +98,10 @@ curl -X POST http://127.0.0.1:8300/v2/synthesize \
 
 ## 运行策略
 
-- Qwen 和 IndexTTS2 不同时驻留显存。
-- 调用 `/v1/qwen/design` 前会卸载 IndexTTS2。
-- 调用 `/v2/synthesize` 前会卸载 Qwen，再按需加载 IndexTTS2。
+- `8300` 的 Qwen 和 IndexTTS2 不同时驻留显存。
+- `8300 /v1/qwen/design` 请求到来时加载 Qwen，返回音频前卸载 Qwen。
+- `8300 /v1/mimo/design` 走 MiMo 云 API，请求前会先卸载已驻留的 Qwen / IndexTTS2。
+- `8300` 内部通过共享 GPU 锁串行执行 Qwen / MiMo / IndexTTS2，避免本地模型并发占显存。
+- `8300 /v2/synthesize` 会先卸载 Qwen，再按需加载 IndexTTS2，合成结束后卸载 IndexTTS2。
 - 默认离线加载模型：`LOCAL_FILES_ONLY=1`。
 - 不再执行云端脚本里的 apt 改源、`/app` 代码同步或清理所有 Python 进程。
