@@ -9,6 +9,7 @@ export QWEN_MODEL_DIR="${QWEN_MODEL_DIR:-$HF_MIRROR_DIR/Qwen/Qwen3-TTS-12Hz-1.7B
 export INDEXTTS_MODEL_DIR="${INDEXTTS_MODEL_DIR:-$HF_MIRROR_DIR/IndexTeam/IndexTTS-2}"
 export DOTS_MODEL_DIR="${DOTS_MODEL_DIR:-$HF_MIRROR_DIR/rednote-hilab/dots.tts-base}"
 export LONGCAT_MODEL_DIR="${LONGCAT_MODEL_DIR:-$HF_MIRROR_DIR/meituan-longcat/LongCat-AudioDiT-1B}"
+export MOSS_MODEL_DIR="${MOSS_MODEL_DIR:-$HF_MIRROR_DIR/OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5}"
 export LONGCAT_TOKENIZER_PATH="${LONGCAT_TOKENIZER_PATH:-$HF_MIRROR_DIR/google/umt5-base}"
 export INDEXTTS_CFG_PATH="${INDEXTTS_CFG_PATH:-$INDEXTTS_MODEL_DIR/config.yaml}"
 export INDEXTTS_CODE_DIR="${INDEXTTS_CODE_DIR:-$PROJECT_DIR/vendor/index-tts}"
@@ -39,6 +40,27 @@ export DOTS_PROFILE_INFERENCE="${DOTS_PROFILE_INFERENCE:-0}"
 export DOTS_REQUEST_TIMEOUT="${DOTS_REQUEST_TIMEOUT:-300}"
 export LONGCAT_CONDA_ENV="${LONGCAT_CONDA_ENV:-longcat_audiodit}"
 export LONGCAT_REPO_PATH="${LONGCAT_REPO_PATH:-$PROJECT_DIR/vendor/LongCat-AudioDiT}"
+export MOSS_CONDA_ENV="${MOSS_CONDA_ENV:-moss-tts-py310}"
+export MOSS_HELPER_SCRIPT="${MOSS_HELPER_SCRIPT:-$HOME/github/timbre-design/scripts/tts_local_moss_tts_local_transformer.py}"
+export MOSS_LANGUAGE="${MOSS_LANGUAGE:-Chinese}"
+export MOSS_INSTRUCTION="${MOSS_INSTRUCTION:-}"
+export MOSS_QUALITY="${MOSS_QUALITY:-}"
+export MOSS_TOKENS="${MOSS_TOKENS:-}"
+export MOSS_MAX_NEW_TOKENS="${MOSS_MAX_NEW_TOKENS:-4096}"
+export MOSS_N_VQ_FOR_INFERENCE="${MOSS_N_VQ_FOR_INFERENCE:-}"
+export MOSS_AUDIO_TEMPERATURE="${MOSS_AUDIO_TEMPERATURE:-1.7}"
+export MOSS_AUDIO_TOP_P="${MOSS_AUDIO_TOP_P:-0.8}"
+export MOSS_AUDIO_TOP_K="${MOSS_AUDIO_TOP_K:-25}"
+export MOSS_AUDIO_REPETITION_PENALTY="${MOSS_AUDIO_REPETITION_PENALTY:-1.0}"
+export MOSS_TEXT_TEMPERATURE="${MOSS_TEXT_TEMPERATURE:-}"
+export MOSS_TEXT_TOP_P="${MOSS_TEXT_TOP_P:-}"
+export MOSS_TEXT_TOP_K="${MOSS_TEXT_TOP_K:-}"
+export MOSS_TEXT_REPETITION_PENALTY="${MOSS_TEXT_REPETITION_PENALTY:-}"
+export MOSS_ATTN_IMPLEMENTATION="${MOSS_ATTN_IMPLEMENTATION:-auto}"
+export MOSS_DTYPE="${MOSS_DTYPE:-auto}"
+export MOSS_MAX_CHARS_PER_CHUNK="${MOSS_MAX_CHARS_PER_CHUNK:-300}"
+export MOSS_PAUSE_MS="${MOSS_PAUSE_MS:-250}"
+export MOSS_REQUEST_TIMEOUT="${MOSS_REQUEST_TIMEOUT:-600}"
 export LONGCAT_MAX_CHARS_PER_CHUNK="${LONGCAT_MAX_CHARS_PER_CHUNK:-90}"
 export LONGCAT_PAUSE_MS="${LONGCAT_PAUSE_MS:-250}"
 export LONGCAT_NFE="${LONGCAT_NFE:-16}"
@@ -78,6 +100,8 @@ export DOTS_HOST="${DOTS_HOST:-$HOST}"
 export DOTS_PORT="${DOTS_PORT:-8301}"
 export LONGCAT_HOST="${LONGCAT_HOST:-$HOST}"
 export LONGCAT_PORT="${LONGCAT_PORT:-8302}"
+export MOSS_HOST="${MOSS_HOST:-$HOST}"
+export MOSS_PORT="${MOSS_PORT:-8303}"
 
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True,max_split_size_mb:128}"
 export CUDA_MODULE_LOADING="${CUDA_MODULE_LOADING:-LAZY}"
@@ -86,6 +110,15 @@ export NUMBA_CACHE_DIR="${NUMBA_CACHE_DIR:-$RUNTIME_CACHE_DIR/numba}"
 export MPLCONFIGDIR="${MPLCONFIGDIR:-$RUNTIME_CACHE_DIR/matplotlib}"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$RUNTIME_CACHE_DIR/xdg}"
 mkdir -p "$PROMPTS_DIR" "$HF_MODULES_CACHE" "$NUMBA_CACHE_DIR" "$MPLCONFIGDIR" "$XDG_CACHE_HOME" "$(dirname "$GPU_LOCK_FILE")"
+
+if [[ -z "${MOSS_CODEC_PATH:-}" ]]; then
+  default_moss_codec_path="$HF_MIRROR_DIR/OpenMOSS-Team/MOSS-Audio-Tokenizer-v2"
+  if [[ -e "$default_moss_codec_path" ]]; then
+    export MOSS_CODEC_PATH="$default_moss_codec_path"
+  else
+    export MOSS_CODEC_PATH="OpenMOSS-Team/MOSS-Audio-Tokenizer-v2"
+  fi
+fi
 
 echo "=================================================="
 echo "   Unitale AI local backend"
@@ -100,6 +133,10 @@ echo "LongCat worker env:  $LONGCAT_CONDA_ENV"
 echo "LongCat model:       $LONGCAT_MODEL_DIR"
 echo "LongCat tokenizer:   $LONGCAT_TOKENIZER_PATH"
 echo "LongCat repo path:   ${LONGCAT_REPO_PATH:-auto-detect}"
+echo "MOSS worker env:     $MOSS_CONDA_ENV"
+echo "MOSS model:          $MOSS_MODEL_DIR"
+echo "MOSS codec:          $MOSS_CODEC_PATH"
+echo "MOSS helper script:  $MOSS_HELPER_SCRIPT"
 echo "LongCat auto prompt: $LONGCAT_AUTO_PROMPT_TEXT"
 echo "LongCat trim lead:   $LONGCAT_TRIM_LEADING_SILENCE"
 echo "LongCat trim thres:  $LONGCAT_TRIM_LEADING_SILENCE_THRESHOLD_DB dB"
@@ -124,10 +161,13 @@ echo "dots API:            http://$DOTS_HOST:$DOTS_PORT"
 echo "dots health:         http://127.0.0.1:$DOTS_PORT/v1/health"
 echo "LongCat API:         http://$LONGCAT_HOST:$LONGCAT_PORT"
 echo "LongCat health:      http://127.0.0.1:$LONGCAT_PORT/v1/health"
+echo "MOSS API:            http://$MOSS_HOST:$MOSS_PORT"
+echo "MOSS health:         http://127.0.0.1:$MOSS_PORT/v1/health"
 echo "Qwen design route:   http://127.0.0.1:$PORT/v1/qwen/design"
 echo "MiMo design route:   http://127.0.0.1:$PORT/v1/mimo/design"
 echo "dots synth route:    http://127.0.0.1:$DOTS_PORT/v2/synthesize"
 echo "LongCat synth route: http://127.0.0.1:$LONGCAT_PORT/v2/synthesize"
+echo "MOSS synth route:    http://127.0.0.1:$MOSS_PORT/v2/synthesize"
 echo "=================================================="
 
 cd "$PROJECT_DIR"
@@ -135,12 +175,13 @@ cd "$PROJECT_DIR"
 main_pid=""
 dots_pid=""
 longcat_pid=""
+moss_pid=""
 
 cleanup() {
   local status=$?
   trap - INT TERM EXIT
 
-  for pid in "$main_pid" "$dots_pid" "$longcat_pid"; do
+  for pid in "$main_pid" "$dots_pid" "$longcat_pid" "$moss_pid"; do
     if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
       kill "$pid" 2>/dev/null || true
     fi
@@ -149,6 +190,7 @@ cleanup() {
   wait "$main_pid" 2>/dev/null || true
   wait "$dots_pid" 2>/dev/null || true
   wait "$longcat_pid" 2>/dev/null || true
+  wait "$moss_pid" 2>/dev/null || true
   exit "$status"
 }
 
@@ -160,5 +202,7 @@ HOST="$DOTS_HOST" PORT="$DOTS_PORT" conda run --no-capture-output -n "$CONDA_ENV
 dots_pid=$!
 HOST="$LONGCAT_HOST" PORT="$LONGCAT_PORT" conda run --no-capture-output -n "$CONDA_ENV" python longcat_api.py &
 longcat_pid=$!
+HOST="$MOSS_HOST" PORT="$MOSS_PORT" conda run --no-capture-output -n "$CONDA_ENV" python moss_api.py &
+moss_pid=$!
 
-wait -n "$main_pid" "$dots_pid" "$longcat_pid"
+wait -n "$main_pid" "$dots_pid" "$longcat_pid" "$moss_pid"
