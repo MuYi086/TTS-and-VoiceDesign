@@ -10,6 +10,9 @@ export INDEXTTS_MODEL_DIR="${INDEXTTS_MODEL_DIR:-$HF_MIRROR_DIR/IndexTeam/IndexT
 export DOTS_MODEL_DIR="${DOTS_MODEL_DIR:-$HF_MIRROR_DIR/rednote-hilab/dots.tts-base}"
 export LONGCAT_MODEL_DIR="${LONGCAT_MODEL_DIR:-$HF_MIRROR_DIR/meituan-longcat/LongCat-AudioDiT-1B}"
 export MOSS_MODEL_DIR="${MOSS_MODEL_DIR:-$HF_MIRROR_DIR/OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5}"
+export OMNIVOICE_MODEL_DIR="${OMNIVOICE_MODEL_DIR:-$HF_MIRROR_DIR/k2-fsa/OmniVoice}"
+export QWEN3_TTS_MODEL_DIR="${QWEN3_TTS_MODEL_DIR:-$HF_MIRROR_DIR/Qwen/Qwen3-TTS-12Hz-1.7B-Base}"
+export VOXCPM2_MODEL_DIR="${VOXCPM2_MODEL_DIR:-$HF_MIRROR_DIR/openbmb/VoxCPM2}"
 export LONGCAT_TOKENIZER_PATH="${LONGCAT_TOKENIZER_PATH:-$HF_MIRROR_DIR/google/umt5-base}"
 export INDEXTTS_CFG_PATH="${INDEXTTS_CFG_PATH:-$INDEXTTS_MODEL_DIR/config.yaml}"
 export INDEXTTS_CODE_DIR="${INDEXTTS_CODE_DIR:-$PROJECT_DIR/vendor/index-tts}"
@@ -42,6 +45,60 @@ export LONGCAT_CONDA_ENV="${LONGCAT_CONDA_ENV:-longcat_audiodit}"
 export LONGCAT_REPO_PATH="${LONGCAT_REPO_PATH:-$PROJECT_DIR/vendor/LongCat-AudioDiT}"
 export MOSS_CONDA_ENV="${MOSS_CONDA_ENV:-moss-tts-py310}"
 export MOSS_HELPER_SCRIPT="${MOSS_HELPER_SCRIPT:-$HOME/github/timbre-design/scripts/tts_local_moss_tts_local_transformer.py}"
+export OMNIVOICE_CONDA_ENV="${OMNIVOICE_CONDA_ENV:-omnivoice}"
+export OMNIVOICE_DEVICE_MAP="${OMNIVOICE_DEVICE_MAP:-cuda:0}"
+export OMNIVOICE_DTYPE="${OMNIVOICE_DTYPE:-float16}"
+export OMNIVOICE_LANGUAGE="${OMNIVOICE_LANGUAGE:-Chinese}"
+export OMNIVOICE_SEED="${OMNIVOICE_SEED:-42}"
+export OMNIVOICE_NUM_STEP="${OMNIVOICE_NUM_STEP:-32}"
+export OMNIVOICE_GUIDANCE_SCALE="${OMNIVOICE_GUIDANCE_SCALE:-2.0}"
+export OMNIVOICE_SPEED="${OMNIVOICE_SPEED:-1.0}"
+export OMNIVOICE_DURATION="${OMNIVOICE_DURATION:-}"
+export OMNIVOICE_T_SHIFT="${OMNIVOICE_T_SHIFT:-0.1}"
+export OMNIVOICE_DENOISE="${OMNIVOICE_DENOISE:-1}"
+export OMNIVOICE_PREPROCESS_PROMPT="${OMNIVOICE_PREPROCESS_PROMPT:-1}"
+export OMNIVOICE_POSTPROCESS_OUTPUT="${OMNIVOICE_POSTPROCESS_OUTPUT:-1}"
+export OMNIVOICE_LAYER_PENALTY_FACTOR="${OMNIVOICE_LAYER_PENALTY_FACTOR:-5.0}"
+export OMNIVOICE_POSITION_TEMPERATURE="${OMNIVOICE_POSITION_TEMPERATURE:-5.0}"
+export OMNIVOICE_CLASS_TEMPERATURE="${OMNIVOICE_CLASS_TEMPERATURE:-0.0}"
+export OMNIVOICE_AUDIO_CHUNK_DURATION="${OMNIVOICE_AUDIO_CHUNK_DURATION:-15.0}"
+export OMNIVOICE_AUDIO_CHUNK_THRESHOLD="${OMNIVOICE_AUDIO_CHUNK_THRESHOLD:-30.0}"
+export OMNIVOICE_PAD_DURATION="${OMNIVOICE_PAD_DURATION:-0.1}"
+export OMNIVOICE_FADE_DURATION="${OMNIVOICE_FADE_DURATION:-0.1}"
+export OMNIVOICE_MAX_CHARS_PER_CHUNK="${OMNIVOICE_MAX_CHARS_PER_CHUNK:-120}"
+export OMNIVOICE_PAUSE_MS="${OMNIVOICE_PAUSE_MS:-250}"
+export OMNIVOICE_REQUEST_TIMEOUT="${OMNIVOICE_REQUEST_TIMEOUT:-600}"
+export VOXCPM2_CONDA_ENV="${VOXCPM2_CONDA_ENV:-voxcpm2}"
+export VOXCPM2_HELPER_SCRIPT="${VOXCPM2_HELPER_SCRIPT:-$HOME/github/timbre-design/scripts/tts_local_voxcpm2.py}"
+export VOXCPM2_STYLE_PROMPT="${VOXCPM2_STYLE_PROMPT:-低沉、沉稳、沉浸式，像电台主持一样自然叙述。}"
+export VOXCPM2_CFG_VALUE="${VOXCPM2_CFG_VALUE:-2.0}"
+export VOXCPM2_INFERENCE_TIMESTEPS="${VOXCPM2_INFERENCE_TIMESTEPS:-10}"
+export VOXCPM2_LOAD_DENOISER="${VOXCPM2_LOAD_DENOISER:-0}"
+export VOXCPM2_OPTIMIZE="${VOXCPM2_OPTIMIZE:-0}"
+export VOXCPM2_DEVICE="${VOXCPM2_DEVICE:-cuda}"
+export VOXCPM2_SEED="${VOXCPM2_SEED:-20260614}"
+export VOXCPM2_MAX_CHARS_PER_CHUNK="${VOXCPM2_MAX_CHARS_PER_CHUNK:-0}"
+export VOXCPM2_PAUSE_MS="${VOXCPM2_PAUSE_MS:-250}"
+export VOXCPM2_REQUEST_TIMEOUT="${VOXCPM2_REQUEST_TIMEOUT:-600}"
+export QWEN3_TTS_CONDA_ENV="${QWEN3_TTS_CONDA_ENV:-qwen3-tts}"
+export QWEN3_TTS_DEVICE_MAP="${QWEN3_TTS_DEVICE_MAP:-cuda:0}"
+export QWEN3_TTS_DTYPE="${QWEN3_TTS_DTYPE:-auto}"
+export QWEN3_TTS_LANGUAGE="${QWEN3_TTS_LANGUAGE:-Chinese}"
+export QWEN3_TTS_MAX_NEW_TOKENS="${QWEN3_TTS_MAX_NEW_TOKENS:-2048}"
+export QWEN3_TTS_TOP_P="${QWEN3_TTS_TOP_P:-}"
+export QWEN3_TTS_TEMPERATURE="${QWEN3_TTS_TEMPERATURE:-}"
+export QWEN3_TTS_ATTN_IMPLEMENTATION="${QWEN3_TTS_ATTN_IMPLEMENTATION:-auto}"
+export QWEN3_TTS_X_VECTOR_ONLY="${QWEN3_TTS_X_VECTOR_ONLY:-0}"
+export QWEN3_TTS_USE_QWEN_LIBS="${QWEN3_TTS_USE_QWEN_LIBS:-0}"
+export QWEN3_TTS_MAX_CHARS_PER_CHUNK="${QWEN3_TTS_MAX_CHARS_PER_CHUNK:-120}"
+export QWEN3_TTS_PAUSE_MS="${QWEN3_TTS_PAUSE_MS:-250}"
+export QWEN3_TTS_TRIM_LEADING_SILENCE="${QWEN3_TTS_TRIM_LEADING_SILENCE:-1}"
+export QWEN3_TTS_TRIM_LEADING_SILENCE_THRESHOLD_DB="${QWEN3_TTS_TRIM_LEADING_SILENCE_THRESHOLD_DB:--42}"
+export QWEN3_TTS_TRIM_LEADING_SILENCE_MIN_MS="${QWEN3_TTS_TRIM_LEADING_SILENCE_MIN_MS:-120}"
+export QWEN3_TTS_TRIM_LEADING_SILENCE_ANALYSIS_WINDOW_MS="${QWEN3_TTS_TRIM_LEADING_SILENCE_ANALYSIS_WINDOW_MS:-30}"
+export QWEN3_TTS_TRIM_LEADING_SILENCE_PRE_ROLL_MS="${QWEN3_TTS_TRIM_LEADING_SILENCE_PRE_ROLL_MS:-40}"
+export QWEN3_TTS_TRIM_LEADING_SILENCE_MAX_MS="${QWEN3_TTS_TRIM_LEADING_SILENCE_MAX_MS:-8000}"
+export QWEN3_TTS_REQUEST_TIMEOUT="${QWEN3_TTS_REQUEST_TIMEOUT:-600}"
 export MOSS_LANGUAGE="${MOSS_LANGUAGE:-Chinese}"
 export MOSS_INSTRUCTION="${MOSS_INSTRUCTION:-}"
 export MOSS_QUALITY="${MOSS_QUALITY:-}"
@@ -102,9 +159,13 @@ export LONGCAT_HOST="${LONGCAT_HOST:-$HOST}"
 export LONGCAT_PORT="${LONGCAT_PORT:-8302}"
 export MOSS_HOST="${MOSS_HOST:-$HOST}"
 export MOSS_PORT="${MOSS_PORT:-8303}"
+export OMNIVOICE_HOST="${OMNIVOICE_HOST:-$HOST}"
+export OMNIVOICE_PORT="${OMNIVOICE_PORT:-8304}"
+export QWEN3_TTS_HOST="${QWEN3_TTS_HOST:-$HOST}"
+export QWEN3_TTS_PORT="${QWEN3_TTS_PORT:-8305}"
+export VOXCPM2_HOST="${VOXCPM2_HOST:-$HOST}"
+export VOXCPM2_PORT="${VOXCPM2_PORT:-8306}"
 
-export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True,max_split_size_mb:128}"
-export CUDA_MODULE_LOADING="${CUDA_MODULE_LOADING:-LAZY}"
 export HF_MODULES_CACHE="${HF_MODULES_CACHE:-$RUNTIME_CACHE_DIR/hf_modules}"
 export NUMBA_CACHE_DIR="${NUMBA_CACHE_DIR:-$RUNTIME_CACHE_DIR/numba}"
 export MPLCONFIGDIR="${MPLCONFIGDIR:-$RUNTIME_CACHE_DIR/matplotlib}"
@@ -137,6 +198,19 @@ echo "MOSS worker env:     $MOSS_CONDA_ENV"
 echo "MOSS model:          $MOSS_MODEL_DIR"
 echo "MOSS codec:          $MOSS_CODEC_PATH"
 echo "MOSS helper script:  $MOSS_HELPER_SCRIPT"
+echo "OmniVoice worker env: $OMNIVOICE_CONDA_ENV"
+echo "OmniVoice model:     $OMNIVOICE_MODEL_DIR"
+echo "Qwen3-TTS worker env: $QWEN3_TTS_CONDA_ENV"
+echo "Qwen3-TTS model:     $QWEN3_TTS_MODEL_DIR"
+echo "VoxCPM2 worker env:  $VOXCPM2_CONDA_ENV"
+echo "VoxCPM2 model:       $VOXCPM2_MODEL_DIR"
+echo "VoxCPM2 helper:      $VOXCPM2_HELPER_SCRIPT"
+echo "VoxCPM2 device:      $VOXCPM2_DEVICE"
+echo "Qwen3-TTS trim lead: $QWEN3_TTS_TRIM_LEADING_SILENCE"
+echo "Qwen3-TTS trim thres:$QWEN3_TTS_TRIM_LEADING_SILENCE_THRESHOLD_DB dB"
+echo "Qwen3-TTS trim min:  $QWEN3_TTS_TRIM_LEADING_SILENCE_MIN_MS ms"
+echo "VoxCPM2 style prompt:$VOXCPM2_STYLE_PROMPT"
+echo "VoxCPM2 cfg/timestep:$VOXCPM2_CFG_VALUE / $VOXCPM2_INFERENCE_TIMESTEPS"
 echo "LongCat auto prompt: $LONGCAT_AUTO_PROMPT_TEXT"
 echo "LongCat trim lead:   $LONGCAT_TRIM_LEADING_SILENCE"
 echo "LongCat trim thres:  $LONGCAT_TRIM_LEADING_SILENCE_THRESHOLD_DB dB"
@@ -163,11 +237,20 @@ echo "LongCat API:         http://$LONGCAT_HOST:$LONGCAT_PORT"
 echo "LongCat health:      http://127.0.0.1:$LONGCAT_PORT/v1/health"
 echo "MOSS API:            http://$MOSS_HOST:$MOSS_PORT"
 echo "MOSS health:         http://127.0.0.1:$MOSS_PORT/v1/health"
+echo "OmniVoice API:       http://$OMNIVOICE_HOST:$OMNIVOICE_PORT"
+echo "OmniVoice health:    http://127.0.0.1:$OMNIVOICE_PORT/v1/health"
+echo "Qwen3-TTS API:       http://$QWEN3_TTS_HOST:$QWEN3_TTS_PORT"
+echo "Qwen3-TTS health:    http://127.0.0.1:$QWEN3_TTS_PORT/v1/health"
+echo "VoxCPM2 API:         http://$VOXCPM2_HOST:$VOXCPM2_PORT"
+echo "VoxCPM2 health:      http://127.0.0.1:$VOXCPM2_PORT/v1/health"
 echo "Qwen design route:   http://127.0.0.1:$PORT/v1/qwen/design"
 echo "MiMo design route:   http://127.0.0.1:$PORT/v1/mimo/design"
 echo "dots synth route:    http://127.0.0.1:$DOTS_PORT/v2/synthesize"
 echo "LongCat synth route: http://127.0.0.1:$LONGCAT_PORT/v2/synthesize"
 echo "MOSS synth route:    http://127.0.0.1:$MOSS_PORT/v2/synthesize"
+echo "OmniVoice synth:     http://127.0.0.1:$OMNIVOICE_PORT/v2/synthesize"
+echo "Qwen3-TTS synth:     http://127.0.0.1:$QWEN3_TTS_PORT/v2/synthesize"
+echo "VoxCPM2 synth:       http://127.0.0.1:$VOXCPM2_PORT/v2/synthesize"
 echo "=================================================="
 
 cd "$PROJECT_DIR"
@@ -176,12 +259,15 @@ main_pid=""
 dots_pid=""
 longcat_pid=""
 moss_pid=""
+omnivoice_pid=""
+qwen3_tts_pid=""
+voxcpm2_pid=""
 
 cleanup() {
   local status=$?
   trap - INT TERM EXIT
 
-  for pid in "$main_pid" "$dots_pid" "$longcat_pid" "$moss_pid"; do
+  for pid in "$main_pid" "$dots_pid" "$longcat_pid" "$moss_pid" "$omnivoice_pid" "$qwen3_tts_pid" "$voxcpm2_pid"; do
     if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
       kill "$pid" 2>/dev/null || true
     fi
@@ -191,6 +277,9 @@ cleanup() {
   wait "$dots_pid" 2>/dev/null || true
   wait "$longcat_pid" 2>/dev/null || true
   wait "$moss_pid" 2>/dev/null || true
+  wait "$omnivoice_pid" 2>/dev/null || true
+  wait "$qwen3_tts_pid" 2>/dev/null || true
+  wait "$voxcpm2_pid" 2>/dev/null || true
   exit "$status"
 }
 
@@ -204,5 +293,11 @@ HOST="$LONGCAT_HOST" PORT="$LONGCAT_PORT" conda run --no-capture-output -n "$CON
 longcat_pid=$!
 HOST="$MOSS_HOST" PORT="$MOSS_PORT" conda run --no-capture-output -n "$CONDA_ENV" python moss_api.py &
 moss_pid=$!
+HOST="$OMNIVOICE_HOST" PORT="$OMNIVOICE_PORT" conda run --no-capture-output -n "$CONDA_ENV" python omnivoice_api.py &
+omnivoice_pid=$!
+HOST="$QWEN3_TTS_HOST" PORT="$QWEN3_TTS_PORT" conda run --no-capture-output -n "$CONDA_ENV" python qwen3_tts_api.py &
+qwen3_tts_pid=$!
+HOST="$VOXCPM2_HOST" PORT="$VOXCPM2_PORT" conda run --no-capture-output -n "$VOXCPM2_CONDA_ENV" python voxcpm2_api.py &
+voxcpm2_pid=$!
 
-wait -n "$main_pid" "$dots_pid" "$longcat_pid" "$moss_pid"
+wait -n "$main_pid" "$dots_pid" "$longcat_pid" "$moss_pid" "$omnivoice_pid" "$qwen3_tts_pid" "$voxcpm2_pid"

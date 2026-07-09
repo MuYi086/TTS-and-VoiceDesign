@@ -6,6 +6,9 @@
 - dots.tts-base：参考音频 + 文本合成，独立暴露 `8301`
 - LongCat-AudioDiT-1B：参考音频 + 文本合成，独立暴露 `8302`
 - MOSS-TTS-Local-Transformer-v1.5：参考音频 + 文本合成，独立暴露 `8303`
+- OmniVoice：参考音频 + 文本合成，独立暴露 `8304`
+- Qwen3-TTS-12Hz-1.7B-Base：参考音频 + 文本合成，独立暴露 `8305`
+- VoxCPM2：参考音频 + 文本合成，独立暴露 `8306`
 - Qwen3-TTS VoiceDesign：根据音色描述生成参考音频
 - MiMo TTS VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/mimo/design`
 
@@ -17,7 +20,7 @@
 conda activate unitale-tts-local
 ```
 
-主 API、`8301` 的 dots HTTP 包装器、`8302` 的 LongCat HTTP 包装器、`8303` 的 MOSS HTTP 包装器、IndexTTS2 和 Qwen 子进程使用同一个 conda 环境启动。由于 IndexTTS2 需要
+主 API、`8301` 的 dots HTTP 包装器、`8302` 的 LongCat HTTP 包装器、`8303` 的 MOSS HTTP 包装器、`8304` 的 OmniVoice HTTP 包装器、`8305` 的 Qwen3-TTS HTTP 包装器、`8306` 的 VoxCPM2 HTTP 包装器、IndexTTS2 和 Qwen 子进程使用同一个 conda 环境启动。由于 IndexTTS2 需要
 `transformers==4.52.1/tokenizers==0.21.0`，而 Qwen3-TTS 需要更新版本，Qwen 依赖被侧载到：
 
 ```text
@@ -53,6 +56,30 @@ conda run -n moss-tts-py310 python moss_tts_worker.py ...
 
 因此 `moss-tts-py310` 环境至少需要安装 OpenMOSS/MOSS-TTS 官方本地运行依赖：`torch`、`torchaudio`、`transformers`。`8303` 的 worker 会复用 `~/github/timbre-design/scripts/tts_local_moss_tts_local_transformer.py` 里已经验证过的本地 helper，因此该脚本需要存在，且其依赖版本要与 `moss-tts-py310` 环境匹配。不要求在该环境里安装 `fastapi`。
 
+`OmniVoice` 的真实推理不在 `unitale-tts-local` 里执行，而是由 `8304` 服务按请求调用：
+
+```bash
+conda run -n omnivoice python omnivoice_tts_worker.py ...
+```
+
+因此 `omnivoice` 环境至少需要安装 OmniVoice 官方运行时依赖：`omnivoice`、`torch`、`numpy`、`soundfile`。若上传参考音频时没有同时提供 `prompt_text`，`8304` 会让 OmniVoice 在 worker 内部对参考音频执行一次自动转写；该转写相关模块同样只会在请求期间加载，worker 退出即释放。
+
+`Qwen3-TTS-12Hz-1.7B-Base` 的真实推理不在 `unitale-tts-local` 里执行，而是由 `8305` 服务按请求调用：
+
+```bash
+conda run -n qwen3-tts python qwen3_tts_worker.py ...
+```
+
+因此 `qwen3-tts` 环境至少需要安装 `qwen-tts`、`torch`、`numpy`、`soundfile`。它使用参考脚本同一套克隆方式：有 `prompt_text` 时走 reference transcript 克隆；没有时退回 `x-vector-only` 模式，只依赖参考音频本身，不会额外加载 ASR。
+
+`VoxCPM2` 的真实推理不在 `unitale-tts-local` 里执行，而是由 `8306` 服务按请求调用：
+
+```bash
+conda run -n voxcpm2 python voxcpm2_worker.py ...
+```
+
+因此 `voxcpm2` 环境至少需要安装 `voxcpm`、`torch`、`numpy`、`soundfile`。`8306` 的 worker 会复用 `~/github/timbre-design/scripts/tts_local_voxcpm2.py` 里已经验证过的本地 helper，因此该脚本需要存在，且其依赖版本要与 `voxcpm2` 环境匹配。它同样满足“真实用到才加载，请求结束即卸载”：模型只在 worker 进程内按请求加载，worker 退出后显存立即清理。若未提供 `prompt_text`，`8306` 会直接走 VoxCPM2 的 controllable cloning 模式，不会额外加载 ASR。
+
 ```bash
 export MIMO_API_KEY=...
 ```
@@ -71,10 +98,14 @@ MiMo 是云端 API，不加载本地模型；默认使用 `https://api.xiaomimim
 /home/muyi086/hf-mirror/meituan-longcat/LongCat-AudioDiT-1B
 /home/muyi086/hf-mirror/OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5
 /home/muyi086/hf-mirror/OpenMOSS-Team/MOSS-Audio-Tokenizer-v2
+/home/muyi086/hf-mirror/k2-fsa/OmniVoice
+/home/muyi086/hf-mirror/Qwen/Qwen3-TTS-12Hz-1.7B-Base
+/home/muyi086/hf-mirror/openbmb/VoxCPM2
 /home/muyi086/hf-mirror/google/umt5-base
 /home/muyi086/hf-mirror/FunAudioLLM/SenseVoiceSmall
 /home/muyi086/github/TTS-and-VoiceDesign/vendor/LongCat-AudioDiT
 /home/muyi086/github/timbre-design/scripts/tts_local_moss_tts_local_transformer.py
+/home/muyi086/github/timbre-design/scripts/tts_local_voxcpm2.py
 ```
 
 `hf_cache` 内包含 IndexTTS2 辅助模型：`w2v-bert-2.0`、`semantic_codec`、`campplus`、`bigvgan`。
@@ -92,6 +123,9 @@ http://127.0.0.1:8300
 http://127.0.0.1:8301
 http://127.0.0.1:8302
 http://127.0.0.1:8303
+http://127.0.0.1:8304
+http://127.0.0.1:8305
+http://127.0.0.1:8306
 ```
 
 健康检查：
@@ -101,11 +135,17 @@ curl http://127.0.0.1:8300/v1/health
 curl http://127.0.0.1:8301/v1/health
 curl http://127.0.0.1:8302/v1/health
 curl http://127.0.0.1:8303/v1/health
+curl http://127.0.0.1:8304/v1/health
+curl http://127.0.0.1:8305/v1/health
+curl http://127.0.0.1:8306/v1/health
 ```
 
 `indextts_ready=true` 且 `missing.indextts_main=[]`、`missing.indextts_aux=[]` 表示本地文件完整。
 `8302` 的健康检查还会返回 `longcat_repo_path`、`longcat_asr_model_dir` 和自动转写参数。正常情况下 `longcat_repo_path` 应指向当前项目的 `vendor/LongCat-AudioDiT`，`longcat_asr_model_dir` 应指向本地 `SenseVoiceSmall`；如果这里为空，再检查 `vendor` 或 `hf-mirror` 是否完整。
 `8303` 的健康检查会返回 `moss_helper_script`、`moss_model_dir` 和 `moss_codec_path`。若 `moss_helper_script` 或 `moss_model_dir` 不可用，先检查 `~/github/timbre-design` 和本地 `hf-mirror`。
+`8304` 的健康检查会返回 `omnivoice_model_dir`、`device_map`、`dtype` 和 `prompt_text_fallback`。若 `omnivoice_model_dir` 不可用，先检查本地 `hf-mirror/k2-fsa/OmniVoice`。
+`8305` 的健康检查会返回 `qwen3_tts_model_dir`、`device_map`、`dtype`、`attn_implementation` 和 `prompt_text_fallback`。若 `qwen3_tts_model_dir` 不可用，先检查本地 `hf-mirror/Qwen/Qwen3-TTS-12Hz-1.7B-Base`。
+`8306` 的健康检查会返回 `voxcpm2_model_dir`、`voxcpm2_helper_script`、`style_prompt`、`device` 和 `prompt_text_fallback`。若 `voxcpm2_model_dir` 或 `voxcpm2_helper_script` 不可用，先检查本地 `hf-mirror/openbmb/VoxCPM2` 与 `~/github/timbre-design/scripts/tts_local_voxcpm2.py`。
 
 ## 常用接口
 
@@ -195,6 +235,60 @@ curl -X POST http://127.0.0.1:8303/v2/synthesize \
 
 `8303` 的 MOSS 克隆只依赖参考音频，不强制要求 `prompt_text`。如果你希望覆盖默认推理参数，也可以在 `v2/synthesize` 请求里附带 `language`、`instruction`、`quality`、`tokens`、`max_new_tokens` 等可选字段。
 
+`8304` 的 `OmniVoice` 复用同一套 WebUI TTS 协议：
+
+```bash
+curl -X POST http://127.0.0.1:8304/v1/upload_audio \
+  -F "full_path=qwen_test.wav" \
+  -F "audio=@qwen_test.wav" \
+  -F "prompt_text=这是参考音频的准确转写，可选但建议提供"
+```
+
+```bash
+curl -X POST http://127.0.0.1:8304/v2/synthesize \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"这是一次 OmniVoice 本地合成测试。","audio_path":"qwen_test.wav"}' \
+  -o omnivoice_synth.wav
+```
+
+如果未提供 `prompt_text`，`8304` 会在 worker 内部调用 OmniVoice 的参考音频自动转写流程，再继续做克隆。这仍然满足“真实用到才加载、请求结束即卸载”的约束，只是首轮请求通常比显式提供转写更慢。
+
+`8305` 的 `Qwen3-TTS-12Hz-1.7B-Base` 也复用同一套 WebUI TTS 协议：
+
+```bash
+curl -X POST http://127.0.0.1:8305/v1/upload_audio \
+  -F "full_path=qwen_test.wav" \
+  -F "audio=@qwen_test.wav" \
+  -F "prompt_text=这是参考音频的准确转写，可选但建议提供"
+```
+
+```bash
+curl -X POST http://127.0.0.1:8305/v2/synthesize \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"这是一次 Qwen3-TTS 本地合成测试。","audio_path":"qwen_test.wav"}' \
+  -o qwen3_tts_synth.wav
+```
+
+如果未提供 `prompt_text`，`8305` 会退回 `x-vector-only` 克隆模式，不需要额外模型做自动转写；通常速度更稳定，但音色一致性一般不如“参考音频 + 准确转写”。默认还会裁掉生成结果前导静音，避免开头先空几秒再出声。
+
+`8306` 的 `VoxCPM2` 也复用同一套 WebUI TTS 协议：
+
+```bash
+curl -X POST http://127.0.0.1:8306/v1/upload_audio \
+  -F "full_path=qwen_test.wav" \
+  -F "audio=@qwen_test.wav" \
+  -F "prompt_text=这是参考音频的准确转写，可选但建议提供"
+```
+
+```bash
+curl -X POST http://127.0.0.1:8306/v2/synthesize \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"这是一次 VoxCPM2 本地合成测试。","audio_path":"qwen_test.wav"}' \
+  -o voxcpm2_synth.wav
+```
+
+如果未提供 `prompt_text`，`8306` 会直接走 VoxCPM2 的 controllable cloning 模式，不需要额外转写模型；若你需要更稳定的音色一致性，仍然建议在上传时同时提交参考音频的准确转写。你也可以在 `v2/synthesize` 请求里附带 `style_prompt`、`cfg_value`、`inference_timesteps`、`load_denoiser`、`optimize`、`seed`、`device` 等可选字段覆盖默认参数。`8306` 默认使用 `VOXCPM2_CONDA_ENV=voxcpm2` 启动 API 和 worker，默认 `device=cuda`，与 `step_3_tts_local_voxcpm2.py` 的运行环境和核心参数保持一致。
+
 ## 运行策略
 
 - `8300` 的 Qwen 和 IndexTTS2 不同时驻留显存。
@@ -205,6 +299,9 @@ curl -X POST http://127.0.0.1:8303/v2/synthesize \
 - `8301 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `dots_tts` 环境里的 worker，worker 退出即释放模型和显存。
 - `8302 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `longcat_audiodit` 环境里的 worker，worker 退出即释放模型和显存。
 - `8303 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `moss-tts-py310` 环境里的 worker，worker 退出即释放 MOSS 模型、codec 和显存。
-- `8300`、`8301`、`8302`、`8303` 共享同一个 `GPU_LOCK_FILE`，因此 Qwen / MiMo / IndexTTS2 / dots.tts / LongCat / MOSS 不会并发抢占显存。
+- `8304 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `omnivoice` 环境里的 worker，worker 退出即释放 OmniVoice 模型、参考音色 prompt 和显存。
+- `8305 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `qwen3-tts` 环境里的 worker，worker 退出即释放 Qwen3-TTS Base 模型、voice clone prompt 和显存。
+- `8306 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `voxcpm2` 环境里的 worker，worker 退出即释放 VoxCPM2 模型和显存。
+- `8300`、`8301`、`8302`、`8303`、`8304`、`8305`、`8306` 共享同一个 `GPU_LOCK_FILE`，因此 Qwen / MiMo / IndexTTS2 / dots.tts / LongCat / MOSS / OmniVoice / Qwen3-TTS Base / VoxCPM2 不会并发抢占显存。
 - 默认离线加载模型：`LOCAL_FILES_ONLY=1`。
 - 不再执行云端脚本里的 apt 改源、`/app` 代码同步或清理所有 Python 进程。
