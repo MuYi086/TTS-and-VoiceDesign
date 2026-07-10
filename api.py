@@ -20,6 +20,8 @@ import urllib.request
 import wave
 from contextlib import contextmanager
 
+import numpy as np
+
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:128")
 os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
 
@@ -31,6 +33,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Res
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
+from audio_trim import trim_leading_silence
 from synthesis_request import CloneSynthesisRequest
 
 # ==========================================
@@ -1078,8 +1081,13 @@ async def synthesize_v2(request: TextToSpeechRequest):
                     emo_alpha=0.6,
                     num_beams=INDEXTTS_NUM_BEAMS,
                 )
-                with open(temp_out, "rb") as f:
-                    data = f.read()
+                waveform, sample_rate = sf.read(temp_out, dtype="float32", always_2d=True)
+                waveform, trimmed_samples = trim_leading_silence(waveform, sample_rate, np)
+                if trimmed_samples > 0:
+                    print(f"[IndexTTS2] 裁掉前导空白 {trimmed_samples / sample_rate:.2f}s")
+                wav_buffer = io.BytesIO()
+                sf.write(wav_buffer, waveform, sample_rate, format="WAV")
+                data = wav_buffer.getvalue()
                 return Response(content=data, media_type="audio/wav")
             except HTTPException:
                 raise

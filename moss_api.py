@@ -113,12 +113,17 @@ MOSS_MODEL_DIR = expand_path(
     os.getenv("MOSS_MODEL_DIR", os.path.join(HF_MIRROR_DIR, "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"))
 )
 MOSS_CODEC_PATH = os.getenv("MOSS_CODEC_PATH", default_moss_codec_path(HF_MIRROR_DIR))
-MOSS_HELPER_SCRIPT = expand_path(
-    os.getenv(
-        "MOSS_HELPER_SCRIPT",
-        os.path.join("~", "github", "timbre-design", "scripts", "tts_local_moss_tts_local_transformer.py"),
-    )
+MOSS_HELPER_DEFAULT = expand_path(
+    os.path.join("~", "github", "timbre-design", "modelScript", "tts_local_moss_tts_local_transformer.py")
 )
+MOSS_HELPER_LEGACY_PATH = expand_path(
+    os.path.join("~", "github", "timbre-design", "scripts", "tts_local_moss_tts_local_transformer.py")
+)
+MOSS_HELPER_SCRIPT = expand_path(os.getenv("MOSS_HELPER_SCRIPT", MOSS_HELPER_DEFAULT))
+# The helper was moved from scripts/ to modelScript/.  Treat the old default
+# as a stale setting so a shell that previously ran start.sh self-recovers.
+if MOSS_HELPER_SCRIPT == MOSS_HELPER_LEGACY_PATH and os.path.isfile(MOSS_HELPER_DEFAULT):
+    MOSS_HELPER_SCRIPT = MOSS_HELPER_DEFAULT
 MOSS_LANGUAGE = os.getenv("MOSS_LANGUAGE", "Chinese")
 MOSS_INSTRUCTION = env_optional_text("MOSS_INSTRUCTION")
 MOSS_QUALITY = env_optional_text("MOSS_QUALITY")

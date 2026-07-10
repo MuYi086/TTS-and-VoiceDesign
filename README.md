@@ -54,7 +54,7 @@ conda run -n longcat_audiodit python longcat_audiodit_worker.py ...
 conda run -n moss-tts-py310 python moss_tts_worker.py ...
 ```
 
-因此 `moss-tts-py310` 环境至少需要安装 OpenMOSS/MOSS-TTS 官方本地运行依赖：`torch`、`torchaudio`、`transformers`。`8303` 的 worker 会复用 `~/github/timbre-design/scripts/tts_local_moss_tts_local_transformer.py` 里已经验证过的本地 helper，因此该脚本需要存在，且其依赖版本要与 `moss-tts-py310` 环境匹配。不要求在该环境里安装 `fastapi`。
+因此 `moss-tts-py310` 环境至少需要安装 OpenMOSS/MOSS-TTS 官方本地运行依赖：`torch`、`torchaudio`、`transformers`。`8303` 的 worker 会复用 `~/github/timbre-design/modelScript/tts_local_moss_tts_local_transformer.py` 里已经验证过的本地 helper，因此该脚本需要存在，且其依赖版本要与 `moss-tts-py310` 环境匹配。不要求在该环境里安装 `fastapi`。
 
 `OmniVoice` 的真实推理不在 `unitale-tts-local` 里执行，而是由 `8304` 服务按请求调用：
 
@@ -78,7 +78,7 @@ conda run -n qwen3-tts python qwen3_tts_worker.py ...
 conda run -n voxcpm2 python voxcpm2_worker.py ...
 ```
 
-因此 `voxcpm2` 环境至少需要安装 `voxcpm`、`torch`、`numpy`、`soundfile`。`8306` 的 worker 会复用 `~/github/timbre-design/scripts/tts_local_voxcpm2.py` 里已经验证过的本地 helper，因此该脚本需要存在，且其依赖版本要与 `voxcpm2` 环境匹配。它同样满足“真实用到才加载，请求结束即卸载”：模型只在 worker 进程内按请求加载，worker 退出后显存立即清理。若未提供 `prompt_text`，`8306` 会走仅参考音频的克隆模式，不会额外加载 ASR。
+因此 `voxcpm2` 环境至少需要安装 `voxcpm`、`torch`、`numpy`、`soundfile`。`8306` 的 worker 会复用 `~/github/timbre-design/modelScript/tts_local_voxcpm2.py` 里已经验证过的本地 helper，因此该脚本需要存在，且其依赖版本要与 `voxcpm2` 环境匹配。它同样满足“真实用到才加载，请求结束即卸载”：模型只在 worker 进程内按请求加载，worker 退出后显存立即清理。若未提供 `prompt_text`，`8306` 会走仅参考音频的克隆模式，不会额外加载 ASR。
 
 ```bash
 export MIMO_API_KEY=...
@@ -104,8 +104,8 @@ MiMo 是云端 API，不加载本地模型；默认使用 `https://api.xiaomimim
 /home/muyi086/hf-mirror/google/umt5-base
 /home/muyi086/hf-mirror/FunAudioLLM/SenseVoiceSmall
 /home/muyi086/github/TTS-and-VoiceDesign/vendor/LongCat-AudioDiT
-/home/muyi086/github/timbre-design/scripts/tts_local_moss_tts_local_transformer.py
-/home/muyi086/github/timbre-design/scripts/tts_local_voxcpm2.py
+/home/muyi086/github/timbre-design/modelScript/tts_local_moss_tts_local_transformer.py
+/home/muyi086/github/timbre-design/modelScript/tts_local_voxcpm2.py
 ```
 
 `hf_cache` 内包含 IndexTTS2 辅助模型：`w2v-bert-2.0`、`semantic_codec`、`campplus`、`bigvgan`。
@@ -145,7 +145,7 @@ curl http://127.0.0.1:8306/v1/health
 `8303` 的健康检查会返回 `moss_helper_script`、`moss_model_dir` 和 `moss_codec_path`。若 `moss_helper_script` 或 `moss_model_dir` 不可用，先检查 `~/github/timbre-design` 和本地 `hf-mirror`。
 `8304` 的健康检查会返回 `omnivoice_model_dir`、`device_map`、`dtype` 和 `prompt_text_fallback`。若 `omnivoice_model_dir` 不可用，先检查本地 `hf-mirror/k2-fsa/OmniVoice`。
 `8305` 的健康检查会返回 `qwen3_tts_model_dir`、`device_map`、`dtype`、`attn_implementation` 和 `prompt_text_fallback`。若 `qwen3_tts_model_dir` 不可用，先检查本地 `hf-mirror/Qwen/Qwen3-TTS-12Hz-1.7B-Base`。
-`8306` 的健康检查会返回 `voxcpm2_model_dir`、`voxcpm2_helper_script`、`device` 和 `prompt_text_fallback`。若 `voxcpm2_model_dir` 或 `voxcpm2_helper_script` 不可用，先检查本地 `hf-mirror/openbmb/VoxCPM2` 与 `~/github/timbre-design/scripts/tts_local_voxcpm2.py`。
+`8306` 的健康检查会返回 `voxcpm2_model_dir`、`voxcpm2_helper_script`、`device` 和 `prompt_text_fallback`。若 `voxcpm2_model_dir` 或 `voxcpm2_helper_script` 不可用，先检查本地 `hf-mirror/openbmb/VoxCPM2` 与 `~/github/timbre-design/modelScript/tts_local_voxcpm2.py`。
 
 ## 常用接口
 

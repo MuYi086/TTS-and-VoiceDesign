@@ -15,6 +15,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from audio_trim import trim_leading_silence
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="One-shot VoxCPM2 worker")
@@ -241,6 +243,9 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
                 )
 
         waveform = helpers.join_waveforms(waveforms, sample_rate, pause_ms, np)
+        waveform, trimmed_samples = trim_leading_silence(waveform, sample_rate, np)
+        if trimmed_samples > 0:
+            print(f"[VoxCPM2 worker] 裁掉前导空白 {trimmed_samples / sample_rate:.2f}s")
         output_wav.parent.mkdir(parents=True, exist_ok=True)
         sf.write(str(output_wav), waveform, sample_rate)
         elapsed = time.perf_counter() - started

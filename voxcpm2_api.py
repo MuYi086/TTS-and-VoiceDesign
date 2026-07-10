@@ -68,12 +68,17 @@ VOXCPM2_CONDA_ENV = os.getenv("VOXCPM2_CONDA_ENV", "voxcpm2")
 VOXCPM2_MODEL_DIR = expand_path(
     os.getenv("VOXCPM2_MODEL_DIR", os.path.join(HF_MIRROR_DIR, "openbmb/VoxCPM2"))
 )
-VOXCPM2_HELPER_SCRIPT = expand_path(
-    os.getenv(
-        "VOXCPM2_HELPER_SCRIPT",
-        os.path.join("~", "github", "timbre-design", "scripts", "tts_local_voxcpm2.py"),
-    )
+VOXCPM2_HELPER_DEFAULT = expand_path(
+    os.path.join("~", "github", "timbre-design", "modelScript", "tts_local_voxcpm2.py")
 )
+VOXCPM2_HELPER_LEGACY_PATH = expand_path(
+    os.path.join("~", "github", "timbre-design", "scripts", "tts_local_voxcpm2.py")
+)
+VOXCPM2_HELPER_SCRIPT = expand_path(os.getenv("VOXCPM2_HELPER_SCRIPT", VOXCPM2_HELPER_DEFAULT))
+# The helper was moved from scripts/ to modelScript/.  Repair the stale path
+# emitted by earlier start.sh versions while preserving any other user override.
+if VOXCPM2_HELPER_SCRIPT == VOXCPM2_HELPER_LEGACY_PATH and os.path.isfile(VOXCPM2_HELPER_DEFAULT):
+    VOXCPM2_HELPER_SCRIPT = VOXCPM2_HELPER_DEFAULT
 VOXCPM2_CFG_VALUE = float(os.getenv("VOXCPM2_CFG_VALUE", "2.0"))
 VOXCPM2_INFERENCE_TIMESTEPS = int(os.getenv("VOXCPM2_INFERENCE_TIMESTEPS", "10"))
 VOXCPM2_LOAD_DENOISER = env_bool("VOXCPM2_LOAD_DENOISER", False)

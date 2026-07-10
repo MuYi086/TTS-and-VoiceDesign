@@ -14,6 +14,8 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+from audio_trim import trim_leading_silence
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="One-shot MOSS-TTS worker")
@@ -169,6 +171,14 @@ def join_waveforms(waveforms: list[Any], sample_rate: int, pause_ms: int, torch:
     return torch.cat(segments, dim=-1)
 
 
+def trim_generated_audio(waveform: Any, sample_rate: int, np: Any, torch: Any) -> tuple[Any, int]:
+    """Trim only the generated prefix, preserving MOSS channel layout."""
+    trimmed, trimmed_samples = trim_leading_silence(
+        waveform.detach().cpu().numpy(), sample_rate, np
+    )
+    return torch.from_numpy(trimmed).to(dtype=torch.float32), trimmed_samples
+
+
 def clear_cuda_cache(torch: Any) -> None:
     gc.collect()
     if not torch.cuda.is_available():
@@ -224,6 +234,7 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
     helper_script = str(request.get("moss_helper_script") or "")
     helpers = load_moss_helpers(helper_script)
     AutoModel, AutoProcessor, torch, torchaudio = helpers.import_runtime()
+    import numpy as np
 
     model_path = require_path(str(request.get("model_path") or ""), "模型路径")
     ref_audio_path = require_path(str(request.get("ref_audio_path") or ""), "参考音频")
@@ -333,6 +344,9 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
 
         sample_rate = int(processor.model_config.sampling_rate)
         waveform = join_waveforms(waveforms, sample_rate, pause_ms, torch)
+        waveform, trimmed_samples = trim_generated_audio(waveform, sample_rate, np, torch)
+        if trimmed_samples > 0:
+            print(f"[MOSS worker] 裁掉前导空白 {trimmed_samples / sample_rate:.2f}s")
         output_wav.parent.mkdir(parents=True, exist_ok=True)
         torchaudio.save(str(output_wav), waveform, sample_rate)
         elapsed = time.perf_counter() - started
