@@ -13,10 +13,12 @@ import threading
 import time
 import traceback
 from contextlib import contextmanager
-from typing import Optional, List, Any
+from typing import Optional
 
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:128")
-os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
+# Align VoxCPM2 with the standalone step_3 script instead of inheriting
+# global CUDA runtime tweaks that break this model's GPU path.
+os.environ.pop("PYTORCH_CUDA_ALLOC_CONF", None)
+os.environ.pop("CUDA_MODULE_LOADING", None)
 
 import torch
 import uvicorn
@@ -25,9 +27,6 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from synthesis_request import CloneSynthesisRequest
 
-# ==========================================
-# 0. 系统配置
-# ==========================================
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -38,65 +37,22 @@ def env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def env_optional_text(name: str) -> Optional[str]:
-    value = os.getenv(name)
-    if value is None:
-        return None
-    normalized = value.strip()
-    if not normalized:
-        return None
-    if normalized.lower() == "none":
-        return None
-    return normalized
-
-
-def env_optional_int(name: str) -> Optional[int]:
-    value = env_optional_text(name)
-    return int(value) if value is not None else None
-
-
-def env_optional_float(name: str) -> Optional[float]:
-    value = env_optional_text(name)
-    return float(value) if value is not None else None
-
-
 def expand_path(path: str) -> str:
     return os.path.abspath(os.path.expandvars(os.path.expanduser(path)))
 
 
-def optional_expand_path(value: Optional[str]) -> Optional[str]:
+def normalize_optional_text(value: Optional[str]) -> Optional[str]:
     if value is None:
         return None
     normalized = value.strip()
-    if not normalized:
-        return None
-    return expand_path(normalized)
-
-
-def default_moss_codec_path(hf_mirror_dir: str) -> str:
-    local_path = expand_path(os.path.join(hf_mirror_dir, "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2"))
-    return local_path if os.path.exists(local_path) else "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2"
-
-
-def normalize_optional_str(value: Any) -> Optional[str]:
-    if value is None:
-        return None
-    normalized = str(value).strip()
-    if not normalized:
-        return None
-    if normalized.lower() == "none":
+    if not normalized or normalized.lower() == "none":
         return None
     return normalized
 
 
-def codec_reference_info(reference: str) -> dict[str, Any]:
-    expanded = os.path.expandvars(os.path.expanduser(reference))
-    exists = os.path.exists(expanded)
-    return {
-        "value": os.path.abspath(expanded) if exists else reference,
-        "local_path_exists": exists,
-        "kind": "local_path" if exists else "model_id",
-    }
+def normalize_device_name(value: Optional[str], default: str = "cuda") -> str:
+    normalized = normalize_optional_text(value)
+    return normalized.lower() if normalized is not None else default
 
 
 HF_MIRROR_DIR = expand_path(os.getenv("HF_MIRROR_DIR", "~/hf-mirror"))
@@ -106,41 +62,30 @@ GPU_LOCK_FILE = expand_path(os.getenv("GPU_LOCK_FILE", os.path.join(RUNTIME_CACH
 LOCAL_FILES_ONLY = env_bool("LOCAL_FILES_ONLY", True)
 CUDA_RELEASE_DELAY = float(os.getenv("CUDA_RELEASE_DELAY", "2.0"))
 API_HOST = os.getenv("HOST", "0.0.0.0")
-API_PORT = int(os.getenv("PORT", "8303"))
+API_PORT = int(os.getenv("PORT", "8306"))
 
-MOSS_CONDA_ENV = os.getenv("MOSS_CONDA_ENV", "moss-tts-py310")
-MOSS_MODEL_DIR = expand_path(
-    os.getenv("MOSS_MODEL_DIR", os.path.join(HF_MIRROR_DIR, "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"))
+VOXCPM2_CONDA_ENV = os.getenv("VOXCPM2_CONDA_ENV", "voxcpm2")
+VOXCPM2_MODEL_DIR = expand_path(
+    os.getenv("VOXCPM2_MODEL_DIR", os.path.join(HF_MIRROR_DIR, "openbmb/VoxCPM2"))
 )
-MOSS_CODEC_PATH = os.getenv("MOSS_CODEC_PATH", default_moss_codec_path(HF_MIRROR_DIR))
-MOSS_HELPER_SCRIPT = expand_path(
+VOXCPM2_HELPER_SCRIPT = expand_path(
     os.getenv(
-        "MOSS_HELPER_SCRIPT",
-        os.path.join("~", "github", "timbre-design", "scripts", "tts_local_moss_tts_local_transformer.py"),
+        "VOXCPM2_HELPER_SCRIPT",
+        os.path.join("~", "github", "timbre-design", "scripts", "tts_local_voxcpm2.py"),
     )
 )
-MOSS_LANGUAGE = os.getenv("MOSS_LANGUAGE", "Chinese")
-MOSS_INSTRUCTION = env_optional_text("MOSS_INSTRUCTION")
-MOSS_QUALITY = env_optional_text("MOSS_QUALITY")
-MOSS_TOKENS = env_optional_int("MOSS_TOKENS")
-MOSS_MAX_NEW_TOKENS = int(os.getenv("MOSS_MAX_NEW_TOKENS", "4096"))
-MOSS_N_VQ_FOR_INFERENCE = env_optional_int("MOSS_N_VQ_FOR_INFERENCE")
-MOSS_AUDIO_TEMPERATURE = float(os.getenv("MOSS_AUDIO_TEMPERATURE", "1.7"))
-MOSS_AUDIO_TOP_P = float(os.getenv("MOSS_AUDIO_TOP_P", "0.8"))
-MOSS_AUDIO_TOP_K = int(os.getenv("MOSS_AUDIO_TOP_K", "25"))
-MOSS_AUDIO_REPETITION_PENALTY = float(os.getenv("MOSS_AUDIO_REPETITION_PENALTY", "1.0"))
-MOSS_TEXT_TEMPERATURE = env_optional_float("MOSS_TEXT_TEMPERATURE")
-MOSS_TEXT_TOP_P = env_optional_float("MOSS_TEXT_TOP_P")
-MOSS_TEXT_TOP_K = env_optional_int("MOSS_TEXT_TOP_K")
-MOSS_TEXT_REPETITION_PENALTY = env_optional_float("MOSS_TEXT_REPETITION_PENALTY")
-MOSS_ATTN_IMPLEMENTATION = os.getenv("MOSS_ATTN_IMPLEMENTATION", "auto")
-MOSS_DTYPE = os.getenv("MOSS_DTYPE", "auto")
-MOSS_MAX_CHARS_PER_CHUNK = int(os.getenv("MOSS_MAX_CHARS_PER_CHUNK", "300"))
-MOSS_PAUSE_MS = int(os.getenv("MOSS_PAUSE_MS", "250"))
-MOSS_REQUEST_TIMEOUT = float(os.getenv("MOSS_REQUEST_TIMEOUT", "600"))
+VOXCPM2_CFG_VALUE = float(os.getenv("VOXCPM2_CFG_VALUE", "2.0"))
+VOXCPM2_INFERENCE_TIMESTEPS = int(os.getenv("VOXCPM2_INFERENCE_TIMESTEPS", "10"))
+VOXCPM2_LOAD_DENOISER = env_bool("VOXCPM2_LOAD_DENOISER", False)
+VOXCPM2_OPTIMIZE = env_bool("VOXCPM2_OPTIMIZE", False)
+VOXCPM2_DEVICE = normalize_device_name(os.getenv("VOXCPM2_DEVICE"), "cuda")
+VOXCPM2_SEED = int(os.getenv("VOXCPM2_SEED", "20260614"))
+VOXCPM2_MAX_CHARS_PER_CHUNK = int(os.getenv("VOXCPM2_MAX_CHARS_PER_CHUNK", "0"))
+VOXCPM2_PAUSE_MS = int(os.getenv("VOXCPM2_PAUSE_MS", "250"))
+VOXCPM2_REQUEST_TIMEOUT = float(os.getenv("VOXCPM2_REQUEST_TIMEOUT", "600"))
 
-MOSS_WORKER_SCRIPT = os.path.join(PROJECT_DIR, "moss_tts_worker.py")
-MOSS_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "moss_worker")
+VOXCPM2_WORKER_SCRIPT = os.path.join(PROJECT_DIR, "voxcpm2_worker.py")
+VOXCPM2_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "voxcpm2_worker")
 
 os.environ.setdefault("HF_HOME", HF_MIRROR_DIR)
 os.environ.setdefault("HF_MODULES_CACHE", os.path.join(RUNTIME_CACHE_DIR, "hf_modules"))
@@ -156,12 +101,12 @@ os.makedirs(os.environ["HF_MODULES_CACHE"], exist_ok=True)
 os.makedirs(os.environ["NUMBA_CACHE_DIR"], exist_ok=True)
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 os.makedirs(os.environ["XDG_CACHE_HOME"], exist_ok=True)
-os.makedirs(MOSS_WORKER_TMP_DIR, exist_ok=True)
+os.makedirs(VOXCPM2_WORKER_TMP_DIR, exist_ok=True)
 gpu_lock_dir = os.path.dirname(GPU_LOCK_FILE)
 if gpu_lock_dir:
     os.makedirs(gpu_lock_dir, exist_ok=True)
 
-app = FastAPI(title="Unitale MOSS-TTS API")
+app = FastAPI(title="Unitale VoxCPM2 Voice Clone API")
 
 
 class ForceCORS(BaseHTTPMiddleware):
@@ -298,114 +243,95 @@ def normalize_synthesis_text(text: str) -> str:
     return normalized
 
 
-def normalize_language(value: Optional[str]) -> Optional[str]:
-    if value is None:
-        return None
-    normalized = value.strip()
-    if not normalized:
-        return None
-    if normalized.lower() == "none":
-        return None
-    return normalized
-
-
 def worker_error_excerpt(output: str) -> str:
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     if not lines:
-        return "MOSS worker 未输出错误信息。"
+        return "VoxCPM2 worker 未输出错误信息。"
     return " | ".join(lines[-8:])
 
 
-class MossSynthesizeRequest(CloneSynthesisRequest):
+class VoxCpm2SynthesizeRequest(CloneSynthesisRequest):
 
     text: str
     audio_path: str
     prompt_text: Optional[str] = None
-    language: Optional[str] = None
-    instruction: Optional[str] = None
-    quality: Optional[str] = None
-    tokens: Optional[int] = None
-    codec_path: Optional[str] = None
-    max_new_tokens: Optional[int] = None
-    n_vq_for_inference: Optional[int] = None
-    audio_temperature: Optional[float] = None
-    audio_top_p: Optional[float] = None
-    audio_top_k: Optional[int] = None
-    audio_repetition_penalty: Optional[float] = None
-    text_temperature: Optional[float] = None
-    text_top_p: Optional[float] = None
-    text_top_k: Optional[int] = None
-    text_repetition_penalty: Optional[float] = None
-    attn_implementation: Optional[str] = None
-    dtype: Optional[str] = None
+    cfg_value: Optional[float] = None
+    inference_timesteps: Optional[int] = None
+    load_denoiser: Optional[bool] = None
+    optimize: Optional[bool] = None
+    device: Optional[str] = None
+    seed: Optional[int] = None
     max_chars_per_chunk: Optional[int] = None
     pause_ms: Optional[int] = None
-    emo_text: Optional[str] = None
-    emo_vector: Optional[List[float]] = None
 
 
-class MossWorkerManager:
+class VoxCpm2WorkerManager:
     def __init__(self):
         self.lock = threading.RLock()
         self.last_error: Optional[str] = None
 
-    def build_worker_payload(self, request: MossSynthesizeRequest) -> dict:
+    def build_worker_payload(self, request: VoxCpm2SynthesizeRequest) -> dict:
         ref_audio_path = os.path.join(PROMPTS_DIR, hash_filename(request.audio_path))
         if not os.path.isfile(ref_audio_path):
             raise HTTPException(status_code=404, detail="音频不存在")
 
-        codec_path = normalize_optional_str(request.codec_path) or MOSS_CODEC_PATH
+        prompt_text = request.prompt_text.strip() if request.prompt_text and request.prompt_text.strip() else None
+        if prompt_text is None:
+            prompt_text = load_prompt_text_sidecar(request.audio_path)
+        device = normalize_device_name(request.device, VOXCPM2_DEVICE)
+        if not device.startswith("cuda"):
+            raise HTTPException(status_code=400, detail=f"VoxCPM2 仅支持 GPU 设备，当前 device={device}")
 
         return {
             "text": normalize_synthesis_text(request.text),
             "ref_audio_path": ref_audio_path,
-            "model_path": MOSS_MODEL_DIR,
-            "codec_path": codec_path,
-            "moss_helper_script": MOSS_HELPER_SCRIPT,
-            "language": normalize_language(request.language) if request.language is not None else normalize_language(MOSS_LANGUAGE),
-            "instruction": normalize_optional_str(request.instruction) or MOSS_INSTRUCTION,
-            "quality": normalize_optional_str(request.quality) or MOSS_QUALITY,
-            "tokens": request.tokens if request.tokens is not None else MOSS_TOKENS,
-            "max_new_tokens": request.max_new_tokens if request.max_new_tokens is not None else MOSS_MAX_NEW_TOKENS,
-            "n_vq_for_inference": request.n_vq_for_inference if request.n_vq_for_inference is not None else MOSS_N_VQ_FOR_INFERENCE,
-            "audio_temperature": request.audio_temperature if request.audio_temperature is not None else MOSS_AUDIO_TEMPERATURE,
-            "audio_top_p": request.audio_top_p if request.audio_top_p is not None else MOSS_AUDIO_TOP_P,
-            "audio_top_k": request.audio_top_k if request.audio_top_k is not None else MOSS_AUDIO_TOP_K,
-            "audio_repetition_penalty": (
-                request.audio_repetition_penalty
-                if request.audio_repetition_penalty is not None
-                else MOSS_AUDIO_REPETITION_PENALTY
+            "prompt_text": prompt_text,
+            "model_path": VOXCPM2_MODEL_DIR,
+            "voxcpm2_helper_script": VOXCPM2_HELPER_SCRIPT,
+            "cfg_value": request.cfg_value if request.cfg_value is not None else VOXCPM2_CFG_VALUE,
+            "inference_timesteps": (
+                request.inference_timesteps
+                if request.inference_timesteps is not None
+                else VOXCPM2_INFERENCE_TIMESTEPS
             ),
-            "text_temperature": request.text_temperature if request.text_temperature is not None else MOSS_TEXT_TEMPERATURE,
-            "text_top_p": request.text_top_p if request.text_top_p is not None else MOSS_TEXT_TOP_P,
-            "text_top_k": request.text_top_k if request.text_top_k is not None else MOSS_TEXT_TOP_K,
-            "text_repetition_penalty": (
-                request.text_repetition_penalty
-                if request.text_repetition_penalty is not None
-                else MOSS_TEXT_REPETITION_PENALTY
+            "load_denoiser": (
+                request.load_denoiser if request.load_denoiser is not None else VOXCPM2_LOAD_DENOISER
             ),
-            "attn_implementation": request.attn_implementation or MOSS_ATTN_IMPLEMENTATION,
-            "dtype": request.dtype or MOSS_DTYPE,
-            "max_chars_per_chunk": request.max_chars_per_chunk if request.max_chars_per_chunk is not None else MOSS_MAX_CHARS_PER_CHUNK,
-            "pause_ms": request.pause_ms if request.pause_ms is not None else MOSS_PAUSE_MS,
+            "optimize": request.optimize if request.optimize is not None else VOXCPM2_OPTIMIZE,
+            "device": device,
+            "seed": request.seed if request.seed is not None else VOXCPM2_SEED,
+            "max_chars_per_chunk": (
+                request.max_chars_per_chunk
+                if request.max_chars_per_chunk is not None
+                else VOXCPM2_MAX_CHARS_PER_CHUNK
+            ),
+            "pause_ms": request.pause_ms if request.pause_ms is not None else VOXCPM2_PAUSE_MS,
             "local_files_only": LOCAL_FILES_ONLY,
             "runtime_cache_dir": RUNTIME_CACHE_DIR,
             "hf_mirror_dir": HF_MIRROR_DIR,
         }
 
-    def run_worker(self, payload: dict) -> bytes:
+    def _run_worker_once(self, payload: dict) -> bytes:
         conda_exe = resolve_conda_executable()
         if not conda_exe:
-            raise RuntimeError("未找到 conda 命令，无法调用 MOSS worker。")
-        if not os.path.isfile(MOSS_WORKER_SCRIPT):
-            raise RuntimeError(f"MOSS worker 脚本不存在: {MOSS_WORKER_SCRIPT}")
-        if not os.path.isdir(MOSS_MODEL_DIR):
-            raise RuntimeError(f"MOSS 模型目录不存在: {MOSS_MODEL_DIR}")
-        if not os.path.isfile(MOSS_HELPER_SCRIPT):
-            raise RuntimeError(f"MOSS 辅助脚本不存在: {MOSS_HELPER_SCRIPT}")
+            raise RuntimeError("未找到 conda 命令，无法调用 VoxCPM2 worker。")
+        if not os.path.isfile(VOXCPM2_WORKER_SCRIPT):
+            raise RuntimeError(f"VoxCPM2 worker 脚本不存在: {VOXCPM2_WORKER_SCRIPT}")
+        if not os.path.isdir(VOXCPM2_MODEL_DIR):
+            raise RuntimeError(f"VoxCPM2 模型目录不存在: {VOXCPM2_MODEL_DIR}")
+        if not os.path.isfile(VOXCPM2_HELPER_SCRIPT):
+            raise RuntimeError(f"VoxCPM2 辅助脚本不存在: {VOXCPM2_HELPER_SCRIPT}")
 
-        request_fd, request_path = tempfile.mkstemp(dir=MOSS_WORKER_TMP_DIR, prefix="moss_req_", suffix=".json")
-        output_fd, output_path = tempfile.mkstemp(dir=MOSS_WORKER_TMP_DIR, prefix="moss_out_", suffix=".wav")
+        request_fd, request_path = tempfile.mkstemp(
+            dir=VOXCPM2_WORKER_TMP_DIR,
+            prefix="voxcpm2_req_",
+            suffix=".json",
+        )
+        output_fd, output_path = tempfile.mkstemp(
+            dir=VOXCPM2_WORKER_TMP_DIR,
+            prefix="voxcpm2_out_",
+            suffix=".wav",
+        )
         os.close(request_fd)
         os.close(output_fd)
 
@@ -418,50 +344,48 @@ class MossWorkerManager:
                 "run",
                 "--no-capture-output",
                 "-n",
-                MOSS_CONDA_ENV,
+                VOXCPM2_CONDA_ENV,
                 "python",
-                MOSS_WORKER_SCRIPT,
+                VOXCPM2_WORKER_SCRIPT,
                 "--input-json",
                 request_path,
                 "--output-wav",
                 output_path,
             ]
-            print(f"[MOSS] 启动 worker: env={MOSS_CONDA_ENV}")
+            print(f"[VoxCPM2] 启动 worker: env={VOXCPM2_CONDA_ENV}")
             started = time.perf_counter()
+            worker_env = os.environ.copy()
+            worker_env.pop("PYTORCH_CUDA_ALLOC_CONF", None)
+            worker_env.pop("CUDA_MODULE_LOADING", None)
             proc = subprocess.Popen(
                 command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 start_new_session=True,
-                env=os.environ.copy(),
+                env=worker_env,
             )
             try:
-                stdout, stderr = proc.communicate(timeout=MOSS_REQUEST_TIMEOUT)
+                stdout, stderr = proc.communicate(timeout=VOXCPM2_REQUEST_TIMEOUT)
             except subprocess.TimeoutExpired:
                 os.killpg(proc.pid, signal.SIGTERM)
                 stdout, stderr = proc.communicate(timeout=10)
-                raise RuntimeError(f"MOSS worker 超时（>{MOSS_REQUEST_TIMEOUT:.0f}s）")
+                raise RuntimeError(f"VoxCPM2 worker 超时（>{VOXCPM2_REQUEST_TIMEOUT:.0f}s）")
 
             elapsed = time.perf_counter() - started
             if stdout.strip():
                 print(stdout.rstrip())
             if stderr.strip():
                 print(stderr.rstrip())
-            print(f"[MOSS] worker 退出码={proc.returncode}，耗时 {elapsed:.2f}s")
+            print(f"[VoxCPM2] worker 退出码={proc.returncode}，耗时 {elapsed:.2f}s")
 
             if proc.returncode != 0:
                 raise RuntimeError(worker_error_excerpt(stderr or stdout))
             if not os.path.isfile(output_path) or os.path.getsize(output_path) == 0:
-                raise RuntimeError("MOSS worker 未生成音频文件。")
+                raise RuntimeError("VoxCPM2 worker 未生成音频文件。")
 
             with open(output_path, "rb") as f:
-                audio_bytes = f.read()
-            self.last_error = None
-            return audio_bytes
-        except Exception as exc:
-            self.last_error = str(exc)
-            raise
+                return f.read()
         finally:
             for path in (request_path, output_path):
                 try:
@@ -470,62 +394,57 @@ class MossWorkerManager:
                 except Exception:
                     pass
 
+    def run_worker(self, payload: dict) -> bytes:
+        try:
+            audio_bytes = self._run_worker_once(payload)
+            self.last_error = None
+            return audio_bytes
+        except Exception as exc:
+            self.last_error = str(exc)
+            raise
 
-manager = MossWorkerManager()
+
+manager = VoxCpm2WorkerManager()
 
 
 @app.get("/v1/health")
 async def health():
-    codec_info = codec_reference_info(MOSS_CODEC_PATH)
     return {
         "code": 200,
         "paths": {
             "hf_mirror_dir": HF_MIRROR_DIR,
-            "moss_model_dir": MOSS_MODEL_DIR,
-            "moss_codec_path": codec_info["value"],
-            "moss_helper_script": MOSS_HELPER_SCRIPT,
+            "voxcpm2_model_dir": VOXCPM2_MODEL_DIR,
+            "voxcpm2_helper_script": VOXCPM2_HELPER_SCRIPT,
             "prompts_dir": PROMPTS_DIR,
             "gpu_lock_file": GPU_LOCK_FILE,
-            "worker_script": MOSS_WORKER_SCRIPT,
-            "worker_tmp_dir": MOSS_WORKER_TMP_DIR,
+            "worker_script": VOXCPM2_WORKER_SCRIPT,
+            "worker_tmp_dir": VOXCPM2_WORKER_TMP_DIR,
         },
         "available": {
             "conda": bool(resolve_conda_executable()),
-            "worker_script": os.path.isfile(MOSS_WORKER_SCRIPT),
-            "moss_helper_script": os.path.isfile(MOSS_HELPER_SCRIPT),
-            "moss_model_dir": os.path.isdir(MOSS_MODEL_DIR),
-            "moss_codec_reference": bool(MOSS_CODEC_PATH),
-            "moss_codec_local_path": codec_info["local_path_exists"],
+            "worker_script": os.path.isfile(VOXCPM2_WORKER_SCRIPT),
+            "voxcpm2_model_dir": os.path.isdir(VOXCPM2_MODEL_DIR),
+            "voxcpm2_helper_script": os.path.isfile(VOXCPM2_HELPER_SCRIPT),
             "torch": module_available("torch"),
             "cuda": cuda_status()["available"],
         },
         "cuda": cuda_status(),
         "runtime": {
-            "worker_env": MOSS_CONDA_ENV,
+            "worker_env": VOXCPM2_CONDA_ENV,
             "local_files_only": LOCAL_FILES_ONLY,
-            "request_timeout": MOSS_REQUEST_TIMEOUT,
-            "language": MOSS_LANGUAGE,
-            "instruction": MOSS_INSTRUCTION,
-            "quality": MOSS_QUALITY,
-            "tokens": MOSS_TOKENS,
-            "max_new_tokens": MOSS_MAX_NEW_TOKENS,
-            "n_vq_for_inference": MOSS_N_VQ_FOR_INFERENCE,
-            "audio_temperature": MOSS_AUDIO_TEMPERATURE,
-            "audio_top_p": MOSS_AUDIO_TOP_P,
-            "audio_top_k": MOSS_AUDIO_TOP_K,
-            "audio_repetition_penalty": MOSS_AUDIO_REPETITION_PENALTY,
-            "text_temperature": MOSS_TEXT_TEMPERATURE,
-            "text_top_p": MOSS_TEXT_TOP_P,
-            "text_top_k": MOSS_TEXT_TOP_K,
-            "text_repetition_penalty": MOSS_TEXT_REPETITION_PENALTY,
-            "attn_implementation": MOSS_ATTN_IMPLEMENTATION,
-            "dtype": MOSS_DTYPE,
-            "max_chars_per_chunk": MOSS_MAX_CHARS_PER_CHUNK,
-            "pause_ms": MOSS_PAUSE_MS,
-            "codec_reference_kind": codec_info["kind"],
+            "request_timeout": VOXCPM2_REQUEST_TIMEOUT,
+            "cfg_value": VOXCPM2_CFG_VALUE,
+            "inference_timesteps": VOXCPM2_INFERENCE_TIMESTEPS,
+            "load_denoiser": VOXCPM2_LOAD_DENOISER,
+            "optimize": VOXCPM2_OPTIMIZE,
+            "device": VOXCPM2_DEVICE,
+            "seed": VOXCPM2_SEED,
+            "max_chars_per_chunk": VOXCPM2_MAX_CHARS_PER_CHUNK,
+            "pause_ms": VOXCPM2_PAUSE_MS,
+            "prompt_text_fallback": "upload sidecar -> reference-only cloning mode",
         },
         "last_errors": {
-            "moss_tts": manager.last_error,
+            "voxcpm2_tts": manager.last_error,
         },
     }
 
@@ -533,9 +452,9 @@ async def health():
 @app.post("/internal/unload_all")
 async def internal_unload_all(request: Request):
     assert_local_request(request)
-    clear_cuda_cache("moss api internal unload")
-    wait_after_cuda_release("moss api internal unload")
-    return JSONResponse({"code": 200, "msg": "moss_tts wrapper 无常驻模型，已完成显存清理等待"})
+    clear_cuda_cache("voxcpm2 api internal unload")
+    wait_after_cuda_release("voxcpm2 api internal unload")
+    return JSONResponse({"code": 200, "msg": "voxcpm2 wrapper 无常驻模型，已完成显存清理等待"})
 
 
 @app.post("/v1/upload_audio")
@@ -571,8 +490,8 @@ async def check_audio_exists(file_name: str):
 
 
 @app.post("/v2/synthesize")
-async def synthesize_v2(request: MossSynthesizeRequest):
-    with gpu_runtime_lock("moss_tts/synthesize"):
+async def synthesize_v2(request: VoxCpm2SynthesizeRequest):
+    with gpu_runtime_lock("voxcpm2/synthesize"):
         with manager.lock:
             try:
                 payload = manager.build_worker_payload(request)
@@ -584,30 +503,30 @@ async def synthesize_v2(request: MossSynthesizeRequest):
                 traceback.print_exc()
                 raise HTTPException(status_code=500, detail=str(exc))
             finally:
-                clear_cuda_cache("after moss worker")
-                wait_after_cuda_release("after moss worker")
+                clear_cuda_cache("after voxcpm2 worker")
+                wait_after_cuda_release("after voxcpm2 worker")
 
 
 if __name__ == "__main__":
-    codec_info = codec_reference_info(MOSS_CODEC_PATH)
     print("==================================================")
-    print("   Unitale AI 本地后端 MOSS-TTS Voice Clone")
+    print("   Unitale AI 本地后端 VoxCPM2 Voice Clone")
     print("==================================================")
-    print(f"[配置] MOSS worker env: {MOSS_CONDA_ENV}")
-    print(f"[配置] MOSS 模型目录: {MOSS_MODEL_DIR}")
-    print(f"[配置] MOSS codec: {codec_info['value']} ({codec_info['kind']})")
-    print(f"[配置] MOSS helper: {MOSS_HELPER_SCRIPT}")
+    print(f"[配置] VoxCPM2 worker env: {VOXCPM2_CONDA_ENV}")
+    print(f"[配置] VoxCPM2 模型目录: {VOXCPM2_MODEL_DIR}")
+    print(f"[配置] VoxCPM2 helper: {VOXCPM2_HELPER_SCRIPT}")
     print(f"[配置] prompts 目录: {PROMPTS_DIR}")
     print(f"[配置] GPU 锁文件: {GPU_LOCK_FILE}")
-    print(f"[配置] worker 脚本: {MOSS_WORKER_SCRIPT}")
+    print(f"[配置] worker 脚本: {VOXCPM2_WORKER_SCRIPT}")
     print(
-        f"[配置] language={MOSS_LANGUAGE}, max_new_tokens={MOSS_MAX_NEW_TOKENS}, "
-        f"audio_temperature={MOSS_AUDIO_TEMPERATURE}, audio_top_p={MOSS_AUDIO_TOP_P}, "
-        f"audio_top_k={MOSS_AUDIO_TOP_K}"
+        f"[配置] cfg_value={VOXCPM2_CFG_VALUE}, inference_timesteps={VOXCPM2_INFERENCE_TIMESTEPS}, "
+        f"seed={VOXCPM2_SEED}"
     )
     print(
-        f"[配置] attn_implementation={MOSS_ATTN_IMPLEMENTATION}, dtype={MOSS_DTYPE}, "
-        f"max_chars_per_chunk={MOSS_MAX_CHARS_PER_CHUNK}, pause_ms={MOSS_PAUSE_MS}"
+        f"[配置] load_denoiser={VOXCPM2_LOAD_DENOISER}, optimize={VOXCPM2_OPTIMIZE}, "
+        f"max_chars_per_chunk={VOXCPM2_MAX_CHARS_PER_CHUNK}, pause_ms={VOXCPM2_PAUSE_MS}"
     )
-    print(f"[配置] local_files_only={LOCAL_FILES_ONLY}, request_timeout={MOSS_REQUEST_TIMEOUT}")
+    print(
+        f"[配置] device={VOXCPM2_DEVICE}"
+    )
+    print(f"[配置] local_files_only={LOCAL_FILES_ONLY}, request_timeout={VOXCPM2_REQUEST_TIMEOUT}")
     uvicorn.run(app, host=API_HOST, port=API_PORT)

@@ -24,8 +24,8 @@ import torch
 import uvicorn
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict
 from starlette.middleware.base import BaseHTTPMiddleware
+from synthesis_request import CloneSynthesisRequest
 
 # ==========================================
 # 0. 系统配置
@@ -311,8 +311,7 @@ def worker_error_excerpt(output: str) -> str:
     return " | ".join(lines[-8:])
 
 
-class LongCatSynthesizeRequest(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+class LongCatSynthesizeRequest(CloneSynthesisRequest):
 
     text: str
     audio_path: str

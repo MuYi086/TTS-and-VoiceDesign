@@ -31,6 +31,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Res
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
+from synthesis_request import CloneSynthesisRequest
 
 # ==========================================
 # 0. 系统配置
@@ -581,7 +582,7 @@ manager = ModelManager()
 # ==========================================
 # 3. 接口定义
 # ==========================================
-class TextToSpeechRequest(BaseModel):
+class TextToSpeechRequest(CloneSynthesisRequest):
     text: str 
     audio_path: str 
     emo_text: Optional[str] = None

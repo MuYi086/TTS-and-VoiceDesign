@@ -78,7 +78,7 @@ conda run -n qwen3-tts python qwen3_tts_worker.py ...
 conda run -n voxcpm2 python voxcpm2_worker.py ...
 ```
 
-因此 `voxcpm2` 环境至少需要安装 `voxcpm`、`torch`、`numpy`、`soundfile`。`8306` 的 worker 会复用 `~/github/timbre-design/scripts/tts_local_voxcpm2.py` 里已经验证过的本地 helper，因此该脚本需要存在，且其依赖版本要与 `voxcpm2` 环境匹配。它同样满足“真实用到才加载，请求结束即卸载”：模型只在 worker 进程内按请求加载，worker 退出后显存立即清理。若未提供 `prompt_text`，`8306` 会直接走 VoxCPM2 的 controllable cloning 模式，不会额外加载 ASR。
+因此 `voxcpm2` 环境至少需要安装 `voxcpm`、`torch`、`numpy`、`soundfile`。`8306` 的 worker 会复用 `~/github/timbre-design/scripts/tts_local_voxcpm2.py` 里已经验证过的本地 helper，因此该脚本需要存在，且其依赖版本要与 `voxcpm2` 环境匹配。它同样满足“真实用到才加载，请求结束即卸载”：模型只在 worker 进程内按请求加载，worker 退出后显存立即清理。若未提供 `prompt_text`，`8306` 会走仅参考音频的克隆模式，不会额外加载 ASR。
 
 ```bash
 export MIMO_API_KEY=...
@@ -145,7 +145,7 @@ curl http://127.0.0.1:8306/v1/health
 `8303` 的健康检查会返回 `moss_helper_script`、`moss_model_dir` 和 `moss_codec_path`。若 `moss_helper_script` 或 `moss_model_dir` 不可用，先检查 `~/github/timbre-design` 和本地 `hf-mirror`。
 `8304` 的健康检查会返回 `omnivoice_model_dir`、`device_map`、`dtype` 和 `prompt_text_fallback`。若 `omnivoice_model_dir` 不可用，先检查本地 `hf-mirror/k2-fsa/OmniVoice`。
 `8305` 的健康检查会返回 `qwen3_tts_model_dir`、`device_map`、`dtype`、`attn_implementation` 和 `prompt_text_fallback`。若 `qwen3_tts_model_dir` 不可用，先检查本地 `hf-mirror/Qwen/Qwen3-TTS-12Hz-1.7B-Base`。
-`8306` 的健康检查会返回 `voxcpm2_model_dir`、`voxcpm2_helper_script`、`style_prompt`、`device` 和 `prompt_text_fallback`。若 `voxcpm2_model_dir` 或 `voxcpm2_helper_script` 不可用，先检查本地 `hf-mirror/openbmb/VoxCPM2` 与 `~/github/timbre-design/scripts/tts_local_voxcpm2.py`。
+`8306` 的健康检查会返回 `voxcpm2_model_dir`、`voxcpm2_helper_script`、`device` 和 `prompt_text_fallback`。若 `voxcpm2_model_dir` 或 `voxcpm2_helper_script` 不可用，先检查本地 `hf-mirror/openbmb/VoxCPM2` 与 `~/github/timbre-design/scripts/tts_local_voxcpm2.py`。
 
 ## 常用接口
 
@@ -174,6 +174,8 @@ curl -X POST http://127.0.0.1:8300/v1/upload_audio \
 ```
 
 合成音频：
+
+所有 `POST /v2/synthesize` 都是参考音频克隆接口，不接受 `style_prompt`（字段出现即返回 `422`，包括值为 `null` 的情况）。音色/风格应在生成参考音频阶段通过 `/v1/qwen/design` 或 `/v1/mimo/design` 的 `voice_description` 决定；合成阶段只朗读 `text`。
 
 ```bash
 curl -X POST http://127.0.0.1:8300/v2/synthesize \
@@ -287,7 +289,7 @@ curl -X POST http://127.0.0.1:8306/v2/synthesize \
   -o voxcpm2_synth.wav
 ```
 
-如果未提供 `prompt_text`，`8306` 会直接走 VoxCPM2 的 controllable cloning 模式，不需要额外转写模型；若你需要更稳定的音色一致性，仍然建议在上传时同时提交参考音频的准确转写。你也可以在 `v2/synthesize` 请求里附带 `style_prompt`、`cfg_value`、`inference_timesteps`、`load_denoiser`、`optimize`、`seed`、`device` 等可选字段覆盖默认参数。`8306` 默认使用 `VOXCPM2_CONDA_ENV=voxcpm2` 启动 API 和 worker，默认 `device=cuda`，与 `step_3_tts_local_voxcpm2.py` 的运行环境和核心参数保持一致。
+如果未提供 `prompt_text`，`8306` 会直接走仅参考音频的克隆模式，不需要额外转写模型；若你需要更稳定的音色一致性，仍然建议在上传时同时提交参考音频的准确转写。你可以在 `v2/synthesize` 请求里附带 `cfg_value`、`inference_timesteps`、`load_denoiser`、`optimize`、`seed`、`device` 等可选字段覆盖默认参数。`8306` 默认使用 `VOXCPM2_CONDA_ENV=voxcpm2` 启动 API 和 worker，默认 `device=cuda`，与 `step_3_tts_local_voxcpm2.py` 的运行环境和核心参数保持一致。
 
 ## 运行策略
 
