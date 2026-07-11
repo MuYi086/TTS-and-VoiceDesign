@@ -28,7 +28,8 @@ from synthesis_request import CloneSynthesisRequest
 # ==========================================
 # 0. 系统配置
 # ==========================================
-PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+API_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_DIR = os.path.dirname(API_DIR)
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -43,8 +44,8 @@ def expand_path(path: str) -> str:
 
 
 HF_MIRROR_DIR = expand_path(os.getenv("HF_MIRROR_DIR", "~/hf-mirror"))
-PROMPTS_DIR = expand_path(os.getenv("PROMPTS_DIR", os.path.join(PROJECT_DIR, "prompts")))
-RUNTIME_CACHE_DIR = expand_path(os.getenv("RUNTIME_CACHE_DIR", os.path.join(PROJECT_DIR, ".cache/runtime")))
+PROMPTS_DIR = expand_path(os.getenv("PROMPTS_DIR", os.path.join(API_DIR, "prompts")))
+RUNTIME_CACHE_DIR = expand_path(os.getenv("RUNTIME_CACHE_DIR", os.path.join(API_DIR, ".cache/runtime")))
 GPU_LOCK_FILE = expand_path(os.getenv("GPU_LOCK_FILE", os.path.join(RUNTIME_CACHE_DIR, "gpu-runtime.lock")))
 LOCAL_FILES_ONLY = env_bool("LOCAL_FILES_ONLY", True)
 CUDA_RELEASE_DELAY = float(os.getenv("CUDA_RELEASE_DELAY", "2.0"))
@@ -70,7 +71,7 @@ DOTS_NORMALIZE_TEXT = env_bool("DOTS_NORMALIZE_TEXT", False)
 DOTS_PROFILE_INFERENCE = env_bool("DOTS_PROFILE_INFERENCE", False)
 DOTS_REQUEST_TIMEOUT = float(os.getenv("DOTS_REQUEST_TIMEOUT", "300"))
 
-DOTS_WORKER_SCRIPT = os.path.join(PROJECT_DIR, "dots_tts_worker.py")
+DOTS_WORKER_SCRIPT = os.path.join(API_DIR, "dots_tts_worker.py")
 DOTS_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "dots_worker")
 
 os.environ.setdefault("HF_HOME", HF_MIRROR_DIR)

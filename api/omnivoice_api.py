@@ -13,12 +13,10 @@ import threading
 import time
 import traceback
 from contextlib import contextmanager
-from typing import Optional
+from typing import Optional, Any
 
-# Align VoxCPM2 with the standalone step_3 script instead of inheriting
-# global CUDA runtime tweaks that break this model's GPU path.
-os.environ.pop("PYTORCH_CUDA_ALLOC_CONF", None)
-os.environ.pop("CUDA_MODULE_LOADING", None)
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:128")
+os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
 
 import torch
 import uvicorn
@@ -27,7 +25,11 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from synthesis_request import CloneSynthesisRequest
 
-PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+# ==========================================
+# 0. 系统配置
+# ==========================================
+API_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_DIR = os.path.dirname(API_DIR)
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -37,11 +39,10 @@ def env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def expand_path(path: str) -> str:
-    return os.path.abspath(os.path.expandvars(os.path.expanduser(path)))
-
-
-def normalize_optional_text(value: Optional[str]) -> Optional[str]:
+def env_optional_text(name: str, default: Optional[str] = None) -> Optional[str]:
+    value = os.getenv(name)
+    if value is None:
+        value = default
     if value is None:
         return None
     normalized = value.strip()
@@ -50,47 +51,64 @@ def normalize_optional_text(value: Optional[str]) -> Optional[str]:
     return normalized
 
 
-def normalize_device_name(value: Optional[str], default: str = "cuda") -> str:
-    normalized = normalize_optional_text(value)
-    return normalized.lower() if normalized is not None else default
+def env_optional_float(name: str, default: Optional[float] = None) -> Optional[float]:
+    value = env_optional_text(name)
+    if value is None:
+        return default
+    return float(value)
+
+
+def expand_path(path: str) -> str:
+    return os.path.abspath(os.path.expandvars(os.path.expanduser(path)))
+
+
+def normalize_optional_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    if not normalized or normalized.lower() == "none":
+        return None
+    return normalized
 
 
 HF_MIRROR_DIR = expand_path(os.getenv("HF_MIRROR_DIR", "~/hf-mirror"))
-PROMPTS_DIR = expand_path(os.getenv("PROMPTS_DIR", os.path.join(PROJECT_DIR, "prompts")))
-RUNTIME_CACHE_DIR = expand_path(os.getenv("RUNTIME_CACHE_DIR", os.path.join(PROJECT_DIR, ".cache/runtime")))
+PROMPTS_DIR = expand_path(os.getenv("PROMPTS_DIR", os.path.join(API_DIR, "prompts")))
+RUNTIME_CACHE_DIR = expand_path(os.getenv("RUNTIME_CACHE_DIR", os.path.join(API_DIR, ".cache/runtime")))
 GPU_LOCK_FILE = expand_path(os.getenv("GPU_LOCK_FILE", os.path.join(RUNTIME_CACHE_DIR, "gpu-runtime.lock")))
 LOCAL_FILES_ONLY = env_bool("LOCAL_FILES_ONLY", True)
 CUDA_RELEASE_DELAY = float(os.getenv("CUDA_RELEASE_DELAY", "2.0"))
 API_HOST = os.getenv("HOST", "0.0.0.0")
-API_PORT = int(os.getenv("PORT", "8306"))
+API_PORT = int(os.getenv("PORT", "8304"))
 
-VOXCPM2_CONDA_ENV = os.getenv("VOXCPM2_CONDA_ENV", "voxcpm2")
-VOXCPM2_MODEL_DIR = expand_path(
-    os.getenv("VOXCPM2_MODEL_DIR", os.path.join(HF_MIRROR_DIR, "openbmb/VoxCPM2"))
+OMNIVOICE_CONDA_ENV = os.getenv("OMNIVOICE_CONDA_ENV", "omnivoice")
+OMNIVOICE_MODEL_DIR = expand_path(
+    os.getenv("OMNIVOICE_MODEL_DIR", os.path.join(HF_MIRROR_DIR, "k2-fsa/OmniVoice"))
 )
-VOXCPM2_HELPER_DEFAULT = expand_path(
-    os.path.join("~", "github", "timbre-design", "modelScript", "tts_local_voxcpm2.py")
-)
-VOXCPM2_HELPER_LEGACY_PATH = expand_path(
-    os.path.join("~", "github", "timbre-design", "scripts", "tts_local_voxcpm2.py")
-)
-VOXCPM2_HELPER_SCRIPT = expand_path(os.getenv("VOXCPM2_HELPER_SCRIPT", VOXCPM2_HELPER_DEFAULT))
-# The helper was moved from scripts/ to modelScript/.  Repair the stale path
-# emitted by earlier start.sh versions while preserving any other user override.
-if VOXCPM2_HELPER_SCRIPT == VOXCPM2_HELPER_LEGACY_PATH and os.path.isfile(VOXCPM2_HELPER_DEFAULT):
-    VOXCPM2_HELPER_SCRIPT = VOXCPM2_HELPER_DEFAULT
-VOXCPM2_CFG_VALUE = float(os.getenv("VOXCPM2_CFG_VALUE", "2.0"))
-VOXCPM2_INFERENCE_TIMESTEPS = int(os.getenv("VOXCPM2_INFERENCE_TIMESTEPS", "10"))
-VOXCPM2_LOAD_DENOISER = env_bool("VOXCPM2_LOAD_DENOISER", False)
-VOXCPM2_OPTIMIZE = env_bool("VOXCPM2_OPTIMIZE", False)
-VOXCPM2_DEVICE = normalize_device_name(os.getenv("VOXCPM2_DEVICE"), "cuda")
-VOXCPM2_SEED = int(os.getenv("VOXCPM2_SEED", "20260614"))
-VOXCPM2_MAX_CHARS_PER_CHUNK = int(os.getenv("VOXCPM2_MAX_CHARS_PER_CHUNK", "0"))
-VOXCPM2_PAUSE_MS = int(os.getenv("VOXCPM2_PAUSE_MS", "250"))
-VOXCPM2_REQUEST_TIMEOUT = float(os.getenv("VOXCPM2_REQUEST_TIMEOUT", "600"))
+OMNIVOICE_DEVICE_MAP = os.getenv("OMNIVOICE_DEVICE_MAP", "cuda:0")
+OMNIVOICE_DTYPE = os.getenv("OMNIVOICE_DTYPE", "float16")
+OMNIVOICE_LANGUAGE = env_optional_text("OMNIVOICE_LANGUAGE", "Chinese")
+OMNIVOICE_SEED = int(os.getenv("OMNIVOICE_SEED", "42"))
+OMNIVOICE_NUM_STEP = int(os.getenv("OMNIVOICE_NUM_STEP", "32"))
+OMNIVOICE_GUIDANCE_SCALE = float(os.getenv("OMNIVOICE_GUIDANCE_SCALE", "2.0"))
+OMNIVOICE_SPEED = env_optional_float("OMNIVOICE_SPEED", 1.0)
+OMNIVOICE_DURATION = env_optional_float("OMNIVOICE_DURATION")
+OMNIVOICE_T_SHIFT = float(os.getenv("OMNIVOICE_T_SHIFT", "0.1"))
+OMNIVOICE_DENOISE = env_bool("OMNIVOICE_DENOISE", True)
+OMNIVOICE_PREPROCESS_PROMPT = env_bool("OMNIVOICE_PREPROCESS_PROMPT", True)
+OMNIVOICE_POSTPROCESS_OUTPUT = env_bool("OMNIVOICE_POSTPROCESS_OUTPUT", True)
+OMNIVOICE_LAYER_PENALTY_FACTOR = float(os.getenv("OMNIVOICE_LAYER_PENALTY_FACTOR", "5.0"))
+OMNIVOICE_POSITION_TEMPERATURE = float(os.getenv("OMNIVOICE_POSITION_TEMPERATURE", "5.0"))
+OMNIVOICE_CLASS_TEMPERATURE = float(os.getenv("OMNIVOICE_CLASS_TEMPERATURE", "0.0"))
+OMNIVOICE_AUDIO_CHUNK_DURATION = float(os.getenv("OMNIVOICE_AUDIO_CHUNK_DURATION", "15.0"))
+OMNIVOICE_AUDIO_CHUNK_THRESHOLD = float(os.getenv("OMNIVOICE_AUDIO_CHUNK_THRESHOLD", "30.0"))
+OMNIVOICE_PAD_DURATION = float(os.getenv("OMNIVOICE_PAD_DURATION", "0.1"))
+OMNIVOICE_FADE_DURATION = float(os.getenv("OMNIVOICE_FADE_DURATION", "0.1"))
+OMNIVOICE_MAX_CHARS_PER_CHUNK = int(os.getenv("OMNIVOICE_MAX_CHARS_PER_CHUNK", "120"))
+OMNIVOICE_PAUSE_MS = int(os.getenv("OMNIVOICE_PAUSE_MS", "250"))
+OMNIVOICE_REQUEST_TIMEOUT = float(os.getenv("OMNIVOICE_REQUEST_TIMEOUT", "600"))
 
-VOXCPM2_WORKER_SCRIPT = os.path.join(PROJECT_DIR, "voxcpm2_worker.py")
-VOXCPM2_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "voxcpm2_worker")
+OMNIVOICE_WORKER_SCRIPT = os.path.join(API_DIR, "omnivoice_tts_worker.py")
+OMNIVOICE_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "omnivoice_worker")
 
 os.environ.setdefault("HF_HOME", HF_MIRROR_DIR)
 os.environ.setdefault("HF_MODULES_CACHE", os.path.join(RUNTIME_CACHE_DIR, "hf_modules"))
@@ -106,12 +124,12 @@ os.makedirs(os.environ["HF_MODULES_CACHE"], exist_ok=True)
 os.makedirs(os.environ["NUMBA_CACHE_DIR"], exist_ok=True)
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 os.makedirs(os.environ["XDG_CACHE_HOME"], exist_ok=True)
-os.makedirs(VOXCPM2_WORKER_TMP_DIR, exist_ok=True)
+os.makedirs(OMNIVOICE_WORKER_TMP_DIR, exist_ok=True)
 gpu_lock_dir = os.path.dirname(GPU_LOCK_FILE)
 if gpu_lock_dir:
     os.makedirs(gpu_lock_dir, exist_ok=True)
 
-app = FastAPI(title="Unitale VoxCPM2 Voice Clone API")
+app = FastAPI(title="Unitale OmniVoice API")
 
 
 class ForceCORS(BaseHTTPMiddleware):
@@ -251,31 +269,43 @@ def normalize_synthesis_text(text: str) -> str:
 def worker_error_excerpt(output: str) -> str:
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     if not lines:
-        return "VoxCPM2 worker 未输出错误信息。"
+        return "OmniVoice worker 未输出错误信息。"
     return " | ".join(lines[-8:])
 
 
-class VoxCpm2SynthesizeRequest(CloneSynthesisRequest):
+class OmniVoiceSynthesizeRequest(CloneSynthesisRequest):
 
     text: str
     audio_path: str
     prompt_text: Optional[str] = None
-    cfg_value: Optional[float] = None
-    inference_timesteps: Optional[int] = None
-    load_denoiser: Optional[bool] = None
-    optimize: Optional[bool] = None
-    device: Optional[str] = None
-    seed: Optional[int] = None
+    language: Optional[str] = None
+    device_map: Optional[str] = None
+    dtype: Optional[str] = None
+    num_step: Optional[int] = None
+    guidance_scale: Optional[float] = None
+    speed: Optional[float] = None
+    duration: Optional[float] = None
+    t_shift: Optional[float] = None
+    denoise: Optional[bool] = None
+    preprocess_prompt: Optional[bool] = None
+    postprocess_output: Optional[bool] = None
+    layer_penalty_factor: Optional[float] = None
+    position_temperature: Optional[float] = None
+    class_temperature: Optional[float] = None
+    audio_chunk_duration: Optional[float] = None
+    audio_chunk_threshold: Optional[float] = None
+    pad_duration: Optional[float] = None
+    fade_duration: Optional[float] = None
     max_chars_per_chunk: Optional[int] = None
     pause_ms: Optional[int] = None
 
 
-class VoxCpm2WorkerManager:
+class OmniVoiceWorkerManager:
     def __init__(self):
         self.lock = threading.RLock()
         self.last_error: Optional[str] = None
 
-    def build_worker_payload(self, request: VoxCpm2SynthesizeRequest) -> dict:
+    def build_worker_payload(self, request: OmniVoiceSynthesizeRequest) -> dict:
         ref_audio_path = os.path.join(PROMPTS_DIR, hash_filename(request.audio_path))
         if not os.path.isfile(ref_audio_path):
             raise HTTPException(status_code=404, detail="音频不存在")
@@ -283,58 +313,87 @@ class VoxCpm2WorkerManager:
         prompt_text = request.prompt_text.strip() if request.prompt_text and request.prompt_text.strip() else None
         if prompt_text is None:
             prompt_text = load_prompt_text_sidecar(request.audio_path)
-        device = normalize_device_name(request.device, VOXCPM2_DEVICE)
-        if not device.startswith("cuda"):
-            raise HTTPException(status_code=400, detail=f"VoxCPM2 仅支持 GPU 设备，当前 device={device}")
 
         return {
             "text": normalize_synthesis_text(request.text),
             "ref_audio_path": ref_audio_path,
-            "prompt_text": prompt_text,
-            "model_path": VOXCPM2_MODEL_DIR,
-            "voxcpm2_helper_script": VOXCPM2_HELPER_SCRIPT,
-            "cfg_value": request.cfg_value if request.cfg_value is not None else VOXCPM2_CFG_VALUE,
-            "inference_timesteps": (
-                request.inference_timesteps
-                if request.inference_timesteps is not None
-                else VOXCPM2_INFERENCE_TIMESTEPS
+            "ref_text": prompt_text,
+            "model_path": OMNIVOICE_MODEL_DIR,
+            "device_map": request.device_map or OMNIVOICE_DEVICE_MAP,
+            "dtype": request.dtype or OMNIVOICE_DTYPE,
+            "language": normalize_optional_text(request.language) if request.language is not None else OMNIVOICE_LANGUAGE,
+            "seed": OMNIVOICE_SEED,
+            "num_step": request.num_step if request.num_step is not None else OMNIVOICE_NUM_STEP,
+            "guidance_scale": request.guidance_scale if request.guidance_scale is not None else OMNIVOICE_GUIDANCE_SCALE,
+            "speed": request.speed if request.speed is not None else OMNIVOICE_SPEED,
+            "duration": request.duration if request.duration is not None else OMNIVOICE_DURATION,
+            "t_shift": request.t_shift if request.t_shift is not None else OMNIVOICE_T_SHIFT,
+            "denoise": request.denoise if request.denoise is not None else OMNIVOICE_DENOISE,
+            "preprocess_prompt": (
+                request.preprocess_prompt
+                if request.preprocess_prompt is not None
+                else OMNIVOICE_PREPROCESS_PROMPT
             ),
-            "load_denoiser": (
-                request.load_denoiser if request.load_denoiser is not None else VOXCPM2_LOAD_DENOISER
+            "postprocess_output": (
+                request.postprocess_output
+                if request.postprocess_output is not None
+                else OMNIVOICE_POSTPROCESS_OUTPUT
             ),
-            "optimize": request.optimize if request.optimize is not None else VOXCPM2_OPTIMIZE,
-            "device": device,
-            "seed": request.seed if request.seed is not None else VOXCPM2_SEED,
+            "layer_penalty_factor": (
+                request.layer_penalty_factor
+                if request.layer_penalty_factor is not None
+                else OMNIVOICE_LAYER_PENALTY_FACTOR
+            ),
+            "position_temperature": (
+                request.position_temperature
+                if request.position_temperature is not None
+                else OMNIVOICE_POSITION_TEMPERATURE
+            ),
+            "class_temperature": (
+                request.class_temperature
+                if request.class_temperature is not None
+                else OMNIVOICE_CLASS_TEMPERATURE
+            ),
+            "audio_chunk_duration": (
+                request.audio_chunk_duration
+                if request.audio_chunk_duration is not None
+                else OMNIVOICE_AUDIO_CHUNK_DURATION
+            ),
+            "audio_chunk_threshold": (
+                request.audio_chunk_threshold
+                if request.audio_chunk_threshold is not None
+                else OMNIVOICE_AUDIO_CHUNK_THRESHOLD
+            ),
+            "pad_duration": request.pad_duration if request.pad_duration is not None else OMNIVOICE_PAD_DURATION,
+            "fade_duration": request.fade_duration if request.fade_duration is not None else OMNIVOICE_FADE_DURATION,
             "max_chars_per_chunk": (
                 request.max_chars_per_chunk
                 if request.max_chars_per_chunk is not None
-                else VOXCPM2_MAX_CHARS_PER_CHUNK
+                else OMNIVOICE_MAX_CHARS_PER_CHUNK
             ),
-            "pause_ms": request.pause_ms if request.pause_ms is not None else VOXCPM2_PAUSE_MS,
+            "pause_ms": request.pause_ms if request.pause_ms is not None else OMNIVOICE_PAUSE_MS,
             "local_files_only": LOCAL_FILES_ONLY,
             "runtime_cache_dir": RUNTIME_CACHE_DIR,
             "hf_mirror_dir": HF_MIRROR_DIR,
         }
 
-    def _run_worker_once(self, payload: dict) -> bytes:
+    def run_worker(self, payload: dict) -> bytes:
         conda_exe = resolve_conda_executable()
         if not conda_exe:
-            raise RuntimeError("未找到 conda 命令，无法调用 VoxCPM2 worker。")
-        if not os.path.isfile(VOXCPM2_WORKER_SCRIPT):
-            raise RuntimeError(f"VoxCPM2 worker 脚本不存在: {VOXCPM2_WORKER_SCRIPT}")
-        if not os.path.isdir(VOXCPM2_MODEL_DIR):
-            raise RuntimeError(f"VoxCPM2 模型目录不存在: {VOXCPM2_MODEL_DIR}")
-        if not os.path.isfile(VOXCPM2_HELPER_SCRIPT):
-            raise RuntimeError(f"VoxCPM2 辅助脚本不存在: {VOXCPM2_HELPER_SCRIPT}")
+            raise RuntimeError("未找到 conda 命令，无法调用 OmniVoice worker。")
+        if not os.path.isfile(OMNIVOICE_WORKER_SCRIPT):
+            raise RuntimeError(f"OmniVoice worker 脚本不存在: {OMNIVOICE_WORKER_SCRIPT}")
+        if not os.path.isdir(OMNIVOICE_MODEL_DIR):
+            raise RuntimeError(f"OmniVoice 模型目录不存在: {OMNIVOICE_MODEL_DIR}")
 
         request_fd, request_path = tempfile.mkstemp(
-            dir=VOXCPM2_WORKER_TMP_DIR,
-            prefix="voxcpm2_req_",
+            dir=OMNIVOICE_WORKER_TMP_DIR,
+            prefix="omnivoice_req_",
             suffix=".json",
         )
         output_fd, output_path = tempfile.mkstemp(
-            dir=VOXCPM2_WORKER_TMP_DIR,
-            prefix="voxcpm2_out_",
+            dir=OMNIVOICE_WORKER_TMP_DIR,
+            prefix="omnivoice_out_",
             suffix=".wav",
         )
         os.close(request_fd)
@@ -349,48 +408,50 @@ class VoxCpm2WorkerManager:
                 "run",
                 "--no-capture-output",
                 "-n",
-                VOXCPM2_CONDA_ENV,
+                OMNIVOICE_CONDA_ENV,
                 "python",
-                VOXCPM2_WORKER_SCRIPT,
+                OMNIVOICE_WORKER_SCRIPT,
                 "--input-json",
                 request_path,
                 "--output-wav",
                 output_path,
             ]
-            print(f"[VoxCPM2] 启动 worker: env={VOXCPM2_CONDA_ENV}")
+            print(f"[OmniVoice] 启动 worker: env={OMNIVOICE_CONDA_ENV}")
             started = time.perf_counter()
-            worker_env = os.environ.copy()
-            worker_env.pop("PYTORCH_CUDA_ALLOC_CONF", None)
-            worker_env.pop("CUDA_MODULE_LOADING", None)
             proc = subprocess.Popen(
                 command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 start_new_session=True,
-                env=worker_env,
+                env=os.environ.copy(),
             )
             try:
-                stdout, stderr = proc.communicate(timeout=VOXCPM2_REQUEST_TIMEOUT)
+                stdout, stderr = proc.communicate(timeout=OMNIVOICE_REQUEST_TIMEOUT)
             except subprocess.TimeoutExpired:
                 os.killpg(proc.pid, signal.SIGTERM)
                 stdout, stderr = proc.communicate(timeout=10)
-                raise RuntimeError(f"VoxCPM2 worker 超时（>{VOXCPM2_REQUEST_TIMEOUT:.0f}s）")
+                raise RuntimeError(f"OmniVoice worker 超时（>{OMNIVOICE_REQUEST_TIMEOUT:.0f}s）")
 
             elapsed = time.perf_counter() - started
             if stdout.strip():
                 print(stdout.rstrip())
             if stderr.strip():
                 print(stderr.rstrip())
-            print(f"[VoxCPM2] worker 退出码={proc.returncode}，耗时 {elapsed:.2f}s")
+            print(f"[OmniVoice] worker 退出码={proc.returncode}，耗时 {elapsed:.2f}s")
 
             if proc.returncode != 0:
                 raise RuntimeError(worker_error_excerpt(stderr or stdout))
             if not os.path.isfile(output_path) or os.path.getsize(output_path) == 0:
-                raise RuntimeError("VoxCPM2 worker 未生成音频文件。")
+                raise RuntimeError("OmniVoice worker 未生成音频文件。")
 
             with open(output_path, "rb") as f:
-                return f.read()
+                audio_bytes = f.read()
+            self.last_error = None
+            return audio_bytes
+        except Exception as exc:
+            self.last_error = str(exc)
+            raise
         finally:
             for path in (request_path, output_path):
                 try:
@@ -399,17 +460,8 @@ class VoxCpm2WorkerManager:
                 except Exception:
                     pass
 
-    def run_worker(self, payload: dict) -> bytes:
-        try:
-            audio_bytes = self._run_worker_once(payload)
-            self.last_error = None
-            return audio_bytes
-        except Exception as exc:
-            self.last_error = str(exc)
-            raise
 
-
-manager = VoxCpm2WorkerManager()
+manager = OmniVoiceWorkerManager()
 
 
 @app.get("/v1/health")
@@ -418,38 +470,49 @@ async def health():
         "code": 200,
         "paths": {
             "hf_mirror_dir": HF_MIRROR_DIR,
-            "voxcpm2_model_dir": VOXCPM2_MODEL_DIR,
-            "voxcpm2_helper_script": VOXCPM2_HELPER_SCRIPT,
+            "omnivoice_model_dir": OMNIVOICE_MODEL_DIR,
             "prompts_dir": PROMPTS_DIR,
             "gpu_lock_file": GPU_LOCK_FILE,
-            "worker_script": VOXCPM2_WORKER_SCRIPT,
-            "worker_tmp_dir": VOXCPM2_WORKER_TMP_DIR,
+            "worker_script": OMNIVOICE_WORKER_SCRIPT,
+            "worker_tmp_dir": OMNIVOICE_WORKER_TMP_DIR,
         },
         "available": {
             "conda": bool(resolve_conda_executable()),
-            "worker_script": os.path.isfile(VOXCPM2_WORKER_SCRIPT),
-            "voxcpm2_model_dir": os.path.isdir(VOXCPM2_MODEL_DIR),
-            "voxcpm2_helper_script": os.path.isfile(VOXCPM2_HELPER_SCRIPT),
+            "worker_script": os.path.isfile(OMNIVOICE_WORKER_SCRIPT),
+            "omnivoice_model_dir": os.path.isdir(OMNIVOICE_MODEL_DIR),
             "torch": module_available("torch"),
             "cuda": cuda_status()["available"],
         },
         "cuda": cuda_status(),
         "runtime": {
-            "worker_env": VOXCPM2_CONDA_ENV,
+            "worker_env": OMNIVOICE_CONDA_ENV,
             "local_files_only": LOCAL_FILES_ONLY,
-            "request_timeout": VOXCPM2_REQUEST_TIMEOUT,
-            "cfg_value": VOXCPM2_CFG_VALUE,
-            "inference_timesteps": VOXCPM2_INFERENCE_TIMESTEPS,
-            "load_denoiser": VOXCPM2_LOAD_DENOISER,
-            "optimize": VOXCPM2_OPTIMIZE,
-            "device": VOXCPM2_DEVICE,
-            "seed": VOXCPM2_SEED,
-            "max_chars_per_chunk": VOXCPM2_MAX_CHARS_PER_CHUNK,
-            "pause_ms": VOXCPM2_PAUSE_MS,
-            "prompt_text_fallback": "upload sidecar -> reference-only cloning mode",
+            "request_timeout": OMNIVOICE_REQUEST_TIMEOUT,
+            "device_map": OMNIVOICE_DEVICE_MAP,
+            "dtype": OMNIVOICE_DTYPE,
+            "language": OMNIVOICE_LANGUAGE,
+            "seed": OMNIVOICE_SEED,
+            "num_step": OMNIVOICE_NUM_STEP,
+            "guidance_scale": OMNIVOICE_GUIDANCE_SCALE,
+            "speed": OMNIVOICE_SPEED,
+            "duration": OMNIVOICE_DURATION,
+            "t_shift": OMNIVOICE_T_SHIFT,
+            "denoise": OMNIVOICE_DENOISE,
+            "preprocess_prompt": OMNIVOICE_PREPROCESS_PROMPT,
+            "postprocess_output": OMNIVOICE_POSTPROCESS_OUTPUT,
+            "layer_penalty_factor": OMNIVOICE_LAYER_PENALTY_FACTOR,
+            "position_temperature": OMNIVOICE_POSITION_TEMPERATURE,
+            "class_temperature": OMNIVOICE_CLASS_TEMPERATURE,
+            "audio_chunk_duration": OMNIVOICE_AUDIO_CHUNK_DURATION,
+            "audio_chunk_threshold": OMNIVOICE_AUDIO_CHUNK_THRESHOLD,
+            "pad_duration": OMNIVOICE_PAD_DURATION,
+            "fade_duration": OMNIVOICE_FADE_DURATION,
+            "max_chars_per_chunk": OMNIVOICE_MAX_CHARS_PER_CHUNK,
+            "pause_ms": OMNIVOICE_PAUSE_MS,
+            "prompt_text_fallback": "upload sidecar -> OmniVoice internal ASR",
         },
         "last_errors": {
-            "voxcpm2_tts": manager.last_error,
+            "omnivoice_tts": manager.last_error,
         },
     }
 
@@ -457,9 +520,9 @@ async def health():
 @app.post("/internal/unload_all")
 async def internal_unload_all(request: Request):
     assert_local_request(request)
-    clear_cuda_cache("voxcpm2 api internal unload")
-    wait_after_cuda_release("voxcpm2 api internal unload")
-    return JSONResponse({"code": 200, "msg": "voxcpm2 wrapper 无常驻模型，已完成显存清理等待"})
+    clear_cuda_cache("omnivoice api internal unload")
+    wait_after_cuda_release("omnivoice api internal unload")
+    return JSONResponse({"code": 200, "msg": "omnivoice wrapper 无常驻模型，已完成显存清理等待"})
 
 
 @app.post("/v1/upload_audio")
@@ -495,8 +558,8 @@ async def check_audio_exists(file_name: str):
 
 
 @app.post("/v2/synthesize")
-async def synthesize_v2(request: VoxCpm2SynthesizeRequest):
-    with gpu_runtime_lock("voxcpm2/synthesize"):
+async def synthesize_v2(request: OmniVoiceSynthesizeRequest):
+    with gpu_runtime_lock("omnivoice/synthesize"):
         with manager.lock:
             try:
                 payload = manager.build_worker_payload(request)
@@ -508,30 +571,27 @@ async def synthesize_v2(request: VoxCpm2SynthesizeRequest):
                 traceback.print_exc()
                 raise HTTPException(status_code=500, detail=str(exc))
             finally:
-                clear_cuda_cache("after voxcpm2 worker")
-                wait_after_cuda_release("after voxcpm2 worker")
+                clear_cuda_cache("after omnivoice worker")
+                wait_after_cuda_release("after omnivoice worker")
 
 
 if __name__ == "__main__":
     print("==================================================")
-    print("   Unitale AI 本地后端 VoxCPM2 Voice Clone")
+    print("   Unitale AI 本地后端 OmniVoice Voice Clone")
     print("==================================================")
-    print(f"[配置] VoxCPM2 worker env: {VOXCPM2_CONDA_ENV}")
-    print(f"[配置] VoxCPM2 模型目录: {VOXCPM2_MODEL_DIR}")
-    print(f"[配置] VoxCPM2 helper: {VOXCPM2_HELPER_SCRIPT}")
+    print(f"[配置] OmniVoice worker env: {OMNIVOICE_CONDA_ENV}")
+    print(f"[配置] OmniVoice 模型目录: {OMNIVOICE_MODEL_DIR}")
     print(f"[配置] prompts 目录: {PROMPTS_DIR}")
     print(f"[配置] GPU 锁文件: {GPU_LOCK_FILE}")
-    print(f"[配置] worker 脚本: {VOXCPM2_WORKER_SCRIPT}")
+    print(f"[配置] worker 脚本: {OMNIVOICE_WORKER_SCRIPT}")
     print(
-        f"[配置] cfg_value={VOXCPM2_CFG_VALUE}, inference_timesteps={VOXCPM2_INFERENCE_TIMESTEPS}, "
-        f"seed={VOXCPM2_SEED}"
+        f"[配置] device_map={OMNIVOICE_DEVICE_MAP}, dtype={OMNIVOICE_DTYPE}, "
+        f"language={OMNIVOICE_LANGUAGE or 'auto'}, num_step={OMNIVOICE_NUM_STEP}, "
+        f"guidance_scale={OMNIVOICE_GUIDANCE_SCALE}"
     )
     print(
-        f"[配置] load_denoiser={VOXCPM2_LOAD_DENOISER}, optimize={VOXCPM2_OPTIMIZE}, "
-        f"max_chars_per_chunk={VOXCPM2_MAX_CHARS_PER_CHUNK}, pause_ms={VOXCPM2_PAUSE_MS}"
+        f"[配置] speed={OMNIVOICE_SPEED}, duration={OMNIVOICE_DURATION}, "
+        f"max_chars_per_chunk={OMNIVOICE_MAX_CHARS_PER_CHUNK}, pause_ms={OMNIVOICE_PAUSE_MS}"
     )
-    print(
-        f"[配置] device={VOXCPM2_DEVICE}"
-    )
-    print(f"[配置] local_files_only={LOCAL_FILES_ONLY}, request_timeout={VOXCPM2_REQUEST_TIMEOUT}")
+    print(f"[配置] local_files_only={LOCAL_FILES_ONLY}, request_timeout={OMNIVOICE_REQUEST_TIMEOUT}")
     uvicorn.run(app, host=API_HOST, port=API_PORT)

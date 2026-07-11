@@ -13,7 +13,7 @@ import threading
 import time
 import traceback
 from contextlib import contextmanager
-from typing import Optional, Any
+from typing import Optional
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:128")
 os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
@@ -28,7 +28,8 @@ from synthesis_request import CloneSynthesisRequest
 # ==========================================
 # 0. 系统配置
 # ==========================================
-PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+API_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_DIR = os.path.dirname(API_DIR)
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -50,64 +51,64 @@ def env_optional_text(name: str, default: Optional[str] = None) -> Optional[str]
     return normalized
 
 
-def env_optional_float(name: str, default: Optional[float] = None) -> Optional[float]:
+def env_optional_float(name: str) -> Optional[float]:
     value = env_optional_text(name)
-    if value is None:
-        return default
-    return float(value)
+    return float(value) if value is not None else None
 
 
 def expand_path(path: str) -> str:
     return os.path.abspath(os.path.expandvars(os.path.expanduser(path)))
 
 
-def normalize_optional_text(value: Any) -> Optional[str]:
+def normalize_optional_text(value: Optional[str]) -> Optional[str]:
     if value is None:
         return None
-    normalized = str(value).strip()
+    normalized = value.strip()
     if not normalized or normalized.lower() == "none":
         return None
     return normalized
 
 
 HF_MIRROR_DIR = expand_path(os.getenv("HF_MIRROR_DIR", "~/hf-mirror"))
-PROMPTS_DIR = expand_path(os.getenv("PROMPTS_DIR", os.path.join(PROJECT_DIR, "prompts")))
-RUNTIME_CACHE_DIR = expand_path(os.getenv("RUNTIME_CACHE_DIR", os.path.join(PROJECT_DIR, ".cache/runtime")))
+PROMPTS_DIR = expand_path(os.getenv("PROMPTS_DIR", os.path.join(API_DIR, "prompts")))
+RUNTIME_CACHE_DIR = expand_path(os.getenv("RUNTIME_CACHE_DIR", os.path.join(API_DIR, ".cache/runtime")))
 GPU_LOCK_FILE = expand_path(os.getenv("GPU_LOCK_FILE", os.path.join(RUNTIME_CACHE_DIR, "gpu-runtime.lock")))
 LOCAL_FILES_ONLY = env_bool("LOCAL_FILES_ONLY", True)
 CUDA_RELEASE_DELAY = float(os.getenv("CUDA_RELEASE_DELAY", "2.0"))
 API_HOST = os.getenv("HOST", "0.0.0.0")
-API_PORT = int(os.getenv("PORT", "8304"))
+API_PORT = int(os.getenv("PORT", "8305"))
 
-OMNIVOICE_CONDA_ENV = os.getenv("OMNIVOICE_CONDA_ENV", "omnivoice")
-OMNIVOICE_MODEL_DIR = expand_path(
-    os.getenv("OMNIVOICE_MODEL_DIR", os.path.join(HF_MIRROR_DIR, "k2-fsa/OmniVoice"))
+QWEN3_TTS_CONDA_ENV = os.getenv("QWEN3_TTS_CONDA_ENV", "qwen3-tts")
+QWEN3_TTS_MODEL_DIR = expand_path(
+    os.getenv("QWEN3_TTS_MODEL_DIR", os.path.join(HF_MIRROR_DIR, "Qwen/Qwen3-TTS-12Hz-1.7B-Base"))
 )
-OMNIVOICE_DEVICE_MAP = os.getenv("OMNIVOICE_DEVICE_MAP", "cuda:0")
-OMNIVOICE_DTYPE = os.getenv("OMNIVOICE_DTYPE", "float16")
-OMNIVOICE_LANGUAGE = env_optional_text("OMNIVOICE_LANGUAGE", "Chinese")
-OMNIVOICE_SEED = int(os.getenv("OMNIVOICE_SEED", "42"))
-OMNIVOICE_NUM_STEP = int(os.getenv("OMNIVOICE_NUM_STEP", "32"))
-OMNIVOICE_GUIDANCE_SCALE = float(os.getenv("OMNIVOICE_GUIDANCE_SCALE", "2.0"))
-OMNIVOICE_SPEED = env_optional_float("OMNIVOICE_SPEED", 1.0)
-OMNIVOICE_DURATION = env_optional_float("OMNIVOICE_DURATION")
-OMNIVOICE_T_SHIFT = float(os.getenv("OMNIVOICE_T_SHIFT", "0.1"))
-OMNIVOICE_DENOISE = env_bool("OMNIVOICE_DENOISE", True)
-OMNIVOICE_PREPROCESS_PROMPT = env_bool("OMNIVOICE_PREPROCESS_PROMPT", True)
-OMNIVOICE_POSTPROCESS_OUTPUT = env_bool("OMNIVOICE_POSTPROCESS_OUTPUT", True)
-OMNIVOICE_LAYER_PENALTY_FACTOR = float(os.getenv("OMNIVOICE_LAYER_PENALTY_FACTOR", "5.0"))
-OMNIVOICE_POSITION_TEMPERATURE = float(os.getenv("OMNIVOICE_POSITION_TEMPERATURE", "5.0"))
-OMNIVOICE_CLASS_TEMPERATURE = float(os.getenv("OMNIVOICE_CLASS_TEMPERATURE", "0.0"))
-OMNIVOICE_AUDIO_CHUNK_DURATION = float(os.getenv("OMNIVOICE_AUDIO_CHUNK_DURATION", "15.0"))
-OMNIVOICE_AUDIO_CHUNK_THRESHOLD = float(os.getenv("OMNIVOICE_AUDIO_CHUNK_THRESHOLD", "30.0"))
-OMNIVOICE_PAD_DURATION = float(os.getenv("OMNIVOICE_PAD_DURATION", "0.1"))
-OMNIVOICE_FADE_DURATION = float(os.getenv("OMNIVOICE_FADE_DURATION", "0.1"))
-OMNIVOICE_MAX_CHARS_PER_CHUNK = int(os.getenv("OMNIVOICE_MAX_CHARS_PER_CHUNK", "120"))
-OMNIVOICE_PAUSE_MS = int(os.getenv("OMNIVOICE_PAUSE_MS", "250"))
-OMNIVOICE_REQUEST_TIMEOUT = float(os.getenv("OMNIVOICE_REQUEST_TIMEOUT", "600"))
-
-OMNIVOICE_WORKER_SCRIPT = os.path.join(PROJECT_DIR, "omnivoice_tts_worker.py")
-OMNIVOICE_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "omnivoice_worker")
+QWEN3_TTS_DEVICE_MAP = os.getenv("QWEN3_TTS_DEVICE_MAP", "cuda:0")
+QWEN3_TTS_DTYPE = os.getenv("QWEN3_TTS_DTYPE", "auto")
+QWEN3_TTS_LANGUAGE = env_optional_text("QWEN3_TTS_LANGUAGE", "Chinese")
+QWEN3_TTS_MAX_NEW_TOKENS = int(os.getenv("QWEN3_TTS_MAX_NEW_TOKENS", "2048"))
+QWEN3_TTS_TOP_P = env_optional_float("QWEN3_TTS_TOP_P")
+QWEN3_TTS_TEMPERATURE = env_optional_float("QWEN3_TTS_TEMPERATURE")
+QWEN3_TTS_ATTN_IMPLEMENTATION = os.getenv("QWEN3_TTS_ATTN_IMPLEMENTATION", "auto")
+QWEN3_TTS_X_VECTOR_ONLY = env_bool("QWEN3_TTS_X_VECTOR_ONLY", False)
+QWEN3_TTS_MAX_CHARS_PER_CHUNK = int(os.getenv("QWEN3_TTS_MAX_CHARS_PER_CHUNK", "120"))
+QWEN3_TTS_PAUSE_MS = int(os.getenv("QWEN3_TTS_PAUSE_MS", "250"))
+QWEN3_TTS_TRIM_LEADING_SILENCE = env_bool("QWEN3_TTS_TRIM_LEADING_SILENCE", True)
+QWEN3_TTS_TRIM_LEADING_SILENCE_THRESHOLD_DB = float(
+    os.getenv("QWEN3_TTS_TRIM_LEADING_SILENCE_THRESHOLD_DB", "-42")
+)
+QWEN3_TTS_TRIM_LEADING_SILENCE_MIN_MS = int(os.getenv("QWEN3_TTS_TRIM_LEADING_SILENCE_MIN_MS", "120"))
+QWEN3_TTS_TRIM_LEADING_SILENCE_ANALYSIS_WINDOW_MS = int(
+    os.getenv("QWEN3_TTS_TRIM_LEADING_SILENCE_ANALYSIS_WINDOW_MS", "30")
+)
+QWEN3_TTS_TRIM_LEADING_SILENCE_PRE_ROLL_MS = int(
+    os.getenv("QWEN3_TTS_TRIM_LEADING_SILENCE_PRE_ROLL_MS", "40")
+)
+QWEN3_TTS_TRIM_LEADING_SILENCE_MAX_MS = int(os.getenv("QWEN3_TTS_TRIM_LEADING_SILENCE_MAX_MS", "8000"))
+QWEN3_TTS_REQUEST_TIMEOUT = float(os.getenv("QWEN3_TTS_REQUEST_TIMEOUT", "600"))
+QWEN3_TTS_WORKER_SCRIPT = os.path.join(API_DIR, "qwen3_tts_worker.py")
+QWEN3_TTS_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "qwen3_tts_worker")
+QWEN3_TTS_USE_QWEN_LIBS = env_bool("QWEN3_TTS_USE_QWEN_LIBS", False)
+QWEN_LIBS_PATH = expand_path(os.getenv("QWEN_LIBS", os.path.join(API_DIR, "vendor/qwen_libs")))
 
 os.environ.setdefault("HF_HOME", HF_MIRROR_DIR)
 os.environ.setdefault("HF_MODULES_CACHE", os.path.join(RUNTIME_CACHE_DIR, "hf_modules"))
@@ -123,12 +124,12 @@ os.makedirs(os.environ["HF_MODULES_CACHE"], exist_ok=True)
 os.makedirs(os.environ["NUMBA_CACHE_DIR"], exist_ok=True)
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 os.makedirs(os.environ["XDG_CACHE_HOME"], exist_ok=True)
-os.makedirs(OMNIVOICE_WORKER_TMP_DIR, exist_ok=True)
+os.makedirs(QWEN3_TTS_WORKER_TMP_DIR, exist_ok=True)
 gpu_lock_dir = os.path.dirname(GPU_LOCK_FILE)
 if gpu_lock_dir:
     os.makedirs(gpu_lock_dir, exist_ok=True)
 
-app = FastAPI(title="Unitale OmniVoice API")
+app = FastAPI(title="Unitale Qwen3-TTS Voice Clone API")
 
 
 class ForceCORS(BaseHTTPMiddleware):
@@ -268,43 +269,39 @@ def normalize_synthesis_text(text: str) -> str:
 def worker_error_excerpt(output: str) -> str:
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     if not lines:
-        return "OmniVoice worker 未输出错误信息。"
+        return "Qwen3-TTS worker 未输出错误信息。"
     return " | ".join(lines[-8:])
 
 
-class OmniVoiceSynthesizeRequest(CloneSynthesisRequest):
+class Qwen3TtsSynthesizeRequest(CloneSynthesisRequest):
 
     text: str
     audio_path: str
     prompt_text: Optional[str] = None
     language: Optional[str] = None
+    x_vector_only: Optional[bool] = None
     device_map: Optional[str] = None
     dtype: Optional[str] = None
-    num_step: Optional[int] = None
-    guidance_scale: Optional[float] = None
-    speed: Optional[float] = None
-    duration: Optional[float] = None
-    t_shift: Optional[float] = None
-    denoise: Optional[bool] = None
-    preprocess_prompt: Optional[bool] = None
-    postprocess_output: Optional[bool] = None
-    layer_penalty_factor: Optional[float] = None
-    position_temperature: Optional[float] = None
-    class_temperature: Optional[float] = None
-    audio_chunk_duration: Optional[float] = None
-    audio_chunk_threshold: Optional[float] = None
-    pad_duration: Optional[float] = None
-    fade_duration: Optional[float] = None
+    attn_implementation: Optional[str] = None
+    max_new_tokens: Optional[int] = None
+    top_p: Optional[float] = None
+    temperature: Optional[float] = None
     max_chars_per_chunk: Optional[int] = None
     pause_ms: Optional[int] = None
+    trim_leading_silence: Optional[bool] = None
+    trim_leading_silence_threshold_db: Optional[float] = None
+    trim_leading_silence_min_ms: Optional[int] = None
+    trim_leading_silence_analysis_window_ms: Optional[int] = None
+    trim_leading_silence_pre_roll_ms: Optional[int] = None
+    trim_leading_silence_max_ms: Optional[int] = None
 
 
-class OmniVoiceWorkerManager:
+class Qwen3TtsWorkerManager:
     def __init__(self):
         self.lock = threading.RLock()
         self.last_error: Optional[str] = None
 
-    def build_worker_payload(self, request: OmniVoiceSynthesizeRequest) -> dict:
+    def build_worker_payload(self, request: Qwen3TtsSynthesizeRequest) -> dict:
         ref_audio_path = os.path.join(PROMPTS_DIR, hash_filename(request.audio_path))
         if not os.path.isfile(ref_audio_path):
             raise HTTPException(status_code=404, detail="音频不存在")
@@ -317,82 +314,82 @@ class OmniVoiceWorkerManager:
             "text": normalize_synthesis_text(request.text),
             "ref_audio_path": ref_audio_path,
             "ref_text": prompt_text,
-            "model_path": OMNIVOICE_MODEL_DIR,
-            "device_map": request.device_map or OMNIVOICE_DEVICE_MAP,
-            "dtype": request.dtype or OMNIVOICE_DTYPE,
-            "language": normalize_optional_text(request.language) if request.language is not None else OMNIVOICE_LANGUAGE,
-            "seed": OMNIVOICE_SEED,
-            "num_step": request.num_step if request.num_step is not None else OMNIVOICE_NUM_STEP,
-            "guidance_scale": request.guidance_scale if request.guidance_scale is not None else OMNIVOICE_GUIDANCE_SCALE,
-            "speed": request.speed if request.speed is not None else OMNIVOICE_SPEED,
-            "duration": request.duration if request.duration is not None else OMNIVOICE_DURATION,
-            "t_shift": request.t_shift if request.t_shift is not None else OMNIVOICE_T_SHIFT,
-            "denoise": request.denoise if request.denoise is not None else OMNIVOICE_DENOISE,
-            "preprocess_prompt": (
-                request.preprocess_prompt
-                if request.preprocess_prompt is not None
-                else OMNIVOICE_PREPROCESS_PROMPT
+            "model_path": QWEN3_TTS_MODEL_DIR,
+            "language": normalize_optional_text(request.language) if request.language is not None else QWEN3_TTS_LANGUAGE,
+            "x_vector_only": (
+                request.x_vector_only if request.x_vector_only is not None else QWEN3_TTS_X_VECTOR_ONLY
             ),
-            "postprocess_output": (
-                request.postprocess_output
-                if request.postprocess_output is not None
-                else OMNIVOICE_POSTPROCESS_OUTPUT
+            "device_map": request.device_map or QWEN3_TTS_DEVICE_MAP,
+            "dtype": request.dtype or QWEN3_TTS_DTYPE,
+            "attn_implementation": request.attn_implementation or QWEN3_TTS_ATTN_IMPLEMENTATION,
+            "max_new_tokens": (
+                request.max_new_tokens if request.max_new_tokens is not None else QWEN3_TTS_MAX_NEW_TOKENS
             ),
-            "layer_penalty_factor": (
-                request.layer_penalty_factor
-                if request.layer_penalty_factor is not None
-                else OMNIVOICE_LAYER_PENALTY_FACTOR
-            ),
-            "position_temperature": (
-                request.position_temperature
-                if request.position_temperature is not None
-                else OMNIVOICE_POSITION_TEMPERATURE
-            ),
-            "class_temperature": (
-                request.class_temperature
-                if request.class_temperature is not None
-                else OMNIVOICE_CLASS_TEMPERATURE
-            ),
-            "audio_chunk_duration": (
-                request.audio_chunk_duration
-                if request.audio_chunk_duration is not None
-                else OMNIVOICE_AUDIO_CHUNK_DURATION
-            ),
-            "audio_chunk_threshold": (
-                request.audio_chunk_threshold
-                if request.audio_chunk_threshold is not None
-                else OMNIVOICE_AUDIO_CHUNK_THRESHOLD
-            ),
-            "pad_duration": request.pad_duration if request.pad_duration is not None else OMNIVOICE_PAD_DURATION,
-            "fade_duration": request.fade_duration if request.fade_duration is not None else OMNIVOICE_FADE_DURATION,
+            "top_p": request.top_p if request.top_p is not None else QWEN3_TTS_TOP_P,
+            "temperature": request.temperature if request.temperature is not None else QWEN3_TTS_TEMPERATURE,
             "max_chars_per_chunk": (
                 request.max_chars_per_chunk
                 if request.max_chars_per_chunk is not None
-                else OMNIVOICE_MAX_CHARS_PER_CHUNK
+                else QWEN3_TTS_MAX_CHARS_PER_CHUNK
             ),
-            "pause_ms": request.pause_ms if request.pause_ms is not None else OMNIVOICE_PAUSE_MS,
+            "pause_ms": request.pause_ms if request.pause_ms is not None else QWEN3_TTS_PAUSE_MS,
+            "trim_leading_silence": (
+                request.trim_leading_silence
+                if request.trim_leading_silence is not None
+                else QWEN3_TTS_TRIM_LEADING_SILENCE
+            ),
+            "trim_leading_silence_threshold_db": (
+                request.trim_leading_silence_threshold_db
+                if request.trim_leading_silence_threshold_db is not None
+                else QWEN3_TTS_TRIM_LEADING_SILENCE_THRESHOLD_DB
+            ),
+            "trim_leading_silence_min_ms": (
+                request.trim_leading_silence_min_ms
+                if request.trim_leading_silence_min_ms is not None
+                else QWEN3_TTS_TRIM_LEADING_SILENCE_MIN_MS
+            ),
+            "trim_leading_silence_analysis_window_ms": (
+                request.trim_leading_silence_analysis_window_ms
+                if request.trim_leading_silence_analysis_window_ms is not None
+                else QWEN3_TTS_TRIM_LEADING_SILENCE_ANALYSIS_WINDOW_MS
+            ),
+            "trim_leading_silence_pre_roll_ms": (
+                request.trim_leading_silence_pre_roll_ms
+                if request.trim_leading_silence_pre_roll_ms is not None
+                else QWEN3_TTS_TRIM_LEADING_SILENCE_PRE_ROLL_MS
+            ),
+            "trim_leading_silence_max_ms": (
+                request.trim_leading_silence_max_ms
+                if request.trim_leading_silence_max_ms is not None
+                else QWEN3_TTS_TRIM_LEADING_SILENCE_MAX_MS
+            ),
             "local_files_only": LOCAL_FILES_ONLY,
             "runtime_cache_dir": RUNTIME_CACHE_DIR,
             "hf_mirror_dir": HF_MIRROR_DIR,
+            "qwen_libs_path": (
+                QWEN_LIBS_PATH
+                if QWEN3_TTS_USE_QWEN_LIBS and os.path.isdir(QWEN_LIBS_PATH)
+                else None
+            ),
         }
 
     def run_worker(self, payload: dict) -> bytes:
         conda_exe = resolve_conda_executable()
         if not conda_exe:
-            raise RuntimeError("未找到 conda 命令，无法调用 OmniVoice worker。")
-        if not os.path.isfile(OMNIVOICE_WORKER_SCRIPT):
-            raise RuntimeError(f"OmniVoice worker 脚本不存在: {OMNIVOICE_WORKER_SCRIPT}")
-        if not os.path.isdir(OMNIVOICE_MODEL_DIR):
-            raise RuntimeError(f"OmniVoice 模型目录不存在: {OMNIVOICE_MODEL_DIR}")
+            raise RuntimeError("未找到 conda 命令，无法调用 Qwen3-TTS worker。")
+        if not os.path.isfile(QWEN3_TTS_WORKER_SCRIPT):
+            raise RuntimeError(f"Qwen3-TTS worker 脚本不存在: {QWEN3_TTS_WORKER_SCRIPT}")
+        if not os.path.isdir(QWEN3_TTS_MODEL_DIR):
+            raise RuntimeError(f"Qwen3-TTS 模型目录不存在: {QWEN3_TTS_MODEL_DIR}")
 
         request_fd, request_path = tempfile.mkstemp(
-            dir=OMNIVOICE_WORKER_TMP_DIR,
-            prefix="omnivoice_req_",
+            dir=QWEN3_TTS_WORKER_TMP_DIR,
+            prefix="qwen3_tts_req_",
             suffix=".json",
         )
         output_fd, output_path = tempfile.mkstemp(
-            dir=OMNIVOICE_WORKER_TMP_DIR,
-            prefix="omnivoice_out_",
+            dir=QWEN3_TTS_WORKER_TMP_DIR,
+            prefix="qwen3_tts_out_",
             suffix=".wav",
         )
         os.close(request_fd)
@@ -407,15 +404,15 @@ class OmniVoiceWorkerManager:
                 "run",
                 "--no-capture-output",
                 "-n",
-                OMNIVOICE_CONDA_ENV,
+                QWEN3_TTS_CONDA_ENV,
                 "python",
-                OMNIVOICE_WORKER_SCRIPT,
+                QWEN3_TTS_WORKER_SCRIPT,
                 "--input-json",
                 request_path,
                 "--output-wav",
                 output_path,
             ]
-            print(f"[OmniVoice] 启动 worker: env={OMNIVOICE_CONDA_ENV}")
+            print(f"[Qwen3-TTS] 启动 worker: env={QWEN3_TTS_CONDA_ENV}")
             started = time.perf_counter()
             proc = subprocess.Popen(
                 command,
@@ -426,23 +423,23 @@ class OmniVoiceWorkerManager:
                 env=os.environ.copy(),
             )
             try:
-                stdout, stderr = proc.communicate(timeout=OMNIVOICE_REQUEST_TIMEOUT)
+                stdout, stderr = proc.communicate(timeout=QWEN3_TTS_REQUEST_TIMEOUT)
             except subprocess.TimeoutExpired:
                 os.killpg(proc.pid, signal.SIGTERM)
                 stdout, stderr = proc.communicate(timeout=10)
-                raise RuntimeError(f"OmniVoice worker 超时（>{OMNIVOICE_REQUEST_TIMEOUT:.0f}s）")
+                raise RuntimeError(f"Qwen3-TTS worker 超时（>{QWEN3_TTS_REQUEST_TIMEOUT:.0f}s）")
 
             elapsed = time.perf_counter() - started
             if stdout.strip():
                 print(stdout.rstrip())
             if stderr.strip():
                 print(stderr.rstrip())
-            print(f"[OmniVoice] worker 退出码={proc.returncode}，耗时 {elapsed:.2f}s")
+            print(f"[Qwen3-TTS] worker 退出码={proc.returncode}，耗时 {elapsed:.2f}s")
 
             if proc.returncode != 0:
                 raise RuntimeError(worker_error_excerpt(stderr or stdout))
             if not os.path.isfile(output_path) or os.path.getsize(output_path) == 0:
-                raise RuntimeError("OmniVoice worker 未生成音频文件。")
+                raise RuntimeError("Qwen3-TTS worker 未生成音频文件。")
 
             with open(output_path, "rb") as f:
                 audio_bytes = f.read()
@@ -460,7 +457,7 @@ class OmniVoiceWorkerManager:
                     pass
 
 
-manager = OmniVoiceWorkerManager()
+manager = Qwen3TtsWorkerManager()
 
 
 @app.get("/v1/health")
@@ -469,49 +466,47 @@ async def health():
         "code": 200,
         "paths": {
             "hf_mirror_dir": HF_MIRROR_DIR,
-            "omnivoice_model_dir": OMNIVOICE_MODEL_DIR,
+            "qwen3_tts_model_dir": QWEN3_TTS_MODEL_DIR,
+            "qwen_libs_path": QWEN_LIBS_PATH,
             "prompts_dir": PROMPTS_DIR,
             "gpu_lock_file": GPU_LOCK_FILE,
-            "worker_script": OMNIVOICE_WORKER_SCRIPT,
-            "worker_tmp_dir": OMNIVOICE_WORKER_TMP_DIR,
+            "worker_script": QWEN3_TTS_WORKER_SCRIPT,
+            "worker_tmp_dir": QWEN3_TTS_WORKER_TMP_DIR,
         },
         "available": {
             "conda": bool(resolve_conda_executable()),
-            "worker_script": os.path.isfile(OMNIVOICE_WORKER_SCRIPT),
-            "omnivoice_model_dir": os.path.isdir(OMNIVOICE_MODEL_DIR),
+            "worker_script": os.path.isfile(QWEN3_TTS_WORKER_SCRIPT),
+            "qwen3_tts_model_dir": os.path.isdir(QWEN3_TTS_MODEL_DIR),
+            "qwen_libs_path": os.path.isdir(QWEN_LIBS_PATH),
             "torch": module_available("torch"),
             "cuda": cuda_status()["available"],
         },
         "cuda": cuda_status(),
         "runtime": {
-            "worker_env": OMNIVOICE_CONDA_ENV,
+            "worker_env": QWEN3_TTS_CONDA_ENV,
             "local_files_only": LOCAL_FILES_ONLY,
-            "request_timeout": OMNIVOICE_REQUEST_TIMEOUT,
-            "device_map": OMNIVOICE_DEVICE_MAP,
-            "dtype": OMNIVOICE_DTYPE,
-            "language": OMNIVOICE_LANGUAGE,
-            "seed": OMNIVOICE_SEED,
-            "num_step": OMNIVOICE_NUM_STEP,
-            "guidance_scale": OMNIVOICE_GUIDANCE_SCALE,
-            "speed": OMNIVOICE_SPEED,
-            "duration": OMNIVOICE_DURATION,
-            "t_shift": OMNIVOICE_T_SHIFT,
-            "denoise": OMNIVOICE_DENOISE,
-            "preprocess_prompt": OMNIVOICE_PREPROCESS_PROMPT,
-            "postprocess_output": OMNIVOICE_POSTPROCESS_OUTPUT,
-            "layer_penalty_factor": OMNIVOICE_LAYER_PENALTY_FACTOR,
-            "position_temperature": OMNIVOICE_POSITION_TEMPERATURE,
-            "class_temperature": OMNIVOICE_CLASS_TEMPERATURE,
-            "audio_chunk_duration": OMNIVOICE_AUDIO_CHUNK_DURATION,
-            "audio_chunk_threshold": OMNIVOICE_AUDIO_CHUNK_THRESHOLD,
-            "pad_duration": OMNIVOICE_PAD_DURATION,
-            "fade_duration": OMNIVOICE_FADE_DURATION,
-            "max_chars_per_chunk": OMNIVOICE_MAX_CHARS_PER_CHUNK,
-            "pause_ms": OMNIVOICE_PAUSE_MS,
-            "prompt_text_fallback": "upload sidecar -> OmniVoice internal ASR",
+            "request_timeout": QWEN3_TTS_REQUEST_TIMEOUT,
+            "device_map": QWEN3_TTS_DEVICE_MAP,
+            "dtype": QWEN3_TTS_DTYPE,
+            "attn_implementation": QWEN3_TTS_ATTN_IMPLEMENTATION,
+            "language": QWEN3_TTS_LANGUAGE,
+            "x_vector_only": QWEN3_TTS_X_VECTOR_ONLY,
+            "max_new_tokens": QWEN3_TTS_MAX_NEW_TOKENS,
+            "top_p": QWEN3_TTS_TOP_P,
+            "temperature": QWEN3_TTS_TEMPERATURE,
+            "max_chars_per_chunk": QWEN3_TTS_MAX_CHARS_PER_CHUNK,
+            "pause_ms": QWEN3_TTS_PAUSE_MS,
+            "trim_leading_silence": QWEN3_TTS_TRIM_LEADING_SILENCE,
+            "trim_leading_silence_threshold_db": QWEN3_TTS_TRIM_LEADING_SILENCE_THRESHOLD_DB,
+            "trim_leading_silence_min_ms": QWEN3_TTS_TRIM_LEADING_SILENCE_MIN_MS,
+            "trim_leading_silence_analysis_window_ms": QWEN3_TTS_TRIM_LEADING_SILENCE_ANALYSIS_WINDOW_MS,
+            "trim_leading_silence_pre_roll_ms": QWEN3_TTS_TRIM_LEADING_SILENCE_PRE_ROLL_MS,
+            "trim_leading_silence_max_ms": QWEN3_TTS_TRIM_LEADING_SILENCE_MAX_MS,
+            "use_qwen_libs_sidecar": QWEN3_TTS_USE_QWEN_LIBS,
+            "prompt_text_fallback": "upload sidecar -> x-vector-only",
         },
         "last_errors": {
-            "omnivoice_tts": manager.last_error,
+            "qwen3_tts": manager.last_error,
         },
     }
 
@@ -519,9 +514,9 @@ async def health():
 @app.post("/internal/unload_all")
 async def internal_unload_all(request: Request):
     assert_local_request(request)
-    clear_cuda_cache("omnivoice api internal unload")
-    wait_after_cuda_release("omnivoice api internal unload")
-    return JSONResponse({"code": 200, "msg": "omnivoice wrapper 无常驻模型，已完成显存清理等待"})
+    clear_cuda_cache("qwen3_tts api internal unload")
+    wait_after_cuda_release("qwen3_tts api internal unload")
+    return JSONResponse({"code": 200, "msg": "qwen3_tts wrapper 无常驻模型，已完成显存清理等待"})
 
 
 @app.post("/v1/upload_audio")
@@ -557,8 +552,8 @@ async def check_audio_exists(file_name: str):
 
 
 @app.post("/v2/synthesize")
-async def synthesize_v2(request: OmniVoiceSynthesizeRequest):
-    with gpu_runtime_lock("omnivoice/synthesize"):
+async def synthesize_v2(request: Qwen3TtsSynthesizeRequest):
+    with gpu_runtime_lock("qwen3_tts/synthesize"):
         with manager.lock:
             try:
                 payload = manager.build_worker_payload(request)
@@ -570,27 +565,33 @@ async def synthesize_v2(request: OmniVoiceSynthesizeRequest):
                 traceback.print_exc()
                 raise HTTPException(status_code=500, detail=str(exc))
             finally:
-                clear_cuda_cache("after omnivoice worker")
-                wait_after_cuda_release("after omnivoice worker")
+                clear_cuda_cache("after qwen3_tts worker")
+                wait_after_cuda_release("after qwen3_tts worker")
 
 
 if __name__ == "__main__":
     print("==================================================")
-    print("   Unitale AI 本地后端 OmniVoice Voice Clone")
+    print("   Unitale AI 本地后端 Qwen3-TTS Voice Clone")
     print("==================================================")
-    print(f"[配置] OmniVoice worker env: {OMNIVOICE_CONDA_ENV}")
-    print(f"[配置] OmniVoice 模型目录: {OMNIVOICE_MODEL_DIR}")
+    print(f"[配置] Qwen3-TTS worker env: {QWEN3_TTS_CONDA_ENV}")
+    print(f"[配置] Qwen3-TTS 模型目录: {QWEN3_TTS_MODEL_DIR}")
+    print(f"[配置] Qwen sidecar libs: {QWEN_LIBS_PATH}")
     print(f"[配置] prompts 目录: {PROMPTS_DIR}")
     print(f"[配置] GPU 锁文件: {GPU_LOCK_FILE}")
-    print(f"[配置] worker 脚本: {OMNIVOICE_WORKER_SCRIPT}")
+    print(f"[配置] worker 脚本: {QWEN3_TTS_WORKER_SCRIPT}")
     print(
-        f"[配置] device_map={OMNIVOICE_DEVICE_MAP}, dtype={OMNIVOICE_DTYPE}, "
-        f"language={OMNIVOICE_LANGUAGE or 'auto'}, num_step={OMNIVOICE_NUM_STEP}, "
-        f"guidance_scale={OMNIVOICE_GUIDANCE_SCALE}"
+        f"[配置] device_map={QWEN3_TTS_DEVICE_MAP}, dtype={QWEN3_TTS_DTYPE}, "
+        f"attn_implementation={QWEN3_TTS_ATTN_IMPLEMENTATION}, language={QWEN3_TTS_LANGUAGE or 'auto'}"
     )
     print(
-        f"[配置] speed={OMNIVOICE_SPEED}, duration={OMNIVOICE_DURATION}, "
-        f"max_chars_per_chunk={OMNIVOICE_MAX_CHARS_PER_CHUNK}, pause_ms={OMNIVOICE_PAUSE_MS}"
+        f"[配置] x_vector_only={QWEN3_TTS_X_VECTOR_ONLY}, max_new_tokens={QWEN3_TTS_MAX_NEW_TOKENS}, "
+        f"max_chars_per_chunk={QWEN3_TTS_MAX_CHARS_PER_CHUNK}, pause_ms={QWEN3_TTS_PAUSE_MS}"
     )
-    print(f"[配置] local_files_only={LOCAL_FILES_ONLY}, request_timeout={OMNIVOICE_REQUEST_TIMEOUT}")
+    print(
+        f"[配置] trim_leading_silence={QWEN3_TTS_TRIM_LEADING_SILENCE}, "
+        f"threshold_db={QWEN3_TTS_TRIM_LEADING_SILENCE_THRESHOLD_DB}, "
+        f"min_ms={QWEN3_TTS_TRIM_LEADING_SILENCE_MIN_MS}"
+    )
+    print(f"[配置] use_qwen_libs_sidecar={QWEN3_TTS_USE_QWEN_LIBS}")
+    print(f"[配置] local_files_only={LOCAL_FILES_ONLY}, request_timeout={QWEN3_TTS_REQUEST_TIMEOUT}")
     uvicorn.run(app, host=API_HOST, port=API_PORT)

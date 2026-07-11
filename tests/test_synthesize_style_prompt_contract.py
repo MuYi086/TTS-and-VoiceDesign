@@ -1,8 +1,13 @@
 """Regression coverage for the shared voice-cloning synthesis contract."""
 
 import unittest
+from pathlib import Path
+import sys
 
 from pydantic import ValidationError
+
+API_DIR = Path(__file__).resolve().parents[1] / "api"
+sys.path.insert(0, str(API_DIR))
 
 import api
 import dots_api

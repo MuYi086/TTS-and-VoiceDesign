@@ -133,7 +133,9 @@ def clear_cuda_cache(torch: Any) -> None:
 
 
 def prepare_environment(request: dict[str, Any]) -> None:
-    runtime_cache_dir = str(request.get("runtime_cache_dir") or Path.cwd() / ".cache/runtime")
+    runtime_cache_dir = str(
+        request.get("runtime_cache_dir") or Path(__file__).resolve().parent / ".cache/runtime"
+    )
     hf_mirror_dir = str(request.get("hf_mirror_dir") or Path.home() / "hf-mirror")
     local_files_only = bool(request.get("local_files_only", True))
 

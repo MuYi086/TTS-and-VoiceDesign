@@ -39,7 +39,8 @@ from synthesis_request import CloneSynthesisRequest
 # ==========================================
 # 0. 系统配置
 # ==========================================
-PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+API_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_DIR = os.path.dirname(API_DIR)
 
 def env_bool(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
@@ -53,8 +54,8 @@ def expand_path(path: str) -> str:
 
 
 HF_MIRROR_DIR = expand_path(os.getenv("HF_MIRROR_DIR", "~/hf-mirror"))
-DEFAULT_QWEN_LIBS = os.path.join(PROJECT_DIR, "vendor/qwen_libs")
-DEFAULT_INDEXTTS_CODE_DIR = os.path.join(PROJECT_DIR, "vendor/index-tts")
+DEFAULT_QWEN_LIBS = os.path.join(API_DIR, "vendor/qwen_libs")
+DEFAULT_INDEXTTS_CODE_DIR = os.path.join(API_DIR, "vendor/index-tts")
 QWEN_LIBS = os.getenv("QWEN_LIBS", DEFAULT_QWEN_LIBS if os.path.isdir(DEFAULT_QWEN_LIBS) else "")
 QWEN_MODEL = expand_path(
     os.getenv(
@@ -75,8 +76,8 @@ INDEXTTS_CODE_DIR = os.getenv(
     "INDEXTTS_CODE_DIR",
     DEFAULT_INDEXTTS_CODE_DIR if os.path.isdir(DEFAULT_INDEXTTS_CODE_DIR) else "",
 )
-PROMPTS_DIR = expand_path(os.getenv("PROMPTS_DIR", os.path.join(PROJECT_DIR, "prompts")))
-RUNTIME_CACHE_DIR = expand_path(os.getenv("RUNTIME_CACHE_DIR", os.path.join(PROJECT_DIR, ".cache/runtime")))
+PROMPTS_DIR = expand_path(os.getenv("PROMPTS_DIR", os.path.join(API_DIR, "prompts")))
+RUNTIME_CACHE_DIR = expand_path(os.getenv("RUNTIME_CACHE_DIR", os.path.join(API_DIR, ".cache/runtime")))
 GPU_LOCK_FILE = expand_path(os.getenv("GPU_LOCK_FILE", os.path.join(RUNTIME_CACHE_DIR, "gpu-runtime.lock")))
 LOCAL_FILES_ONLY = env_bool("LOCAL_FILES_ONLY", True)
 PRELOAD_INDEXTTS = env_bool("PRELOAD_INDEXTTS", False)

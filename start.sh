@@ -2,6 +2,7 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+API_DIR="$PROJECT_DIR/api"
 CONDA_ENV="${CONDA_ENV:-unitale-tts-local}"
 
 export HF_MIRROR_DIR="${HF_MIRROR_DIR:-$HOME/hf-mirror}"
@@ -15,10 +16,10 @@ export QWEN3_TTS_MODEL_DIR="${QWEN3_TTS_MODEL_DIR:-$HF_MIRROR_DIR/Qwen/Qwen3-TTS
 export VOXCPM2_MODEL_DIR="${VOXCPM2_MODEL_DIR:-$HF_MIRROR_DIR/openbmb/VoxCPM2}"
 export LONGCAT_TOKENIZER_PATH="${LONGCAT_TOKENIZER_PATH:-$HF_MIRROR_DIR/google/umt5-base}"
 export INDEXTTS_CFG_PATH="${INDEXTTS_CFG_PATH:-$INDEXTTS_MODEL_DIR/config.yaml}"
-export INDEXTTS_CODE_DIR="${INDEXTTS_CODE_DIR:-$PROJECT_DIR/vendor/index-tts}"
-export QWEN_LIBS="${QWEN_LIBS:-$PROJECT_DIR/vendor/qwen_libs}"
-export PROMPTS_DIR="${PROMPTS_DIR:-$PROJECT_DIR/prompts}"
-export RUNTIME_CACHE_DIR="${RUNTIME_CACHE_DIR:-$PROJECT_DIR/.cache/runtime}"
+export INDEXTTS_CODE_DIR="${INDEXTTS_CODE_DIR:-$API_DIR/vendor/index-tts}"
+export QWEN_LIBS="${QWEN_LIBS:-$API_DIR/vendor/qwen_libs}"
+export PROMPTS_DIR="${PROMPTS_DIR:-$API_DIR/prompts}"
+export RUNTIME_CACHE_DIR="${RUNTIME_CACHE_DIR:-$API_DIR/.cache/runtime}"
 export GPU_LOCK_FILE="${GPU_LOCK_FILE:-$RUNTIME_CACHE_DIR/gpu-runtime.lock}"
 export LOCAL_FILES_ONLY="${LOCAL_FILES_ONLY:-1}"
 export CLEAN_UNKNOWN_PYTHON_PROCESSES="${CLEAN_UNKNOWN_PYTHON_PROCESSES:-0}"
@@ -42,7 +43,7 @@ export DOTS_NORMALIZE_TEXT="${DOTS_NORMALIZE_TEXT:-0}"
 export DOTS_PROFILE_INFERENCE="${DOTS_PROFILE_INFERENCE:-0}"
 export DOTS_REQUEST_TIMEOUT="${DOTS_REQUEST_TIMEOUT:-300}"
 export LONGCAT_CONDA_ENV="${LONGCAT_CONDA_ENV:-longcat_audiodit}"
-export LONGCAT_REPO_PATH="${LONGCAT_REPO_PATH:-$PROJECT_DIR/vendor/LongCat-AudioDiT}"
+export LONGCAT_REPO_PATH="${LONGCAT_REPO_PATH:-$API_DIR/vendor/LongCat-AudioDiT}"
 export MOSS_CONDA_ENV="${MOSS_CONDA_ENV:-moss-tts-py310}"
 MOSS_HELPER_DEFAULT="$HOME/github/timbre-design/modelScript/tts_local_moss_tts_local_transformer.py"
 MOSS_HELPER_LEGACY="$HOME/github/timbre-design/scripts/tts_local_moss_tts_local_transformer.py"
@@ -291,19 +292,19 @@ cleanup() {
 
 trap cleanup INT TERM EXIT
 
-conda run --no-capture-output -n "$CONDA_ENV" python api.py &
+conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/api.py" &
 main_pid=$!
-HOST="$DOTS_HOST" PORT="$DOTS_PORT" conda run --no-capture-output -n "$CONDA_ENV" python dots_api.py &
+HOST="$DOTS_HOST" PORT="$DOTS_PORT" conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/dots_api.py" &
 dots_pid=$!
-HOST="$LONGCAT_HOST" PORT="$LONGCAT_PORT" conda run --no-capture-output -n "$CONDA_ENV" python longcat_api.py &
+HOST="$LONGCAT_HOST" PORT="$LONGCAT_PORT" conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/longcat_api.py" &
 longcat_pid=$!
-HOST="$MOSS_HOST" PORT="$MOSS_PORT" conda run --no-capture-output -n "$CONDA_ENV" python moss_api.py &
+HOST="$MOSS_HOST" PORT="$MOSS_PORT" conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/moss_api.py" &
 moss_pid=$!
-HOST="$OMNIVOICE_HOST" PORT="$OMNIVOICE_PORT" conda run --no-capture-output -n "$CONDA_ENV" python omnivoice_api.py &
+HOST="$OMNIVOICE_HOST" PORT="$OMNIVOICE_PORT" conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/omnivoice_api.py" &
 omnivoice_pid=$!
-HOST="$QWEN3_TTS_HOST" PORT="$QWEN3_TTS_PORT" conda run --no-capture-output -n "$CONDA_ENV" python qwen3_tts_api.py &
+HOST="$QWEN3_TTS_HOST" PORT="$QWEN3_TTS_PORT" conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/qwen3_tts_api.py" &
 qwen3_tts_pid=$!
-HOST="$VOXCPM2_HOST" PORT="$VOXCPM2_PORT" conda run --no-capture-output -n "$VOXCPM2_CONDA_ENV" python voxcpm2_api.py &
+HOST="$VOXCPM2_HOST" PORT="$VOXCPM2_PORT" conda run --no-capture-output -n "$VOXCPM2_CONDA_ENV" python "$API_DIR/voxcpm2_api.py" &
 voxcpm2_pid=$!
 
 wait -n "$main_pid" "$dots_pid" "$longcat_pid" "$moss_pid" "$omnivoice_pid" "$qwen3_tts_pid" "$voxcpm2_pid"

@@ -15,8 +15,10 @@ import traceback
 from contextlib import contextmanager
 from typing import Optional
 
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:128")
-os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
+# Align VoxCPM2 with the standalone step_3 script instead of inheriting
+# global CUDA runtime tweaks that break this model's GPU path.
+os.environ.pop("PYTORCH_CUDA_ALLOC_CONF", None)
+os.environ.pop("CUDA_MODULE_LOADING", None)
 
 import torch
 import uvicorn
@@ -25,10 +27,8 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from synthesis_request import CloneSynthesisRequest
 
-# ==========================================
-# 0. 系统配置
-# ==========================================
-PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+API_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_DIR = os.path.dirname(API_DIR)
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -36,23 +36,6 @@ def env_bool(name: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def env_optional_text(name: str, default: Optional[str] = None) -> Optional[str]:
-    value = os.getenv(name)
-    if value is None:
-        value = default
-    if value is None:
-        return None
-    normalized = value.strip()
-    if not normalized or normalized.lower() == "none":
-        return None
-    return normalized
-
-
-def env_optional_float(name: str) -> Optional[float]:
-    value = env_optional_text(name)
-    return float(value) if value is not None else None
 
 
 def expand_path(path: str) -> str:
@@ -68,46 +51,47 @@ def normalize_optional_text(value: Optional[str]) -> Optional[str]:
     return normalized
 
 
+def normalize_device_name(value: Optional[str], default: str = "cuda") -> str:
+    normalized = normalize_optional_text(value)
+    return normalized.lower() if normalized is not None else default
+
+
 HF_MIRROR_DIR = expand_path(os.getenv("HF_MIRROR_DIR", "~/hf-mirror"))
-PROMPTS_DIR = expand_path(os.getenv("PROMPTS_DIR", os.path.join(PROJECT_DIR, "prompts")))
-RUNTIME_CACHE_DIR = expand_path(os.getenv("RUNTIME_CACHE_DIR", os.path.join(PROJECT_DIR, ".cache/runtime")))
+PROMPTS_DIR = expand_path(os.getenv("PROMPTS_DIR", os.path.join(API_DIR, "prompts")))
+RUNTIME_CACHE_DIR = expand_path(os.getenv("RUNTIME_CACHE_DIR", os.path.join(API_DIR, ".cache/runtime")))
 GPU_LOCK_FILE = expand_path(os.getenv("GPU_LOCK_FILE", os.path.join(RUNTIME_CACHE_DIR, "gpu-runtime.lock")))
 LOCAL_FILES_ONLY = env_bool("LOCAL_FILES_ONLY", True)
 CUDA_RELEASE_DELAY = float(os.getenv("CUDA_RELEASE_DELAY", "2.0"))
 API_HOST = os.getenv("HOST", "0.0.0.0")
-API_PORT = int(os.getenv("PORT", "8305"))
+API_PORT = int(os.getenv("PORT", "8306"))
 
-QWEN3_TTS_CONDA_ENV = os.getenv("QWEN3_TTS_CONDA_ENV", "qwen3-tts")
-QWEN3_TTS_MODEL_DIR = expand_path(
-    os.getenv("QWEN3_TTS_MODEL_DIR", os.path.join(HF_MIRROR_DIR, "Qwen/Qwen3-TTS-12Hz-1.7B-Base"))
+VOXCPM2_CONDA_ENV = os.getenv("VOXCPM2_CONDA_ENV", "voxcpm2")
+VOXCPM2_MODEL_DIR = expand_path(
+    os.getenv("VOXCPM2_MODEL_DIR", os.path.join(HF_MIRROR_DIR, "openbmb/VoxCPM2"))
 )
-QWEN3_TTS_DEVICE_MAP = os.getenv("QWEN3_TTS_DEVICE_MAP", "cuda:0")
-QWEN3_TTS_DTYPE = os.getenv("QWEN3_TTS_DTYPE", "auto")
-QWEN3_TTS_LANGUAGE = env_optional_text("QWEN3_TTS_LANGUAGE", "Chinese")
-QWEN3_TTS_MAX_NEW_TOKENS = int(os.getenv("QWEN3_TTS_MAX_NEW_TOKENS", "2048"))
-QWEN3_TTS_TOP_P = env_optional_float("QWEN3_TTS_TOP_P")
-QWEN3_TTS_TEMPERATURE = env_optional_float("QWEN3_TTS_TEMPERATURE")
-QWEN3_TTS_ATTN_IMPLEMENTATION = os.getenv("QWEN3_TTS_ATTN_IMPLEMENTATION", "auto")
-QWEN3_TTS_X_VECTOR_ONLY = env_bool("QWEN3_TTS_X_VECTOR_ONLY", False)
-QWEN3_TTS_MAX_CHARS_PER_CHUNK = int(os.getenv("QWEN3_TTS_MAX_CHARS_PER_CHUNK", "120"))
-QWEN3_TTS_PAUSE_MS = int(os.getenv("QWEN3_TTS_PAUSE_MS", "250"))
-QWEN3_TTS_TRIM_LEADING_SILENCE = env_bool("QWEN3_TTS_TRIM_LEADING_SILENCE", True)
-QWEN3_TTS_TRIM_LEADING_SILENCE_THRESHOLD_DB = float(
-    os.getenv("QWEN3_TTS_TRIM_LEADING_SILENCE_THRESHOLD_DB", "-42")
+VOXCPM2_HELPER_DEFAULT = expand_path(
+    os.path.join("~", "github", "timbre-design", "modelScript", "tts_local_voxcpm2.py")
 )
-QWEN3_TTS_TRIM_LEADING_SILENCE_MIN_MS = int(os.getenv("QWEN3_TTS_TRIM_LEADING_SILENCE_MIN_MS", "120"))
-QWEN3_TTS_TRIM_LEADING_SILENCE_ANALYSIS_WINDOW_MS = int(
-    os.getenv("QWEN3_TTS_TRIM_LEADING_SILENCE_ANALYSIS_WINDOW_MS", "30")
+VOXCPM2_HELPER_LEGACY_PATH = expand_path(
+    os.path.join("~", "github", "timbre-design", "scripts", "tts_local_voxcpm2.py")
 )
-QWEN3_TTS_TRIM_LEADING_SILENCE_PRE_ROLL_MS = int(
-    os.getenv("QWEN3_TTS_TRIM_LEADING_SILENCE_PRE_ROLL_MS", "40")
-)
-QWEN3_TTS_TRIM_LEADING_SILENCE_MAX_MS = int(os.getenv("QWEN3_TTS_TRIM_LEADING_SILENCE_MAX_MS", "8000"))
-QWEN3_TTS_REQUEST_TIMEOUT = float(os.getenv("QWEN3_TTS_REQUEST_TIMEOUT", "600"))
-QWEN3_TTS_WORKER_SCRIPT = os.path.join(PROJECT_DIR, "qwen3_tts_worker.py")
-QWEN3_TTS_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "qwen3_tts_worker")
-QWEN3_TTS_USE_QWEN_LIBS = env_bool("QWEN3_TTS_USE_QWEN_LIBS", False)
-QWEN_LIBS_PATH = expand_path(os.getenv("QWEN_LIBS", os.path.join(PROJECT_DIR, "vendor/qwen_libs")))
+VOXCPM2_HELPER_SCRIPT = expand_path(os.getenv("VOXCPM2_HELPER_SCRIPT", VOXCPM2_HELPER_DEFAULT))
+# The helper was moved from scripts/ to modelScript/.  Repair the stale path
+# emitted by earlier start.sh versions while preserving any other user override.
+if VOXCPM2_HELPER_SCRIPT == VOXCPM2_HELPER_LEGACY_PATH and os.path.isfile(VOXCPM2_HELPER_DEFAULT):
+    VOXCPM2_HELPER_SCRIPT = VOXCPM2_HELPER_DEFAULT
+VOXCPM2_CFG_VALUE = float(os.getenv("VOXCPM2_CFG_VALUE", "2.0"))
+VOXCPM2_INFERENCE_TIMESTEPS = int(os.getenv("VOXCPM2_INFERENCE_TIMESTEPS", "10"))
+VOXCPM2_LOAD_DENOISER = env_bool("VOXCPM2_LOAD_DENOISER", False)
+VOXCPM2_OPTIMIZE = env_bool("VOXCPM2_OPTIMIZE", False)
+VOXCPM2_DEVICE = normalize_device_name(os.getenv("VOXCPM2_DEVICE"), "cuda")
+VOXCPM2_SEED = int(os.getenv("VOXCPM2_SEED", "20260614"))
+VOXCPM2_MAX_CHARS_PER_CHUNK = int(os.getenv("VOXCPM2_MAX_CHARS_PER_CHUNK", "0"))
+VOXCPM2_PAUSE_MS = int(os.getenv("VOXCPM2_PAUSE_MS", "250"))
+VOXCPM2_REQUEST_TIMEOUT = float(os.getenv("VOXCPM2_REQUEST_TIMEOUT", "600"))
+
+VOXCPM2_WORKER_SCRIPT = os.path.join(API_DIR, "voxcpm2_worker.py")
+VOXCPM2_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "voxcpm2_worker")
 
 os.environ.setdefault("HF_HOME", HF_MIRROR_DIR)
 os.environ.setdefault("HF_MODULES_CACHE", os.path.join(RUNTIME_CACHE_DIR, "hf_modules"))
@@ -123,12 +107,12 @@ os.makedirs(os.environ["HF_MODULES_CACHE"], exist_ok=True)
 os.makedirs(os.environ["NUMBA_CACHE_DIR"], exist_ok=True)
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 os.makedirs(os.environ["XDG_CACHE_HOME"], exist_ok=True)
-os.makedirs(QWEN3_TTS_WORKER_TMP_DIR, exist_ok=True)
+os.makedirs(VOXCPM2_WORKER_TMP_DIR, exist_ok=True)
 gpu_lock_dir = os.path.dirname(GPU_LOCK_FILE)
 if gpu_lock_dir:
     os.makedirs(gpu_lock_dir, exist_ok=True)
 
-app = FastAPI(title="Unitale Qwen3-TTS Voice Clone API")
+app = FastAPI(title="Unitale VoxCPM2 Voice Clone API")
 
 
 class ForceCORS(BaseHTTPMiddleware):
@@ -268,39 +252,31 @@ def normalize_synthesis_text(text: str) -> str:
 def worker_error_excerpt(output: str) -> str:
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     if not lines:
-        return "Qwen3-TTS worker 未输出错误信息。"
+        return "VoxCPM2 worker 未输出错误信息。"
     return " | ".join(lines[-8:])
 
 
-class Qwen3TtsSynthesizeRequest(CloneSynthesisRequest):
+class VoxCpm2SynthesizeRequest(CloneSynthesisRequest):
 
     text: str
     audio_path: str
     prompt_text: Optional[str] = None
-    language: Optional[str] = None
-    x_vector_only: Optional[bool] = None
-    device_map: Optional[str] = None
-    dtype: Optional[str] = None
-    attn_implementation: Optional[str] = None
-    max_new_tokens: Optional[int] = None
-    top_p: Optional[float] = None
-    temperature: Optional[float] = None
+    cfg_value: Optional[float] = None
+    inference_timesteps: Optional[int] = None
+    load_denoiser: Optional[bool] = None
+    optimize: Optional[bool] = None
+    device: Optional[str] = None
+    seed: Optional[int] = None
     max_chars_per_chunk: Optional[int] = None
     pause_ms: Optional[int] = None
-    trim_leading_silence: Optional[bool] = None
-    trim_leading_silence_threshold_db: Optional[float] = None
-    trim_leading_silence_min_ms: Optional[int] = None
-    trim_leading_silence_analysis_window_ms: Optional[int] = None
-    trim_leading_silence_pre_roll_ms: Optional[int] = None
-    trim_leading_silence_max_ms: Optional[int] = None
 
 
-class Qwen3TtsWorkerManager:
+class VoxCpm2WorkerManager:
     def __init__(self):
         self.lock = threading.RLock()
         self.last_error: Optional[str] = None
 
-    def build_worker_payload(self, request: Qwen3TtsSynthesizeRequest) -> dict:
+    def build_worker_payload(self, request: VoxCpm2SynthesizeRequest) -> dict:
         ref_audio_path = os.path.join(PROMPTS_DIR, hash_filename(request.audio_path))
         if not os.path.isfile(ref_audio_path):
             raise HTTPException(status_code=404, detail="音频不存在")
@@ -308,87 +284,58 @@ class Qwen3TtsWorkerManager:
         prompt_text = request.prompt_text.strip() if request.prompt_text and request.prompt_text.strip() else None
         if prompt_text is None:
             prompt_text = load_prompt_text_sidecar(request.audio_path)
+        device = normalize_device_name(request.device, VOXCPM2_DEVICE)
+        if not device.startswith("cuda"):
+            raise HTTPException(status_code=400, detail=f"VoxCPM2 仅支持 GPU 设备，当前 device={device}")
 
         return {
             "text": normalize_synthesis_text(request.text),
             "ref_audio_path": ref_audio_path,
-            "ref_text": prompt_text,
-            "model_path": QWEN3_TTS_MODEL_DIR,
-            "language": normalize_optional_text(request.language) if request.language is not None else QWEN3_TTS_LANGUAGE,
-            "x_vector_only": (
-                request.x_vector_only if request.x_vector_only is not None else QWEN3_TTS_X_VECTOR_ONLY
+            "prompt_text": prompt_text,
+            "model_path": VOXCPM2_MODEL_DIR,
+            "voxcpm2_helper_script": VOXCPM2_HELPER_SCRIPT,
+            "cfg_value": request.cfg_value if request.cfg_value is not None else VOXCPM2_CFG_VALUE,
+            "inference_timesteps": (
+                request.inference_timesteps
+                if request.inference_timesteps is not None
+                else VOXCPM2_INFERENCE_TIMESTEPS
             ),
-            "device_map": request.device_map or QWEN3_TTS_DEVICE_MAP,
-            "dtype": request.dtype or QWEN3_TTS_DTYPE,
-            "attn_implementation": request.attn_implementation or QWEN3_TTS_ATTN_IMPLEMENTATION,
-            "max_new_tokens": (
-                request.max_new_tokens if request.max_new_tokens is not None else QWEN3_TTS_MAX_NEW_TOKENS
+            "load_denoiser": (
+                request.load_denoiser if request.load_denoiser is not None else VOXCPM2_LOAD_DENOISER
             ),
-            "top_p": request.top_p if request.top_p is not None else QWEN3_TTS_TOP_P,
-            "temperature": request.temperature if request.temperature is not None else QWEN3_TTS_TEMPERATURE,
+            "optimize": request.optimize if request.optimize is not None else VOXCPM2_OPTIMIZE,
+            "device": device,
+            "seed": request.seed if request.seed is not None else VOXCPM2_SEED,
             "max_chars_per_chunk": (
                 request.max_chars_per_chunk
                 if request.max_chars_per_chunk is not None
-                else QWEN3_TTS_MAX_CHARS_PER_CHUNK
+                else VOXCPM2_MAX_CHARS_PER_CHUNK
             ),
-            "pause_ms": request.pause_ms if request.pause_ms is not None else QWEN3_TTS_PAUSE_MS,
-            "trim_leading_silence": (
-                request.trim_leading_silence
-                if request.trim_leading_silence is not None
-                else QWEN3_TTS_TRIM_LEADING_SILENCE
-            ),
-            "trim_leading_silence_threshold_db": (
-                request.trim_leading_silence_threshold_db
-                if request.trim_leading_silence_threshold_db is not None
-                else QWEN3_TTS_TRIM_LEADING_SILENCE_THRESHOLD_DB
-            ),
-            "trim_leading_silence_min_ms": (
-                request.trim_leading_silence_min_ms
-                if request.trim_leading_silence_min_ms is not None
-                else QWEN3_TTS_TRIM_LEADING_SILENCE_MIN_MS
-            ),
-            "trim_leading_silence_analysis_window_ms": (
-                request.trim_leading_silence_analysis_window_ms
-                if request.trim_leading_silence_analysis_window_ms is not None
-                else QWEN3_TTS_TRIM_LEADING_SILENCE_ANALYSIS_WINDOW_MS
-            ),
-            "trim_leading_silence_pre_roll_ms": (
-                request.trim_leading_silence_pre_roll_ms
-                if request.trim_leading_silence_pre_roll_ms is not None
-                else QWEN3_TTS_TRIM_LEADING_SILENCE_PRE_ROLL_MS
-            ),
-            "trim_leading_silence_max_ms": (
-                request.trim_leading_silence_max_ms
-                if request.trim_leading_silence_max_ms is not None
-                else QWEN3_TTS_TRIM_LEADING_SILENCE_MAX_MS
-            ),
+            "pause_ms": request.pause_ms if request.pause_ms is not None else VOXCPM2_PAUSE_MS,
             "local_files_only": LOCAL_FILES_ONLY,
             "runtime_cache_dir": RUNTIME_CACHE_DIR,
             "hf_mirror_dir": HF_MIRROR_DIR,
-            "qwen_libs_path": (
-                QWEN_LIBS_PATH
-                if QWEN3_TTS_USE_QWEN_LIBS and os.path.isdir(QWEN_LIBS_PATH)
-                else None
-            ),
         }
 
-    def run_worker(self, payload: dict) -> bytes:
+    def _run_worker_once(self, payload: dict) -> bytes:
         conda_exe = resolve_conda_executable()
         if not conda_exe:
-            raise RuntimeError("未找到 conda 命令，无法调用 Qwen3-TTS worker。")
-        if not os.path.isfile(QWEN3_TTS_WORKER_SCRIPT):
-            raise RuntimeError(f"Qwen3-TTS worker 脚本不存在: {QWEN3_TTS_WORKER_SCRIPT}")
-        if not os.path.isdir(QWEN3_TTS_MODEL_DIR):
-            raise RuntimeError(f"Qwen3-TTS 模型目录不存在: {QWEN3_TTS_MODEL_DIR}")
+            raise RuntimeError("未找到 conda 命令，无法调用 VoxCPM2 worker。")
+        if not os.path.isfile(VOXCPM2_WORKER_SCRIPT):
+            raise RuntimeError(f"VoxCPM2 worker 脚本不存在: {VOXCPM2_WORKER_SCRIPT}")
+        if not os.path.isdir(VOXCPM2_MODEL_DIR):
+            raise RuntimeError(f"VoxCPM2 模型目录不存在: {VOXCPM2_MODEL_DIR}")
+        if not os.path.isfile(VOXCPM2_HELPER_SCRIPT):
+            raise RuntimeError(f"VoxCPM2 辅助脚本不存在: {VOXCPM2_HELPER_SCRIPT}")
 
         request_fd, request_path = tempfile.mkstemp(
-            dir=QWEN3_TTS_WORKER_TMP_DIR,
-            prefix="qwen3_tts_req_",
+            dir=VOXCPM2_WORKER_TMP_DIR,
+            prefix="voxcpm2_req_",
             suffix=".json",
         )
         output_fd, output_path = tempfile.mkstemp(
-            dir=QWEN3_TTS_WORKER_TMP_DIR,
-            prefix="qwen3_tts_out_",
+            dir=VOXCPM2_WORKER_TMP_DIR,
+            prefix="voxcpm2_out_",
             suffix=".wav",
         )
         os.close(request_fd)
@@ -403,50 +350,48 @@ class Qwen3TtsWorkerManager:
                 "run",
                 "--no-capture-output",
                 "-n",
-                QWEN3_TTS_CONDA_ENV,
+                VOXCPM2_CONDA_ENV,
                 "python",
-                QWEN3_TTS_WORKER_SCRIPT,
+                VOXCPM2_WORKER_SCRIPT,
                 "--input-json",
                 request_path,
                 "--output-wav",
                 output_path,
             ]
-            print(f"[Qwen3-TTS] 启动 worker: env={QWEN3_TTS_CONDA_ENV}")
+            print(f"[VoxCPM2] 启动 worker: env={VOXCPM2_CONDA_ENV}")
             started = time.perf_counter()
+            worker_env = os.environ.copy()
+            worker_env.pop("PYTORCH_CUDA_ALLOC_CONF", None)
+            worker_env.pop("CUDA_MODULE_LOADING", None)
             proc = subprocess.Popen(
                 command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 start_new_session=True,
-                env=os.environ.copy(),
+                env=worker_env,
             )
             try:
-                stdout, stderr = proc.communicate(timeout=QWEN3_TTS_REQUEST_TIMEOUT)
+                stdout, stderr = proc.communicate(timeout=VOXCPM2_REQUEST_TIMEOUT)
             except subprocess.TimeoutExpired:
                 os.killpg(proc.pid, signal.SIGTERM)
                 stdout, stderr = proc.communicate(timeout=10)
-                raise RuntimeError(f"Qwen3-TTS worker 超时（>{QWEN3_TTS_REQUEST_TIMEOUT:.0f}s）")
+                raise RuntimeError(f"VoxCPM2 worker 超时（>{VOXCPM2_REQUEST_TIMEOUT:.0f}s）")
 
             elapsed = time.perf_counter() - started
             if stdout.strip():
                 print(stdout.rstrip())
             if stderr.strip():
                 print(stderr.rstrip())
-            print(f"[Qwen3-TTS] worker 退出码={proc.returncode}，耗时 {elapsed:.2f}s")
+            print(f"[VoxCPM2] worker 退出码={proc.returncode}，耗时 {elapsed:.2f}s")
 
             if proc.returncode != 0:
                 raise RuntimeError(worker_error_excerpt(stderr or stdout))
             if not os.path.isfile(output_path) or os.path.getsize(output_path) == 0:
-                raise RuntimeError("Qwen3-TTS worker 未生成音频文件。")
+                raise RuntimeError("VoxCPM2 worker 未生成音频文件。")
 
             with open(output_path, "rb") as f:
-                audio_bytes = f.read()
-            self.last_error = None
-            return audio_bytes
-        except Exception as exc:
-            self.last_error = str(exc)
-            raise
+                return f.read()
         finally:
             for path in (request_path, output_path):
                 try:
@@ -455,8 +400,17 @@ class Qwen3TtsWorkerManager:
                 except Exception:
                     pass
 
+    def run_worker(self, payload: dict) -> bytes:
+        try:
+            audio_bytes = self._run_worker_once(payload)
+            self.last_error = None
+            return audio_bytes
+        except Exception as exc:
+            self.last_error = str(exc)
+            raise
 
-manager = Qwen3TtsWorkerManager()
+
+manager = VoxCpm2WorkerManager()
 
 
 @app.get("/v1/health")
@@ -465,47 +419,38 @@ async def health():
         "code": 200,
         "paths": {
             "hf_mirror_dir": HF_MIRROR_DIR,
-            "qwen3_tts_model_dir": QWEN3_TTS_MODEL_DIR,
-            "qwen_libs_path": QWEN_LIBS_PATH,
+            "voxcpm2_model_dir": VOXCPM2_MODEL_DIR,
+            "voxcpm2_helper_script": VOXCPM2_HELPER_SCRIPT,
             "prompts_dir": PROMPTS_DIR,
             "gpu_lock_file": GPU_LOCK_FILE,
-            "worker_script": QWEN3_TTS_WORKER_SCRIPT,
-            "worker_tmp_dir": QWEN3_TTS_WORKER_TMP_DIR,
+            "worker_script": VOXCPM2_WORKER_SCRIPT,
+            "worker_tmp_dir": VOXCPM2_WORKER_TMP_DIR,
         },
         "available": {
             "conda": bool(resolve_conda_executable()),
-            "worker_script": os.path.isfile(QWEN3_TTS_WORKER_SCRIPT),
-            "qwen3_tts_model_dir": os.path.isdir(QWEN3_TTS_MODEL_DIR),
-            "qwen_libs_path": os.path.isdir(QWEN_LIBS_PATH),
+            "worker_script": os.path.isfile(VOXCPM2_WORKER_SCRIPT),
+            "voxcpm2_model_dir": os.path.isdir(VOXCPM2_MODEL_DIR),
+            "voxcpm2_helper_script": os.path.isfile(VOXCPM2_HELPER_SCRIPT),
             "torch": module_available("torch"),
             "cuda": cuda_status()["available"],
         },
         "cuda": cuda_status(),
         "runtime": {
-            "worker_env": QWEN3_TTS_CONDA_ENV,
+            "worker_env": VOXCPM2_CONDA_ENV,
             "local_files_only": LOCAL_FILES_ONLY,
-            "request_timeout": QWEN3_TTS_REQUEST_TIMEOUT,
-            "device_map": QWEN3_TTS_DEVICE_MAP,
-            "dtype": QWEN3_TTS_DTYPE,
-            "attn_implementation": QWEN3_TTS_ATTN_IMPLEMENTATION,
-            "language": QWEN3_TTS_LANGUAGE,
-            "x_vector_only": QWEN3_TTS_X_VECTOR_ONLY,
-            "max_new_tokens": QWEN3_TTS_MAX_NEW_TOKENS,
-            "top_p": QWEN3_TTS_TOP_P,
-            "temperature": QWEN3_TTS_TEMPERATURE,
-            "max_chars_per_chunk": QWEN3_TTS_MAX_CHARS_PER_CHUNK,
-            "pause_ms": QWEN3_TTS_PAUSE_MS,
-            "trim_leading_silence": QWEN3_TTS_TRIM_LEADING_SILENCE,
-            "trim_leading_silence_threshold_db": QWEN3_TTS_TRIM_LEADING_SILENCE_THRESHOLD_DB,
-            "trim_leading_silence_min_ms": QWEN3_TTS_TRIM_LEADING_SILENCE_MIN_MS,
-            "trim_leading_silence_analysis_window_ms": QWEN3_TTS_TRIM_LEADING_SILENCE_ANALYSIS_WINDOW_MS,
-            "trim_leading_silence_pre_roll_ms": QWEN3_TTS_TRIM_LEADING_SILENCE_PRE_ROLL_MS,
-            "trim_leading_silence_max_ms": QWEN3_TTS_TRIM_LEADING_SILENCE_MAX_MS,
-            "use_qwen_libs_sidecar": QWEN3_TTS_USE_QWEN_LIBS,
-            "prompt_text_fallback": "upload sidecar -> x-vector-only",
+            "request_timeout": VOXCPM2_REQUEST_TIMEOUT,
+            "cfg_value": VOXCPM2_CFG_VALUE,
+            "inference_timesteps": VOXCPM2_INFERENCE_TIMESTEPS,
+            "load_denoiser": VOXCPM2_LOAD_DENOISER,
+            "optimize": VOXCPM2_OPTIMIZE,
+            "device": VOXCPM2_DEVICE,
+            "seed": VOXCPM2_SEED,
+            "max_chars_per_chunk": VOXCPM2_MAX_CHARS_PER_CHUNK,
+            "pause_ms": VOXCPM2_PAUSE_MS,
+            "prompt_text_fallback": "upload sidecar -> reference-only cloning mode",
         },
         "last_errors": {
-            "qwen3_tts": manager.last_error,
+            "voxcpm2_tts": manager.last_error,
         },
     }
 
@@ -513,9 +458,9 @@ async def health():
 @app.post("/internal/unload_all")
 async def internal_unload_all(request: Request):
     assert_local_request(request)
-    clear_cuda_cache("qwen3_tts api internal unload")
-    wait_after_cuda_release("qwen3_tts api internal unload")
-    return JSONResponse({"code": 200, "msg": "qwen3_tts wrapper 无常驻模型，已完成显存清理等待"})
+    clear_cuda_cache("voxcpm2 api internal unload")
+    wait_after_cuda_release("voxcpm2 api internal unload")
+    return JSONResponse({"code": 200, "msg": "voxcpm2 wrapper 无常驻模型，已完成显存清理等待"})
 
 
 @app.post("/v1/upload_audio")
@@ -551,8 +496,8 @@ async def check_audio_exists(file_name: str):
 
 
 @app.post("/v2/synthesize")
-async def synthesize_v2(request: Qwen3TtsSynthesizeRequest):
-    with gpu_runtime_lock("qwen3_tts/synthesize"):
+async def synthesize_v2(request: VoxCpm2SynthesizeRequest):
+    with gpu_runtime_lock("voxcpm2/synthesize"):
         with manager.lock:
             try:
                 payload = manager.build_worker_payload(request)
@@ -564,33 +509,30 @@ async def synthesize_v2(request: Qwen3TtsSynthesizeRequest):
                 traceback.print_exc()
                 raise HTTPException(status_code=500, detail=str(exc))
             finally:
-                clear_cuda_cache("after qwen3_tts worker")
-                wait_after_cuda_release("after qwen3_tts worker")
+                clear_cuda_cache("after voxcpm2 worker")
+                wait_after_cuda_release("after voxcpm2 worker")
 
 
 if __name__ == "__main__":
     print("==================================================")
-    print("   Unitale AI 本地后端 Qwen3-TTS Voice Clone")
+    print("   Unitale AI 本地后端 VoxCPM2 Voice Clone")
     print("==================================================")
-    print(f"[配置] Qwen3-TTS worker env: {QWEN3_TTS_CONDA_ENV}")
-    print(f"[配置] Qwen3-TTS 模型目录: {QWEN3_TTS_MODEL_DIR}")
-    print(f"[配置] Qwen sidecar libs: {QWEN_LIBS_PATH}")
+    print(f"[配置] VoxCPM2 worker env: {VOXCPM2_CONDA_ENV}")
+    print(f"[配置] VoxCPM2 模型目录: {VOXCPM2_MODEL_DIR}")
+    print(f"[配置] VoxCPM2 helper: {VOXCPM2_HELPER_SCRIPT}")
     print(f"[配置] prompts 目录: {PROMPTS_DIR}")
     print(f"[配置] GPU 锁文件: {GPU_LOCK_FILE}")
-    print(f"[配置] worker 脚本: {QWEN3_TTS_WORKER_SCRIPT}")
+    print(f"[配置] worker 脚本: {VOXCPM2_WORKER_SCRIPT}")
     print(
-        f"[配置] device_map={QWEN3_TTS_DEVICE_MAP}, dtype={QWEN3_TTS_DTYPE}, "
-        f"attn_implementation={QWEN3_TTS_ATTN_IMPLEMENTATION}, language={QWEN3_TTS_LANGUAGE or 'auto'}"
+        f"[配置] cfg_value={VOXCPM2_CFG_VALUE}, inference_timesteps={VOXCPM2_INFERENCE_TIMESTEPS}, "
+        f"seed={VOXCPM2_SEED}"
     )
     print(
-        f"[配置] x_vector_only={QWEN3_TTS_X_VECTOR_ONLY}, max_new_tokens={QWEN3_TTS_MAX_NEW_TOKENS}, "
-        f"max_chars_per_chunk={QWEN3_TTS_MAX_CHARS_PER_CHUNK}, pause_ms={QWEN3_TTS_PAUSE_MS}"
+        f"[配置] load_denoiser={VOXCPM2_LOAD_DENOISER}, optimize={VOXCPM2_OPTIMIZE}, "
+        f"max_chars_per_chunk={VOXCPM2_MAX_CHARS_PER_CHUNK}, pause_ms={VOXCPM2_PAUSE_MS}"
     )
     print(
-        f"[配置] trim_leading_silence={QWEN3_TTS_TRIM_LEADING_SILENCE}, "
-        f"threshold_db={QWEN3_TTS_TRIM_LEADING_SILENCE_THRESHOLD_DB}, "
-        f"min_ms={QWEN3_TTS_TRIM_LEADING_SILENCE_MIN_MS}"
+        f"[配置] device={VOXCPM2_DEVICE}"
     )
-    print(f"[配置] use_qwen_libs_sidecar={QWEN3_TTS_USE_QWEN_LIBS}")
-    print(f"[配置] local_files_only={LOCAL_FILES_ONLY}, request_timeout={QWEN3_TTS_REQUEST_TIMEOUT}")
+    print(f"[配置] local_files_only={LOCAL_FILES_ONLY}, request_timeout={VOXCPM2_REQUEST_TIMEOUT}")
     uvicorn.run(app, host=API_HOST, port=API_PORT)

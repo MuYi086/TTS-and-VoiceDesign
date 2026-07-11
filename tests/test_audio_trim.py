@@ -1,9 +1,14 @@
 """Unit tests for generated-audio leading-silence cleanup."""
 
 import unittest
+from pathlib import Path
+import sys
 
 import numpy as np
 import torch
+
+API_DIR = Path(__file__).resolve().parents[1] / "api"
+sys.path.insert(0, str(API_DIR))
 
 from audio_trim import trim_leading_silence
 from moss_tts_worker import trim_generated_audio
