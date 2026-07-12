@@ -19,6 +19,7 @@ prompts/
 qwen_test*.wav
 synth*.wav
 *.tmp.wav
+soundEffect/outputs/
 
 # Third-party source clones and side-loaded Python packages
 vendor/
