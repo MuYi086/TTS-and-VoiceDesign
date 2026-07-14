@@ -149,6 +149,16 @@ curl http://127.0.0.1:8306/v1/health
 `8305` 的健康检查会返回 `qwen3_tts_model_dir`、`device_map`、`dtype`、`attn_implementation` 和 `prompt_text_fallback`。若 `qwen3_tts_model_dir` 不可用，先检查本地 `hf-mirror/Qwen/Qwen3-TTS-12Hz-1.7B-Base`。
 `8306` 的健康检查会返回 `voxcpm2_model_dir`、`voxcpm2_helper_script`、`device` 和 `prompt_text_fallback`。若 `voxcpm2_model_dir` 或 `voxcpm2_helper_script` 不可用，先检查本地 `hf-mirror/openbmb/VoxCPM2` 与 `~/github/timbre-design/modelScript/tts_local_voxcpm2.py`。
 
+## 本地回归测试
+
+测试依赖主运行环境中的 `numpy`、`torch`、FastAPI 和各 API 的验证模型，但不会下载权重、调用外部服务或加载 TTS 模型。请从项目根目录执行：
+
+```bash
+conda run -n unitale-tts-local python -m unittest discover -s tests -v
+```
+
+当前测试覆盖共享前导静音裁剪逻辑，以及所有语音克隆服务拒绝 `style_prompt` 的 API 契约。若使用了不同的主环境名称，请将命令中的 `unitale-tts-local` 替换为 `CONDA_ENV` 的值。
+
 ## 常用接口
 
 生成参考音色：
