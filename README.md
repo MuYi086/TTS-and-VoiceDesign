@@ -331,9 +331,9 @@ curl -X POST http://127.0.0.1:8306/v2/synthesize \
 启动 `bash start.sh` 后，声效服务默认在 `8311` 监听。它只接受描述非语言声效的 `prompt`，不依赖参考音频：
 
 ```bash
-curl -X POST http://127.0.0.1:8311/v1/generate \\
-  -H 'Content-Type: application/json' \\
-  -d '{"prompt":"深夜的旧木门被缓慢推开，门轴发出低沉、略带生锈的连续吱呀声，安静室内近距离收音。","seconds":6}' \\
+curl -X POST http://127.0.0.1:8311/v1/generate \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"深夜的旧木门被缓慢推开，门轴发出低沉、略带生锈的连续吱呀声，安静室内近距离收音。","seconds":6}' \
   -o door_creak.wav
 ```
 
