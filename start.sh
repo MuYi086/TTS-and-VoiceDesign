@@ -11,6 +11,16 @@ export INDEXTTS_MODEL_DIR="${INDEXTTS_MODEL_DIR:-$HF_MIRROR_DIR/IndexTeam/IndexT
 export DOTS_MODEL_DIR="${DOTS_MODEL_DIR:-$HF_MIRROR_DIR/rednote-hilab/dots.tts-base}"
 export LONGCAT_MODEL_DIR="${LONGCAT_MODEL_DIR:-$HF_MIRROR_DIR/meituan-longcat/LongCat-AudioDiT-1B}"
 export MOSS_MODEL_DIR="${MOSS_MODEL_DIR:-$HF_MIRROR_DIR/OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5}"
+export MOSS_SOUNDEFFECT_CONDA_ENV="${MOSS_SOUNDEFFECT_CONDA_ENV:-moss-soundEffect}"
+export MOSS_SOUNDEFFECT_MODEL_DIR="${MOSS_SOUNDEFFECT_MODEL_DIR:-$HF_MIRROR_DIR/OpenMOSS-Team/MOSS-SoundEffect-v2.0}"
+export MOSS_SOUNDEFFECT_DEVICE="${MOSS_SOUNDEFFECT_DEVICE:-cuda}"
+export MOSS_SOUNDEFFECT_DTYPE="${MOSS_SOUNDEFFECT_DTYPE:-bfloat16}"
+export MOSS_SOUNDEFFECT_DEFAULT_SECONDS="${MOSS_SOUNDEFFECT_DEFAULT_SECONDS:-10}"
+export MOSS_SOUNDEFFECT_DEFAULT_STEPS="${MOSS_SOUNDEFFECT_DEFAULT_STEPS:-100}"
+export MOSS_SOUNDEFFECT_DEFAULT_CFG_SCALE="${MOSS_SOUNDEFFECT_DEFAULT_CFG_SCALE:-4.0}"
+export MOSS_SOUNDEFFECT_DEFAULT_SIGMA_SHIFT="${MOSS_SOUNDEFFECT_DEFAULT_SIGMA_SHIFT:-5.0}"
+export MOSS_SOUNDEFFECT_DEFAULT_SEED="${MOSS_SOUNDEFFECT_DEFAULT_SEED:-0}"
+export MOSS_SOUNDEFFECT_DISABLE_TORCHDYNAMO="${MOSS_SOUNDEFFECT_DISABLE_TORCHDYNAMO:-1}"
 export OMNIVOICE_MODEL_DIR="${OMNIVOICE_MODEL_DIR:-$HF_MIRROR_DIR/k2-fsa/OmniVoice}"
 export QWEN3_TTS_MODEL_DIR="${QWEN3_TTS_MODEL_DIR:-$HF_MIRROR_DIR/Qwen/Qwen3-TTS-12Hz-1.7B-Base}"
 export VOXCPM2_MODEL_DIR="${VOXCPM2_MODEL_DIR:-$HF_MIRROR_DIR/openbmb/VoxCPM2}"
@@ -126,6 +136,7 @@ export MOSS_DTYPE="${MOSS_DTYPE:-auto}"
 export MOSS_MAX_CHARS_PER_CHUNK="${MOSS_MAX_CHARS_PER_CHUNK:-300}"
 export MOSS_PAUSE_MS="${MOSS_PAUSE_MS:-250}"
 export MOSS_REQUEST_TIMEOUT="${MOSS_REQUEST_TIMEOUT:-600}"
+export MOSS_SOUNDEFFECT_REQUEST_TIMEOUT="${MOSS_SOUNDEFFECT_REQUEST_TIMEOUT:-600}"
 export LONGCAT_MAX_CHARS_PER_CHUNK="${LONGCAT_MAX_CHARS_PER_CHUNK:-90}"
 export LONGCAT_PAUSE_MS="${LONGCAT_PAUSE_MS:-250}"
 export LONGCAT_NFE="${LONGCAT_NFE:-16}"
@@ -167,6 +178,8 @@ export LONGCAT_HOST="${LONGCAT_HOST:-$HOST}"
 export LONGCAT_PORT="${LONGCAT_PORT:-8302}"
 export MOSS_HOST="${MOSS_HOST:-$HOST}"
 export MOSS_PORT="${MOSS_PORT:-8303}"
+export SOUNDEFFECT_HOST="${SOUNDEFFECT_HOST:-$HOST}"
+export SOUNDEFFECT_PORT="${SOUNDEFFECT_PORT:-8311}"
 export OMNIVOICE_HOST="${OMNIVOICE_HOST:-$HOST}"
 export OMNIVOICE_PORT="${OMNIVOICE_PORT:-8304}"
 export QWEN3_TTS_HOST="${QWEN3_TTS_HOST:-$HOST}"
@@ -204,6 +217,9 @@ echo "LongCat tokenizer:   $LONGCAT_TOKENIZER_PATH"
 echo "LongCat repo path:   ${LONGCAT_REPO_PATH:-auto-detect}"
 echo "MOSS worker env:     $MOSS_CONDA_ENV"
 echo "MOSS model:          $MOSS_MODEL_DIR"
+echo "SoundEffect env:     $MOSS_SOUNDEFFECT_CONDA_ENV"
+echo "SoundEffect model:   $MOSS_SOUNDEFFECT_MODEL_DIR"
+echo "SoundEffect device:  $MOSS_SOUNDEFFECT_DEVICE ($MOSS_SOUNDEFFECT_DTYPE)"
 echo "MOSS codec:          $MOSS_CODEC_PATH"
 echo "MOSS helper script:  $MOSS_HELPER_SCRIPT"
 echo "OmniVoice worker env: $OMNIVOICE_CONDA_ENV"
@@ -244,6 +260,8 @@ echo "LongCat API:         http://$LONGCAT_HOST:$LONGCAT_PORT"
 echo "LongCat health:      http://127.0.0.1:$LONGCAT_PORT/v1/health"
 echo "MOSS API:            http://$MOSS_HOST:$MOSS_PORT"
 echo "MOSS health:         http://127.0.0.1:$MOSS_PORT/v1/health"
+echo "SoundEffect API:     http://$SOUNDEFFECT_HOST:$SOUNDEFFECT_PORT"
+echo "SoundEffect health:  http://127.0.0.1:$SOUNDEFFECT_PORT/v1/health"
 echo "OmniVoice API:       http://$OMNIVOICE_HOST:$OMNIVOICE_PORT"
 echo "OmniVoice health:    http://127.0.0.1:$OMNIVOICE_PORT/v1/health"
 echo "Qwen3-TTS API:       http://$QWEN3_TTS_HOST:$QWEN3_TTS_PORT"
@@ -255,6 +273,7 @@ echo "MiMo design route:   http://127.0.0.1:$PORT/v1/mimo/design"
 echo "dots synth route:    http://127.0.0.1:$DOTS_PORT/v2/synthesize"
 echo "LongCat synth route: http://127.0.0.1:$LONGCAT_PORT/v2/synthesize"
 echo "MOSS synth route:    http://127.0.0.1:$MOSS_PORT/v2/synthesize"
+echo "SoundEffect route:   http://127.0.0.1:$SOUNDEFFECT_PORT/v1/generate"
 echo "OmniVoice synth:     http://127.0.0.1:$OMNIVOICE_PORT/v2/synthesize"
 echo "Qwen3-TTS synth:     http://127.0.0.1:$QWEN3_TTS_PORT/v2/synthesize"
 echo "VoxCPM2 synth:       http://127.0.0.1:$VOXCPM2_PORT/v2/synthesize"
@@ -266,6 +285,7 @@ main_pid=""
 dots_pid=""
 longcat_pid=""
 moss_pid=""
+soundeffect_pid=""
 omnivoice_pid=""
 qwen3_tts_pid=""
 voxcpm2_pid=""
@@ -274,7 +294,7 @@ cleanup() {
   local status=$?
   trap - INT TERM EXIT
 
-  for pid in "$main_pid" "$dots_pid" "$longcat_pid" "$moss_pid" "$omnivoice_pid" "$qwen3_tts_pid" "$voxcpm2_pid"; do
+  for pid in "$main_pid" "$dots_pid" "$longcat_pid" "$moss_pid" "$soundeffect_pid" "$omnivoice_pid" "$qwen3_tts_pid" "$voxcpm2_pid"; do
     if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
       kill "$pid" 2>/dev/null || true
     fi
@@ -284,6 +304,7 @@ cleanup() {
   wait "$dots_pid" 2>/dev/null || true
   wait "$longcat_pid" 2>/dev/null || true
   wait "$moss_pid" 2>/dev/null || true
+  wait "$soundeffect_pid" 2>/dev/null || true
   wait "$omnivoice_pid" 2>/dev/null || true
   wait "$qwen3_tts_pid" 2>/dev/null || true
   wait "$voxcpm2_pid" 2>/dev/null || true
@@ -300,6 +321,8 @@ HOST="$LONGCAT_HOST" PORT="$LONGCAT_PORT" conda run --no-capture-output -n "$CON
 longcat_pid=$!
 HOST="$MOSS_HOST" PORT="$MOSS_PORT" conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/moss_api.py" &
 moss_pid=$!
+HOST="$SOUNDEFFECT_HOST" PORT="$SOUNDEFFECT_PORT" conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/soundeffect_api.py" &
+soundeffect_pid=$!
 HOST="$OMNIVOICE_HOST" PORT="$OMNIVOICE_PORT" conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/omnivoice_api.py" &
 omnivoice_pid=$!
 HOST="$QWEN3_TTS_HOST" PORT="$QWEN3_TTS_PORT" conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/qwen3_tts_api.py" &
@@ -307,4 +330,4 @@ qwen3_tts_pid=$!
 HOST="$VOXCPM2_HOST" PORT="$VOXCPM2_PORT" conda run --no-capture-output -n "$VOXCPM2_CONDA_ENV" python "$API_DIR/voxcpm2_api.py" &
 voxcpm2_pid=$!
 
-wait -n "$main_pid" "$dots_pid" "$longcat_pid" "$moss_pid" "$omnivoice_pid" "$qwen3_tts_pid" "$voxcpm2_pid"
+wait -n "$main_pid" "$dots_pid" "$longcat_pid" "$moss_pid" "$soundeffect_pid" "$omnivoice_pid" "$qwen3_tts_pid" "$voxcpm2_pid"
