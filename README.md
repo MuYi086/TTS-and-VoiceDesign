@@ -6,6 +6,7 @@
 - dots.tts-base：参考音频 + 文本合成，独立暴露 `8301`
 - LongCat-AudioDiT-1B：参考音频 + 文本合成，独立暴露 `8302`
 - MOSS-TTS-Local-Transformer-v1.5：参考音频 + 文本合成，独立暴露 `8303`
+- MOSS-SoundEffect v2.0：根据中英文提示词生成 48 kHz 声效，独立暴露 `8311`
 - OmniVoice：参考音频 + 文本合成，独立暴露 `8304`
 - Qwen3-TTS-12Hz-1.7B-Base：参考音频 + 文本合成，独立暴露 `8305`
 - VoxCPM2：参考音频 + 文本合成，独立暴露 `8306`
@@ -99,6 +100,7 @@ MiMo 是云端 API，不加载本地模型；默认使用 `https://api.xiaomimim
 /home/muyi086/hf-mirror/rednote-hilab/dots.tts-base
 /home/muyi086/hf-mirror/meituan-longcat/LongCat-AudioDiT-1B
 /home/muyi086/hf-mirror/OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5
+/home/muyi086/hf-mirror/OpenMOSS-Team/MOSS-SoundEffect-v2.0
 /home/muyi086/hf-mirror/OpenMOSS-Team/MOSS-Audio-Tokenizer-v2
 /home/muyi086/hf-mirror/k2-fsa/OmniVoice
 /home/muyi086/hf-mirror/Qwen/Qwen3-TTS-12Hz-1.7B-Base
@@ -125,6 +127,7 @@ http://127.0.0.1:8300
 http://127.0.0.1:8301
 http://127.0.0.1:8302
 http://127.0.0.1:8303
+http://127.0.0.1:8311
 http://127.0.0.1:8304
 http://127.0.0.1:8305
 http://127.0.0.1:8306
@@ -137,6 +140,7 @@ curl http://127.0.0.1:8300/v1/health
 curl http://127.0.0.1:8301/v1/health
 curl http://127.0.0.1:8302/v1/health
 curl http://127.0.0.1:8303/v1/health
+curl http://127.0.0.1:8311/v1/health
 curl http://127.0.0.1:8304/v1/health
 curl http://127.0.0.1:8305/v1/health
 curl http://127.0.0.1:8306/v1/health
@@ -313,9 +317,26 @@ curl -X POST http://127.0.0.1:8306/v2/synthesize \
 - `8301 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `dots_tts` 环境里的 worker，worker 退出即释放模型和显存。
 - `8302 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `longcat_audiodit` 环境里的 worker，worker 退出即释放模型和显存。
 - `8303 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `moss-tts-py310` 环境里的 worker，worker 退出即释放 MOSS 模型、codec 和显存。
+- `8311 /v1/generate` 是 MOSS-SoundEffect v2.0 的轻量 HTTP 包装器；每个请求都会在 `moss-soundEffect` 环境中启动独立 worker，worker 退出才向调用方返回音频，因此模型、CUDA 上下文和显存不会在 8311 常驻。
 - `8304 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `omnivoice` 环境里的 worker，worker 退出即释放 OmniVoice 模型、参考音色 prompt 和显存。
 - `8305 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `qwen3-tts` 环境里的 worker，worker 退出即释放 Qwen3-TTS Base 模型、voice clone prompt 和显存。
 - `8306 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `voxcpm2` 环境里的 worker，worker 退出即释放 VoxCPM2 模型和显存。
-- `8300`、`8301`、`8302`、`8303`、`8304`、`8305`、`8306` 共享同一个 `GPU_LOCK_FILE`，因此 Qwen / MiMo / IndexTTS2 / dots.tts / LongCat / MOSS / OmniVoice / Qwen3-TTS Base / VoxCPM2 不会并发抢占显存。
+- `8300`、`8301`、`8302`、`8303`、`8304`、`8305`、`8306`、`8311` 共享同一个 `GPU_LOCK_FILE`，因此 Qwen / MiMo / IndexTTS2 / dots.tts / LongCat / MOSS / MOSS-SoundEffect / OmniVoice / Qwen3-TTS Base / VoxCPM2 不会并发抢占显存。
 - 默认离线加载模型：`LOCAL_FILES_ONLY=1`。
 - 不再执行云端脚本里的 apt 改源、`/app` 代码同步或清理所有 Python 进程。
+
+
+## MOSS-SoundEffect v2.0 API
+
+启动 `bash start.sh` 后，声效服务默认在 `8311` 监听。它只接受描述非语言声效的 `prompt`，不依赖参考音频：
+
+```bash
+curl -X POST http://127.0.0.1:8311/v1/generate \\
+  -H 'Content-Type: application/json' \\
+  -d '{"prompt":"深夜的旧木门被缓慢推开，门轴发出低沉、略带生锈的连续吱呀声，安静室内近距离收音。","seconds":6}' \\
+  -o door_creak.wav
+```
+
+可选参数：`seconds`（大于 0 且不超过 30，默认 10）、`num_inference_steps`（默认 100）、`cfg_scale`（默认 4.0）、`sigma_shift`（默认 5.0）、`seed`、`device` 与 `torch_dtype`。为兼容本项目既有的合成调用命名，`POST /v2/synthesize` 是同一请求模型的别名；新接入优先使用 `/v1/generate`。
+
+默认使用 `MOSS_SOUNDEFFECT_CONDA_ENV=moss-soundEffect` 和本地权重目录 `$HF_MIRROR_DIR/OpenMOSS-Team/MOSS-SoundEffect-v2.0`。可通过 `MOSS_SOUNDEFFECT_*` 环境变量覆盖模型路径、默认参数、请求超时、设备和精度。模型只存在于每个请求创建的 worker 进程中；worker 退出后才释放共享 GPU 锁，确保显存已释放后其他 TTS/声效任务才会进入。
