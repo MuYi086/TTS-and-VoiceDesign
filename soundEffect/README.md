@@ -53,9 +53,9 @@ curl http://127.0.0.1:8311/v1/health
 生成声效：
 
 ```bash
-curl -X POST http://127.0.0.1:8311/v1/generate \\
-  -H 'Content-Type: application/json' \\
-  -d '{"prompt":"清晨安静的林间小径，近处零星鸟鸣清脆，远处有轻微树叶在微风中沙沙作响。","seconds":8}' \\
+curl -X POST http://127.0.0.1:8311/v1/generate \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"清晨安静的林间小径，近处零星鸟鸣清脆，远处有轻微树叶在微风中沙沙作响。","seconds":8}' \
   -o birds.wav
 ```
 
