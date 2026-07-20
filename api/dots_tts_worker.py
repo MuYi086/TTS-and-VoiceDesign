@@ -135,6 +135,51 @@ def join_waveforms(waveforms: list[Any], sample_rate: int, pause_ms: int, np: An
     return np.concatenate(joined)
 
 
+def tensor_audio_to_numpy(audio: Any, np: Any) -> Any:
+    if hasattr(audio, "float"):
+        audio = audio.float()
+    if hasattr(audio, "cpu"):
+        audio = audio.cpu()
+    if hasattr(audio, "squeeze"):
+        audio = audio.squeeze()
+    if hasattr(audio, "numpy"):
+        audio = audio.numpy()
+    return to_mono_float32(audio, np)
+
+
+def generate_chunk_audio(
+    runtime: Any,
+    generation_kwargs: dict[str, Any],
+    *,
+    use_streaming_vocoder: bool,
+    np: Any,
+) -> Any:
+    if not use_streaming_vocoder:
+        result = runtime.generate(**generation_kwargs)
+        return tensor_audio_to_numpy(result["audio"], np)
+
+    generate_stream = getattr(runtime, "generate_stream", None)
+    if not callable(generate_stream):
+        raise RuntimeError(
+            "当前 dots.tts 运行时不支持 generate_stream，无法启用低峰值流式 vocoder。"
+        )
+
+    audio_chunks = []
+    for audio_chunk in generate_stream(**generation_kwargs):
+        waveform = tensor_audio_to_numpy(audio_chunk, np)
+        if waveform.size > 0:
+            audio_chunks.append(waveform)
+    if not audio_chunks:
+        raise RuntimeError("dots.tts 流式 vocoder 未返回音频片段。")
+
+    waveform = np.concatenate(audio_chunks)
+    print(
+        f"[dots.tts worker] 流式 vocoder 完成: "
+        f"chunks={len(audio_chunks)}, samples={waveform.size}"
+    )
+    return waveform
+
+
 def clear_cuda_cache(torch: Any) -> None:
     gc.collect()
     if not torch.cuda.is_available():
@@ -211,6 +256,7 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
     pause_ms = int(request.get("pause_ms") or 250)
     normalize_text_flag = bool(request.get("normalize_text", False))
     profile_inference = bool(request.get("profile_inference", False))
+    use_streaming_vocoder = bool(request.get("use_streaming_vocoder", True))
 
     if not torch.cuda.is_available():
         raise RuntimeError("dots.tts 合成需要 CUDA GPU。")
@@ -226,6 +272,7 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
         print(f"[dots.tts worker] 参考音频: {ref_audio_path}")
         print(f"[dots.tts worker] 文本长度: {len(text)} 字, chunks={len(chunks)}")
         print(f"[dots.tts worker] prompt_text: {'provided' if prompt_text else 'not provided'}")
+        print(f"[dots.tts worker] use_streaming_vocoder={use_streaming_vocoder}")
         runtime = DotsTtsRuntime.from_pretrained(
             str(model_path),
             precision=precision,
@@ -235,20 +282,27 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
         waveforms = []
         for index, chunk in enumerate(chunks, start=1):
             print(f"[dots.tts worker] 合成 chunk {index}/{len(chunks)} ({len(chunk)} chars)")
-            result = runtime.generate(
-                text=chunk,
-                prompt_audio_path=str(ref_audio_path),
-                prompt_text=prompt_text,
-                language=language,
-                template_name=template_name,
-                ode_method=ode_method,
-                num_steps=num_steps,
-                guidance_scale=guidance_scale,
-                speaker_scale=speaker_scale,
-                normalize_text=normalize_text_flag,
-                profile_inference=profile_inference,
+            generation_kwargs = {
+                "text": chunk,
+                "prompt_audio_path": str(ref_audio_path),
+                "prompt_text": prompt_text,
+                "language": language,
+                "template_name": template_name,
+                "ode_method": ode_method,
+                "num_steps": num_steps,
+                "guidance_scale": guidance_scale,
+                "speaker_scale": speaker_scale,
+                "normalize_text": normalize_text_flag,
+                "profile_inference": profile_inference,
+            }
+            waveforms.append(
+                generate_chunk_audio(
+                    runtime,
+                    generation_kwargs,
+                    use_streaming_vocoder=use_streaming_vocoder,
+                    np=np,
+                )
             )
-            waveforms.append(result["audio"].float().cpu().squeeze().numpy())
 
         sample_rate = int(runtime.sample_rate)
         waveform = join_waveforms(waveforms, sample_rate, pause_ms, np)

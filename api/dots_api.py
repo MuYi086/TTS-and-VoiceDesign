@@ -69,6 +69,7 @@ DOTS_MAX_CHARS_PER_CHUNK = int(os.getenv("DOTS_MAX_CHARS_PER_CHUNK", "120"))
 DOTS_PAUSE_MS = int(os.getenv("DOTS_PAUSE_MS", "250"))
 DOTS_NORMALIZE_TEXT = env_bool("DOTS_NORMALIZE_TEXT", False)
 DOTS_PROFILE_INFERENCE = env_bool("DOTS_PROFILE_INFERENCE", False)
+DOTS_USE_STREAMING_VOCODER = env_bool("DOTS_USE_STREAMING_VOCODER", True)
 DOTS_REQUEST_TIMEOUT = float(os.getenv("DOTS_REQUEST_TIMEOUT", "300"))
 
 DOTS_WORKER_SCRIPT = os.path.join(API_DIR, "dots_tts_worker.py")
@@ -251,6 +252,7 @@ class DotsSynthesizeRequest(CloneSynthesisRequest):
     pause_ms: Optional[int] = None
     normalize_text: Optional[bool] = None
     profile_inference: Optional[bool] = None
+    use_streaming_vocoder: Optional[bool] = None
     emo_text: Optional[str] = None
     emo_vector: Optional[List[float]] = None
 
@@ -287,6 +289,11 @@ class DotsWorkerManager:
             "pause_ms": request.pause_ms if request.pause_ms is not None else DOTS_PAUSE_MS,
             "normalize_text": request.normalize_text if request.normalize_text is not None else DOTS_NORMALIZE_TEXT,
             "profile_inference": request.profile_inference if request.profile_inference is not None else DOTS_PROFILE_INFERENCE,
+            "use_streaming_vocoder": (
+                request.use_streaming_vocoder
+                if request.use_streaming_vocoder is not None
+                else DOTS_USE_STREAMING_VOCODER
+            ),
             "local_files_only": LOCAL_FILES_ONLY,
             "runtime_cache_dir": RUNTIME_CACHE_DIR,
             "hf_mirror_dir": HF_MIRROR_DIR,
@@ -406,6 +413,7 @@ async def health():
             "pause_ms": DOTS_PAUSE_MS,
             "normalize_text": DOTS_NORMALIZE_TEXT,
             "profile_inference": DOTS_PROFILE_INFERENCE,
+            "use_streaming_vocoder": DOTS_USE_STREAMING_VOCODER,
         },
         "last_errors": {
             "dots_tts": manager.last_error,
@@ -491,7 +499,8 @@ if __name__ == "__main__":
     )
     print(
         f"[配置] max_generate_length={DOTS_MAX_GENERATE_LENGTH}, "
-        f"max_chars_per_chunk={DOTS_MAX_CHARS_PER_CHUNK}, pause_ms={DOTS_PAUSE_MS}"
+        f"max_chars_per_chunk={DOTS_MAX_CHARS_PER_CHUNK}, pause_ms={DOTS_PAUSE_MS}, "
+        f"use_streaming_vocoder={DOTS_USE_STREAMING_VOCODER}"
     )
     print(f"[配置] local_files_only={LOCAL_FILES_ONLY}, request_timeout={DOTS_REQUEST_TIMEOUT}")
     uvicorn.run(app, host=API_HOST, port=API_PORT)
