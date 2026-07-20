@@ -122,6 +122,22 @@ def resolve_dtype(torch: Any, dtype_name: Any) -> Any:
     raise ValueError(f"不支持的 dtype：{dtype_name}")
 
 
+def configure_sdpa_backend(torch: Any, requested: Any) -> str:
+    normalized = str(requested or "math").strip().lower()
+    if normalized not in {"auto", "math"}:
+        raise ValueError(f"不支持的 OmniVoice SDPA backend：{requested}")
+
+    torch.backends.cuda.enable_cudnn_sdp(False)
+    torch.backends.cuda.enable_math_sdp(True)
+    if normalized == "math":
+        torch.backends.cuda.enable_flash_sdp(False)
+        torch.backends.cuda.enable_mem_efficient_sdp(False)
+    else:
+        torch.backends.cuda.enable_flash_sdp(True)
+        torch.backends.cuda.enable_mem_efficient_sdp(True)
+    return normalized
+
+
 def seed_everything(torch: Any, np: Any, seed: int) -> None:
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -244,9 +260,11 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
     language = normalize_optional_text(request.get("language"))
     device_map = normalize_optional_text(request.get("device_map")) or "cuda:0"
     dtype = resolve_dtype(torch, request.get("dtype") or "float16")
+    attn_implementation = normalize_optional_text(request.get("attn_implementation")) or "sdpa"
+    sdpa_backend = configure_sdpa_backend(torch, request.get("sdpa_backend") or "math")
     seed = int(request.get("seed") or 42)
     preprocess_prompt = bool(request.get("preprocess_prompt", True))
-    max_chars_per_chunk = int(request.get("max_chars_per_chunk") or 120)
+    max_chars_per_chunk = int(request.get("max_chars_per_chunk") or 60)
     pause_ms = int(request.get("pause_ms") or 250)
     local_files_only = bool(request.get("local_files_only", True))
 
@@ -264,12 +282,16 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
         print(f"[OmniVoice worker] 参考音频: {ref_audio_path}")
         print(f"[OmniVoice worker] 参考文本: {'provided' if ref_text else 'not provided'}")
         print(f"[OmniVoice worker] 文本长度: {len(text)} 字, chunks={len(chunks)}")
-        print(f"[OmniVoice worker] device_map={device_map}, dtype={dtype}")
+        print(
+            f"[OmniVoice worker] device_map={device_map}, dtype={dtype}, "
+            f"attn_implementation={attn_implementation}, sdpa_backend={sdpa_backend}"
+        )
 
         model = OmniVoice.from_pretrained(
             str(model_path),
             device_map=device_map,
             dtype=dtype,
+            attn_implementation=attn_implementation,
             local_files_only=local_files_only,
         )
         sample_rate = int(getattr(model, "sampling_rate", 24000))

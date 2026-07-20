@@ -278,6 +278,8 @@ curl -X POST http://127.0.0.1:8304/v2/synthesize \
 
 如果未提供 `prompt_text`，`8304` 会在 worker 内部调用 OmniVoice 的参考音频自动转写流程，再继续做克隆。这仍然满足“真实用到才加载、请求结束即卸载”的约束，只是首轮请求通常比显式提供转写更慢。
 
+为避免长文本在单次 Qwen3 前向中占用过大的注意力矩阵，OmniVoice 默认每 60 字分段，并使用 SDPA math kernel。遇到 `CUDA driver error` / `device not ready` 时，API 会新启 worker，以 eager attention 和最多 48 字的分段自动重试一次。可通过 `OMNIVOICE_MAX_CHARS_PER_CHUNK`、`OMNIVOICE_ATTN_IMPLEMENTATION`、`OMNIVOICE_SDPA_BACKEND`、`OMNIVOICE_CUDA_RETRY_COUNT` 和 `OMNIVOICE_CUDA_RETRY_MAX_CHARS` 覆盖。对于当前上传的 WAV，OmniVoice 优先使用 SoundFile 解码，因此缺少 ffmpeg 的 pydub 导入警告不影响克隆；MP3/M4A 等格式仍需要系统提供 ffmpeg。
+
 `8305` 的 `Qwen3-TTS-12Hz-1.7B-Base` 也复用同一套 WebUI TTS 协议：
 
 ```bash
@@ -325,7 +327,7 @@ curl -X POST http://127.0.0.1:8306/v2/synthesize \
 - `8302 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `longcat_audiodit` 环境里的 worker，worker 退出即释放模型和显存。
 - `8303 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `moss-tts-py310` 环境里的 worker，worker 退出即释放 MOSS 模型、codec 和显存；默认限制单 chunk 的生成帧数，并对可恢复的 CUDA 驱动异常自动重试一次。
 - `8311 /v1/generate` 是 MOSS-SoundEffect v2.0 的轻量 HTTP 包装器；每个请求都会在 `moss-soundEffect` 环境中启动独立 worker，worker 退出才向调用方返回音频，因此模型、CUDA 上下文和显存不会在 8311 常驻。
-- `8304 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `omnivoice` 环境里的 worker，worker 退出即释放 OmniVoice 模型、参考音色 prompt 和显存。
+- `8304 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `omnivoice` 环境里的 worker，worker 退出即释放 OmniVoice 模型、参考音色 prompt 和显存；默认缩短文本分段，并对可恢复的 CUDA 驱动异常自动重试一次。
 - `8305 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `qwen3-tts` 环境里的 worker，worker 退出即释放 Qwen3-TTS Base 模型、voice clone prompt 和显存。
 - `8306 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `voxcpm2` 环境里的 worker，worker 退出即释放 VoxCPM2 模型和显存。
 - `8300`、`8301`、`8302`、`8303`、`8304`、`8305`、`8306`、`8311` 共享同一个 `GPU_LOCK_FILE`，因此 Qwen / MiMo / IndexTTS2 / dots.tts / LongCat / MOSS / MOSS-SoundEffect / OmniVoice / Qwen3-TTS Base / VoxCPM2 不会并发抢占显存。

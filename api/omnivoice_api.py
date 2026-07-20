@@ -86,6 +86,8 @@ OMNIVOICE_MODEL_DIR = expand_path(
 )
 OMNIVOICE_DEVICE_MAP = os.getenv("OMNIVOICE_DEVICE_MAP", "cuda:0")
 OMNIVOICE_DTYPE = os.getenv("OMNIVOICE_DTYPE", "float16")
+OMNIVOICE_ATTN_IMPLEMENTATION = os.getenv("OMNIVOICE_ATTN_IMPLEMENTATION", "sdpa")
+OMNIVOICE_SDPA_BACKEND = os.getenv("OMNIVOICE_SDPA_BACKEND", "math")
 OMNIVOICE_LANGUAGE = env_optional_text("OMNIVOICE_LANGUAGE", "Chinese")
 OMNIVOICE_SEED = int(os.getenv("OMNIVOICE_SEED", "42"))
 OMNIVOICE_NUM_STEP = int(os.getenv("OMNIVOICE_NUM_STEP", "32"))
@@ -103,9 +105,14 @@ OMNIVOICE_AUDIO_CHUNK_DURATION = float(os.getenv("OMNIVOICE_AUDIO_CHUNK_DURATION
 OMNIVOICE_AUDIO_CHUNK_THRESHOLD = float(os.getenv("OMNIVOICE_AUDIO_CHUNK_THRESHOLD", "30.0"))
 OMNIVOICE_PAD_DURATION = float(os.getenv("OMNIVOICE_PAD_DURATION", "0.1"))
 OMNIVOICE_FADE_DURATION = float(os.getenv("OMNIVOICE_FADE_DURATION", "0.1"))
-OMNIVOICE_MAX_CHARS_PER_CHUNK = int(os.getenv("OMNIVOICE_MAX_CHARS_PER_CHUNK", "120"))
+OMNIVOICE_MAX_CHARS_PER_CHUNK = int(os.getenv("OMNIVOICE_MAX_CHARS_PER_CHUNK", "60"))
 OMNIVOICE_PAUSE_MS = int(os.getenv("OMNIVOICE_PAUSE_MS", "250"))
 OMNIVOICE_REQUEST_TIMEOUT = float(os.getenv("OMNIVOICE_REQUEST_TIMEOUT", "600"))
+OMNIVOICE_CUDA_RETRY_COUNT = max(0, int(os.getenv("OMNIVOICE_CUDA_RETRY_COUNT", "1")))
+OMNIVOICE_CUDA_RETRY_MAX_CHARS = max(
+    1,
+    int(os.getenv("OMNIVOICE_CUDA_RETRY_MAX_CHARS", "48")),
+)
 
 OMNIVOICE_WORKER_SCRIPT = os.path.join(API_DIR, "omnivoice_tts_worker.py")
 OMNIVOICE_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "omnivoice_worker")
@@ -273,6 +280,20 @@ def worker_error_excerpt(output: str) -> str:
     return " | ".join(lines[-8:])
 
 
+def is_retryable_cuda_error(error: BaseException) -> bool:
+    message = str(error).lower()
+    return any(
+        marker in message
+        for marker in (
+            "cuda driver error",
+            "device not ready",
+            "cuda error:",
+            "cublas_status_",
+            "cudnn_status_",
+        )
+    )
+
+
 class OmniVoiceSynthesizeRequest(CloneSynthesisRequest):
 
     text: str
@@ -281,6 +302,7 @@ class OmniVoiceSynthesizeRequest(CloneSynthesisRequest):
     language: Optional[str] = None
     device_map: Optional[str] = None
     dtype: Optional[str] = None
+    attn_implementation: Optional[str] = None
     num_step: Optional[int] = None
     guidance_scale: Optional[float] = None
     speed: Optional[float] = None
@@ -321,6 +343,10 @@ class OmniVoiceWorkerManager:
             "model_path": OMNIVOICE_MODEL_DIR,
             "device_map": request.device_map or OMNIVOICE_DEVICE_MAP,
             "dtype": request.dtype or OMNIVOICE_DTYPE,
+            "attn_implementation": (
+                request.attn_implementation or OMNIVOICE_ATTN_IMPLEMENTATION
+            ),
+            "sdpa_backend": OMNIVOICE_SDPA_BACKEND,
             "language": normalize_optional_text(request.language) if request.language is not None else OMNIVOICE_LANGUAGE,
             "seed": OMNIVOICE_SEED,
             "num_step": request.num_step if request.num_step is not None else OMNIVOICE_NUM_STEP,
@@ -378,6 +404,40 @@ class OmniVoiceWorkerManager:
         }
 
     def run_worker(self, payload: dict) -> bytes:
+        attempt_payload = dict(payload)
+        try:
+            for attempt in range(OMNIVOICE_CUDA_RETRY_COUNT + 1):
+                try:
+                    audio_bytes = self._run_worker_once(attempt_payload)
+                    self.last_error = None
+                    return audio_bytes
+                except RuntimeError as exc:
+                    if attempt >= OMNIVOICE_CUDA_RETRY_COUNT or not is_retryable_cuda_error(exc):
+                        raise
+
+                    retry_number = attempt + 1
+                    print(
+                        f"[OmniVoice] 检测到可恢复的 CUDA 异常，准备重试 "
+                        f"{retry_number}/{OMNIVOICE_CUDA_RETRY_COUNT}: {exc}"
+                    )
+                    attempt_payload = dict(attempt_payload)
+                    attempt_payload["attn_implementation"] = "eager"
+                    attempt_payload["sdpa_backend"] = "math"
+                    attempt_payload["max_chars_per_chunk"] = min(
+                        int(
+                            attempt_payload.get("max_chars_per_chunk")
+                            or OMNIVOICE_MAX_CHARS_PER_CHUNK
+                        ),
+                        OMNIVOICE_CUDA_RETRY_MAX_CHARS,
+                    )
+                    wait_after_cuda_release("before OmniVoice CUDA retry")
+        except Exception as exc:
+            self.last_error = str(exc)
+            raise
+
+        raise RuntimeError("OmniVoice worker 重试流程异常结束。")
+
+    def _run_worker_once(self, payload: dict) -> bytes:
         conda_exe = resolve_conda_executable()
         if not conda_exe:
             raise RuntimeError("未找到 conda 命令，无法调用 OmniVoice worker。")
@@ -447,11 +507,7 @@ class OmniVoiceWorkerManager:
 
             with open(output_path, "rb") as f:
                 audio_bytes = f.read()
-            self.last_error = None
             return audio_bytes
-        except Exception as exc:
-            self.last_error = str(exc)
-            raise
         finally:
             for path in (request_path, output_path):
                 try:
@@ -490,6 +546,8 @@ async def health():
             "request_timeout": OMNIVOICE_REQUEST_TIMEOUT,
             "device_map": OMNIVOICE_DEVICE_MAP,
             "dtype": OMNIVOICE_DTYPE,
+            "attn_implementation": OMNIVOICE_ATTN_IMPLEMENTATION,
+            "sdpa_backend": OMNIVOICE_SDPA_BACKEND,
             "language": OMNIVOICE_LANGUAGE,
             "seed": OMNIVOICE_SEED,
             "num_step": OMNIVOICE_NUM_STEP,
@@ -509,6 +567,8 @@ async def health():
             "fade_duration": OMNIVOICE_FADE_DURATION,
             "max_chars_per_chunk": OMNIVOICE_MAX_CHARS_PER_CHUNK,
             "pause_ms": OMNIVOICE_PAUSE_MS,
+            "cuda_retry_count": OMNIVOICE_CUDA_RETRY_COUNT,
+            "cuda_retry_max_chars": OMNIVOICE_CUDA_RETRY_MAX_CHARS,
             "prompt_text_fallback": "upload sidecar -> OmniVoice internal ASR",
         },
         "last_errors": {
@@ -586,6 +646,8 @@ if __name__ == "__main__":
     print(f"[配置] worker 脚本: {OMNIVOICE_WORKER_SCRIPT}")
     print(
         f"[配置] device_map={OMNIVOICE_DEVICE_MAP}, dtype={OMNIVOICE_DTYPE}, "
+        f"attn_implementation={OMNIVOICE_ATTN_IMPLEMENTATION}, "
+        f"sdpa_backend={OMNIVOICE_SDPA_BACKEND}, "
         f"language={OMNIVOICE_LANGUAGE or 'auto'}, num_step={OMNIVOICE_NUM_STEP}, "
         f"guidance_scale={OMNIVOICE_GUIDANCE_SCALE}"
     )
@@ -593,5 +655,9 @@ if __name__ == "__main__":
         f"[配置] speed={OMNIVOICE_SPEED}, duration={OMNIVOICE_DURATION}, "
         f"max_chars_per_chunk={OMNIVOICE_MAX_CHARS_PER_CHUNK}, pause_ms={OMNIVOICE_PAUSE_MS}"
     )
-    print(f"[配置] local_files_only={LOCAL_FILES_ONLY}, request_timeout={OMNIVOICE_REQUEST_TIMEOUT}")
+    print(
+        f"[配置] local_files_only={LOCAL_FILES_ONLY}, request_timeout={OMNIVOICE_REQUEST_TIMEOUT}, "
+        f"cuda_retry={OMNIVOICE_CUDA_RETRY_COUNT}, "
+        f"retry_max_chars={OMNIVOICE_CUDA_RETRY_MAX_CHARS}"
+    )
     uvicorn.run(app, host=API_HOST, port=API_PORT)
