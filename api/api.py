@@ -10,8 +10,10 @@ import multiprocessing
 import os
 import queue
 import re
+import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -19,8 +21,6 @@ import urllib.error
 import urllib.request
 import wave
 from contextlib import contextmanager
-
-import numpy as np
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:128")
 os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
@@ -33,7 +33,6 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Res
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
-from audio_trim import trim_leading_silence
 from synthesis_request import CloneSynthesisRequest
 
 # ==========================================
@@ -86,6 +85,7 @@ INDEXTTS_DEVICE = os.getenv("INDEXTTS_DEVICE") or None
 INDEXTTS_USE_FP16 = env_bool("INDEXTTS_USE_FP16", True)
 INDEXTTS_USE_CUDA_KERNEL = env_bool("INDEXTTS_USE_CUDA_KERNEL", False)
 INDEXTTS_NUM_BEAMS = int(os.getenv("INDEXTTS_NUM_BEAMS", "1"))
+INDEXTTS_REQUEST_TIMEOUT = float(os.getenv("INDEXTTS_REQUEST_TIMEOUT", "600"))
 CUDA_RELEASE_DELAY = float(os.getenv("CUDA_RELEASE_DELAY", "2.0"))
 QWEN_DEVICE = os.getenv("QWEN_DEVICE") or None
 QWEN_DTYPE = os.getenv("QWEN_DTYPE") or None
@@ -104,6 +104,9 @@ MIMO_RETRY_BASE_SECONDS = float(os.getenv("MIMO_RETRY_BASE_SECONDS", "5"))
 MIMO_RETRY_MAX_SECONDS = float(os.getenv("MIMO_RETRY_MAX_SECONDS", "60"))
 API_HOST = os.getenv("HOST", "0.0.0.0")
 API_PORT = int(os.getenv("PORT", "8300"))
+
+INDEXTTS_WORKER_SCRIPT = os.path.join(API_DIR, "indextts_worker.py")
+INDEXTTS_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "indextts_worker")
 
 INDEXTTS_AUX_DIR = os.path.join(INDEXTTS_MODEL_DIR, "hf_cache")
 INDEXTTS_REQUIRED_FILES = (
@@ -147,6 +150,7 @@ os.makedirs(os.environ["HF_MODULES_CACHE"], exist_ok=True)
 os.makedirs(os.environ["NUMBA_CACHE_DIR"], exist_ok=True)
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 os.makedirs(os.environ["XDG_CACHE_HOME"], exist_ok=True)
+os.makedirs(INDEXTTS_WORKER_TMP_DIR, exist_ok=True)
 gpu_lock_dir = os.path.dirname(GPU_LOCK_FILE)
 if gpu_lock_dir:
     os.makedirs(gpu_lock_dir, exist_ok=True)
@@ -244,6 +248,13 @@ def is_cuda_runtime_error(exc: BaseException | str) -> bool:
     return any(marker in text for marker in CUDA_ERROR_MARKERS)
 
 
+def worker_error_excerpt(output: str) -> str:
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if not lines:
+        return "IndexTTS2 worker 未输出错误信息。"
+    return " | ".join(lines[-12:])
+
+
 def clear_cuda_cache(label: str = "") -> None:
     gc.collect()
     if not torch.cuda.is_available():
@@ -267,22 +278,6 @@ def wait_after_cuda_release(label: str = "") -> None:
     if label:
         print(f"[CUDA] 等待 {CUDA_RELEASE_DELAY:.1f}s 释放显存: {label}")
     time.sleep(CUDA_RELEASE_DELAY)
-
-
-def assert_cuda_ready(operation: str) -> None:
-    if not torch.cuda.is_available():
-        return
-    try:
-        probe = torch.empty(1, device="cuda")
-        probe.fill_(1)
-        del probe
-        torch.cuda.synchronize()
-    except Exception as exc:
-        raise RuntimeError(
-            f"{operation} 前 CUDA 自检失败: {exc}. "
-            "请先停止残留的 python/api.py 进程；如果 nvidia-smi 仍显示已退出进程占用显存，"
-            "需要重启 WSL 或宿主机 NVIDIA 驱动后再启动服务。"
-        ) from exc
 
 
 def cuda_status() -> dict:
@@ -409,8 +404,8 @@ def qwen_daemon(input_q, output_q):
 # ==========================================
 class ModelManager:
     def __init__(self):
-        self.indextts = None
         self.indextts_error: Optional[str] = None
+        self.indextts_process: Optional[subprocess.Popen] = None
         self.qwen_process: Optional[multiprocessing.Process] = None
         self.qwen_in_q: Optional[multiprocessing.Queue] = None
         self.qwen_out_q: Optional[multiprocessing.Queue] = None
@@ -420,60 +415,7 @@ class ModelManager:
         self.main_pid = os.getpid()
         
         if PRELOAD_INDEXTTS and multiprocessing.current_process().name == 'MainProcess':
-            print("[启动] PRELOAD_INDEXTTS 已忽略：当前策略为真实请求时加载、请求结束后卸载。")
-
-    def _init_resident_model(self):
-        print(f"[启动] 主进程 PID: {self.main_pid}")
-        self.ensure_indextts_loaded()
-
-    def ensure_indextts_loaded(self):
-        if self.indextts is not None:
-            return
-
-        print("[IndexTTS2] 正在载入本地模型...")
-        if INDEXTTS_CODE_DIR:
-            indextts_code_path = expand_path(INDEXTTS_CODE_DIR)
-            if os.path.isdir(indextts_code_path) and indextts_code_path not in sys.path:
-                sys.path.insert(0, indextts_code_path)
-
-        missing = []
-        if not os.path.isdir(INDEXTTS_MODEL_DIR):
-            missing.append(f"模型目录不存在: {INDEXTTS_MODEL_DIR}")
-        if not os.path.isfile(INDEXTTS_CFG_PATH):
-            missing.append(f"配置文件不存在: {INDEXTTS_CFG_PATH}")
-        file_status = indextts_file_status()
-        if file_status["main_missing"]:
-            missing.append("主模型文件缺失: " + ", ".join(file_status["main_missing"]))
-        if file_status["aux_missing"]:
-            missing.append("辅助模型文件缺失: " + ", ".join(file_status["aux_missing"]))
-        if missing:
-            self.indextts_error = "；".join(missing)
-            raise RuntimeError(self.indextts_error)
-
-        from indextts.infer_v2 import IndexTTS2
-
-        assert_cuda_ready("加载 IndexTTS2")
-
-        try:
-            self.indextts = IndexTTS2(
-                model_dir=INDEXTTS_MODEL_DIR,
-                cfg_path=INDEXTTS_CFG_PATH,
-                aux_paths=indextts_aux_paths(),
-                device=INDEXTTS_DEVICE,
-                use_fp16=INDEXTTS_USE_FP16,
-                use_cuda_kernel=INDEXTTS_USE_CUDA_KERNEL,
-            )
-            self.indextts_error = None
-            print(
-                "✅ IndexTTS2 就绪。"
-                f" device={self.indextts.device}, fp16={self.indextts.use_fp16},"
-                f" cuda_kernel={self.indextts.use_cuda_kernel}"
-            )
-        except Exception as e:
-            self.indextts = None
-            self.indextts_error = str(e)
-            clear_cuda_cache("IndexTTS2 load failed")
-            raise
+            print("[启动] PRELOAD_INDEXTTS 已忽略：IndexTTS2 使用一次性 worker，不在 API 进程常驻。")
 
     def _kill_zombies(self):
         """云端兼容清理逻辑。本地默认关闭，避免误杀用户自己的 Python 任务。"""
@@ -510,6 +452,148 @@ class ModelManager:
                     pass
         except Exception:
             pass
+
+    def build_indextts_worker_payload(self, request, ref_audio_path: str) -> dict:
+        missing = []
+        if not os.path.isdir(INDEXTTS_MODEL_DIR):
+            missing.append(f"模型目录不存在: {INDEXTTS_MODEL_DIR}")
+        if not os.path.isfile(INDEXTTS_CFG_PATH):
+            missing.append(f"配置文件不存在: {INDEXTTS_CFG_PATH}")
+        file_status = indextts_file_status()
+        if file_status["main_missing"]:
+            missing.append("主模型文件缺失: " + ", ".join(file_status["main_missing"]))
+        if file_status["aux_missing"]:
+            missing.append("辅助模型文件缺失: " + ", ".join(file_status["aux_missing"]))
+        if not os.path.isfile(ref_audio_path):
+            missing.append(f"参考音频不存在: {ref_audio_path}")
+        if missing:
+            self.indextts_error = "；".join(missing)
+            raise RuntimeError(self.indextts_error)
+
+        return {
+            "text": request.text,
+            "ref_audio_path": ref_audio_path,
+            "emo_vector": request.emo_vector,
+            "emo_text": request.emo_text,
+            "model_dir": INDEXTTS_MODEL_DIR,
+            "cfg_path": INDEXTTS_CFG_PATH,
+            "code_dir": INDEXTTS_CODE_DIR,
+            "aux_paths": indextts_aux_paths(),
+            "device": INDEXTTS_DEVICE,
+            "use_fp16": INDEXTTS_USE_FP16,
+            "use_cuda_kernel": INDEXTTS_USE_CUDA_KERNEL,
+            "num_beams": INDEXTTS_NUM_BEAMS,
+            "local_files_only": LOCAL_FILES_ONLY,
+            "runtime_cache_dir": RUNTIME_CACHE_DIR,
+            "hf_mirror_dir": HF_MIRROR_DIR,
+        }
+
+    @staticmethod
+    def _terminate_indextts_worker(proc: subprocess.Popen) -> None:
+        if proc.poll() is not None:
+            return
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        except Exception as exc:
+            print(f"⚠️ [IndexTTS2] 终止 worker 进程组失败: {exc}")
+            proc.terminate()
+
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            print("⚠️ [IndexTTS2] worker 未及时退出，强制终止")
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except Exception:
+                proc.kill()
+            proc.wait(timeout=5)
+
+    def run_indextts_worker(self, payload: dict) -> bytes:
+        if not os.path.isfile(INDEXTTS_WORKER_SCRIPT):
+            raise RuntimeError(f"IndexTTS2 worker 脚本不存在: {INDEXTTS_WORKER_SCRIPT}")
+
+        request_fd, request_path = tempfile.mkstemp(
+            dir=INDEXTTS_WORKER_TMP_DIR,
+            prefix="indextts_req_",
+            suffix=".json",
+        )
+        output_fd, output_path = tempfile.mkstemp(
+            dir=INDEXTTS_WORKER_TMP_DIR,
+            prefix="indextts_out_",
+            suffix=".wav",
+        )
+        os.close(request_fd)
+        os.close(output_fd)
+        proc: Optional[subprocess.Popen] = None
+
+        try:
+            with open(request_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False)
+
+            command = [
+                sys.executable,
+                INDEXTTS_WORKER_SCRIPT,
+                "--input-json",
+                request_path,
+                "--output-wav",
+                output_path,
+            ]
+            print(f"[IndexTTS2] 启动一次性 worker: python={sys.executable}")
+            started = time.perf_counter()
+            proc = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+                env=os.environ.copy(),
+            )
+            self.indextts_process = proc
+            try:
+                stdout, stderr = proc.communicate(timeout=INDEXTTS_REQUEST_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                self._terminate_indextts_worker(proc)
+                stdout, stderr = proc.communicate()
+                raise RuntimeError(
+                    f"IndexTTS2 worker 超时（>{INDEXTTS_REQUEST_TIMEOUT:.0f}s）"
+                )
+
+            elapsed = time.perf_counter() - started
+            if stdout.strip():
+                print(stdout.rstrip())
+            if stderr.strip():
+                print(stderr.rstrip())
+            print(f"[IndexTTS2] worker 退出码={proc.returncode}，耗时 {elapsed:.2f}s")
+
+            if proc.returncode != 0:
+                raise RuntimeError(worker_error_excerpt(stderr or stdout))
+            if not os.path.isfile(output_path) or os.path.getsize(output_path) == 0:
+                raise RuntimeError("IndexTTS2 worker 未生成音频文件。")
+
+            with open(output_path, "rb") as f:
+                audio_bytes = f.read()
+            self.indextts_error = None
+            return audio_bytes
+        except Exception as exc:
+            self.indextts_error = str(exc)
+            raise
+        finally:
+            if proc is not None:
+                self._terminate_indextts_worker(proc)
+            if self.indextts_process is proc:
+                self.indextts_process = None
+            for path in (request_path, output_path):
+                try:
+                    if os.path.exists(path):
+                        os.remove(path)
+                except Exception:
+                    pass
+            if proc is not None:
+                wait_after_cuda_release("after IndexTTS2 worker exit")
 
     def ensure_qwen_loaded(self):
         if self.qwen_process is not None and self.qwen_process.is_alive():
@@ -564,18 +648,16 @@ class ModelManager:
         print("✅ [调度器] Qwen3 已卸载")
 
     def unload_indextts(self):
-        if self.indextts is None:
+        proc = self.indextts_process
+        if proc is None:
             return
 
-        print("⚠️ [调度器] 正在卸载 IndexTTS2...")
-        try:
-            del self.indextts
-        except Exception:
-            pass
-        self.indextts = None
-        clear_cuda_cache("after IndexTTS2 unload")
-        wait_after_cuda_release("after IndexTTS2 unload")
-        print("✅ [调度器] IndexTTS2 已卸载")
+        print("⚠️ [调度器] 正在终止 IndexTTS2 worker...")
+        self._terminate_indextts_worker(proc)
+        if self.indextts_process is proc:
+            self.indextts_process = None
+        wait_after_cuda_release("after IndexTTS2 worker exit")
+        print("✅ [调度器] IndexTTS2 worker 已退出")
 
     def unload_all(self):
         self.unload_qwen()
@@ -926,6 +1008,8 @@ async def health():
             "indextts_model_dir": INDEXTTS_MODEL_DIR,
             "indextts_cfg_path": INDEXTTS_CFG_PATH,
             "indextts_aux_dir": INDEXTTS_AUX_DIR,
+            "indextts_worker_script": INDEXTTS_WORKER_SCRIPT,
+            "indextts_worker_tmp_dir": INDEXTTS_WORKER_TMP_DIR,
             "prompts_dir": PROMPTS_DIR,
             "gpu_lock_file": GPU_LOCK_FILE,
             "mimo_base_url": MIMO_BASE_URL,
@@ -937,6 +1021,7 @@ async def health():
             "indextts_model_dir": os.path.isdir(INDEXTTS_MODEL_DIR),
             "indextts_config": os.path.isfile(INDEXTTS_CFG_PATH),
             "indextts_package": indextts_pkg,
+            "indextts_worker_script": os.path.isfile(INDEXTTS_WORKER_SCRIPT),
             "indextts_main_files": indextts_files["main_ready"],
             "indextts_aux_files": indextts_files["aux_ready"],
             "indextts_ready": indextts_files["ready"],
@@ -949,7 +1034,9 @@ async def health():
         },
         "loaded": {
             "qwen_process": bool(manager.qwen_process and manager.qwen_process.is_alive()),
-            "indextts": manager.indextts is not None,
+            "indextts": bool(
+                manager.indextts_process and manager.indextts_process.poll() is None
+            ),
         },
         "last_errors": {
             "indextts": manager.indextts_error,
@@ -962,6 +1049,8 @@ async def health():
         "runtime": {
             "voice_design_providers": ["qwen", "mimo"],
             "qwen_request_timeout": QWEN_REQUEST_TIMEOUT,
+            "indextts_request_timeout": INDEXTTS_REQUEST_TIMEOUT,
+            "indextts_model_lifecycle": "one request -> one worker -> process exit releases VRAM",
             "mimo_model": MIMO_MODEL,
             "mimo_auth_header": MIMO_AUTH_HEADER,
             "mimo_timeout": MIMO_TIMEOUT,
@@ -1002,7 +1091,7 @@ async def internal_unload_all(request: Request):
     assert_local_request(request)
     with manager.lock:
         manager.unload_all()
-    return JSONResponse({"code": 200, "msg": "已卸载 qwen 和 indextts"})
+    return JSONResponse({"code": 200, "msg": "已卸载 Qwen 并终止活动的 IndexTTS2 worker"})
 
 @app.post("/v1/upload_audio")
 async def upload_audio(audio: UploadFile = File(...), full_path: str = Form(...)):
@@ -1061,34 +1150,12 @@ async def synthesize_v2(request: TextToSpeechRequest):
             manager._kill_zombies() # 双重保险
 
             real_file_path = os.path.join(PROMPTS_DIR, hash_filename(request.audio_path))
-            temp_out = os.path.join(PROMPTS_DIR, f"temp_synth_{time.time_ns()}.wav")
             if not os.path.isfile(real_file_path):
                 raise HTTPException(status_code=404, detail="音频不存在")
 
             try:
-                try:
-                    manager.ensure_indextts_loaded()
-                except Exception as e:
-                    manager.indextts_error = str(e)
-                    raise HTTPException(status_code=503, detail=f"IndexTTS2 未就绪: {e}")
-
-                manager.indextts.infer(
-                    spk_audio_prompt=real_file_path,
-                    text=request.text,
-                    output_path=temp_out,
-                    emo_vector=request.emo_vector,
-                    emo_text=request.emo_text,
-                    use_emo_text=bool(request.emo_text),
-                    emo_alpha=0.6,
-                    num_beams=INDEXTTS_NUM_BEAMS,
-                )
-                waveform, sample_rate = sf.read(temp_out, dtype="float32", always_2d=True)
-                waveform, trimmed_samples = trim_leading_silence(waveform, sample_rate, np)
-                if trimmed_samples > 0:
-                    print(f"[IndexTTS2] 裁掉前导空白 {trimmed_samples / sample_rate:.2f}s")
-                wav_buffer = io.BytesIO()
-                sf.write(wav_buffer, waveform, sample_rate, format="WAV")
-                data = wav_buffer.getvalue()
+                payload = manager.build_indextts_worker_payload(request, real_file_path)
+                data = manager.run_indextts_worker(payload)
                 return Response(content=data, media_type="audio/wav")
             except HTTPException:
                 raise
@@ -1096,20 +1163,15 @@ async def synthesize_v2(request: TextToSpeechRequest):
                 manager.indextts_error = str(e)
                 traceback.print_exc()
                 if is_cuda_runtime_error(e):
-                    manager.unload_indextts()
                     raise HTTPException(
                         status_code=500,
                         detail=(
-                            f"{e}. 已卸载 IndexTTS2 以释放损坏的 CUDA 上下文；"
-                            "请重试一次。如果 nvidia-smi 仍显示已退出的 python 进程占用显存，"
+                            f"{e}. IndexTTS2 worker 已退出，当前请求的 CUDA 上下文已由进程边界回收；"
+                            "可以直接重试。如果新 worker 仍报 device not ready，"
                             "需要重启 WSL 或宿主机 NVIDIA 驱动。"
                         ),
                     )
                 raise HTTPException(status_code=500, detail=str(e))
-            finally:
-                if os.path.exists(temp_out):
-                    os.remove(temp_out)
-                manager.unload_indextts()
 
 if __name__ == "__main__":
     multiprocessing.set_start_method('spawn', force=True)
@@ -1122,6 +1184,7 @@ if __name__ == "__main__":
     print(f"[配置] MiMo API key: {'已配置' if os.getenv('MIMO_API_KEY') else '未配置'}")
     print(f"[配置] IndexTTS2 模型目录: {INDEXTTS_MODEL_DIR}")
     print(f"[配置] IndexTTS2 配置: {INDEXTTS_CFG_PATH}")
+    print(f"[配置] IndexTTS2 worker: {INDEXTTS_WORKER_SCRIPT}")
     print(f"[配置] prompts 目录: {PROMPTS_DIR}")
     print(f"[配置] GPU 锁文件: {GPU_LOCK_FILE}")
     print(f"[配置] local_files_only={LOCAL_FILES_ONLY}, preload_indextts={PRELOAD_INDEXTTS}")
@@ -1129,6 +1192,7 @@ if __name__ == "__main__":
         f"[配置] indextts_device={INDEXTTS_DEVICE or 'auto'}, "
         f"indextts_fp16={INDEXTTS_USE_FP16}, "
         f"indextts_cuda_kernel={INDEXTTS_USE_CUDA_KERNEL}, "
-        f"indextts_num_beams={INDEXTTS_NUM_BEAMS}"
+        f"indextts_num_beams={INDEXTTS_NUM_BEAMS}, "
+        f"request_timeout={INDEXTTS_REQUEST_TIMEOUT:.0f}s"
     )
     uvicorn.run(app, host=API_HOST, port=API_PORT)

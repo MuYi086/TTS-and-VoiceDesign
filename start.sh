@@ -37,6 +37,7 @@ export INDEXTTS_DEVICE="${INDEXTTS_DEVICE:-}"
 export INDEXTTS_USE_FP16="${INDEXTTS_USE_FP16:-1}"
 export INDEXTTS_USE_CUDA_KERNEL="${INDEXTTS_USE_CUDA_KERNEL:-0}"
 export INDEXTTS_NUM_BEAMS="${INDEXTTS_NUM_BEAMS:-1}"
+export INDEXTTS_REQUEST_TIMEOUT="${INDEXTTS_REQUEST_TIMEOUT:-600}"
 export DOTS_CONDA_ENV="${DOTS_CONDA_ENV:-dots_tts}"
 export DOTS_LANGUAGE="${DOTS_LANGUAGE:-chinese}"
 export DOTS_TEMPLATE_NAME="${DOTS_TEMPLATE_NAME:-}"
@@ -252,6 +253,7 @@ echo "IndexTTS2 device:    ${INDEXTTS_DEVICE:-auto}"
 echo "IndexTTS2 fp16:      $INDEXTTS_USE_FP16"
 echo "IndexTTS2 beams:     $INDEXTTS_NUM_BEAMS"
 echo "CUDA kernel:         $INDEXTTS_USE_CUDA_KERNEL"
+echo "IndexTTS2 timeout:    $INDEXTTS_REQUEST_TIMEOUT s"
 echo "Main API:            http://$HOST:$PORT"
 echo "Main health:         http://127.0.0.1:$PORT/v1/health"
 echo "dots API:            http://$DOTS_HOST:$DOTS_PORT"
@@ -295,8 +297,16 @@ cleanup() {
   trap - INT TERM EXIT
 
   for pid in "$main_pid" "$dots_pid" "$longcat_pid" "$moss_pid" "$soundeffect_pid" "$omnivoice_pid" "$qwen3_tts_pid" "$voxcpm2_pid"; do
-    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-      kill "$pid" 2>/dev/null || true
+    if [[ -n "$pid" ]] && kill -0 -- "-$pid" 2>/dev/null; then
+      kill -TERM -- "-$pid" 2>/dev/null || true
+    fi
+  done
+
+  sleep 1
+
+  for pid in "$main_pid" "$dots_pid" "$longcat_pid" "$moss_pid" "$soundeffect_pid" "$omnivoice_pid" "$qwen3_tts_pid" "$voxcpm2_pid"; do
+    if [[ -n "$pid" ]] && kill -0 -- "-$pid" 2>/dev/null; then
+      kill -KILL -- "-$pid" 2>/dev/null || true
     fi
   done
 
@@ -313,21 +323,21 @@ cleanup() {
 
 trap cleanup INT TERM EXIT
 
-conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/api.py" &
+setsid conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/api.py" &
 main_pid=$!
-HOST="$DOTS_HOST" PORT="$DOTS_PORT" conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/dots_api.py" &
+HOST="$DOTS_HOST" PORT="$DOTS_PORT" setsid conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/dots_api.py" &
 dots_pid=$!
-HOST="$LONGCAT_HOST" PORT="$LONGCAT_PORT" conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/longcat_api.py" &
+HOST="$LONGCAT_HOST" PORT="$LONGCAT_PORT" setsid conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/longcat_api.py" &
 longcat_pid=$!
-HOST="$MOSS_HOST" PORT="$MOSS_PORT" conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/moss_api.py" &
+HOST="$MOSS_HOST" PORT="$MOSS_PORT" setsid conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/moss_api.py" &
 moss_pid=$!
-HOST="$SOUNDEFFECT_HOST" PORT="$SOUNDEFFECT_PORT" conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/soundeffect_api.py" &
+HOST="$SOUNDEFFECT_HOST" PORT="$SOUNDEFFECT_PORT" setsid conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/soundeffect_api.py" &
 soundeffect_pid=$!
-HOST="$OMNIVOICE_HOST" PORT="$OMNIVOICE_PORT" conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/omnivoice_api.py" &
+HOST="$OMNIVOICE_HOST" PORT="$OMNIVOICE_PORT" setsid conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/omnivoice_api.py" &
 omnivoice_pid=$!
-HOST="$QWEN3_TTS_HOST" PORT="$QWEN3_TTS_PORT" conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/qwen3_tts_api.py" &
+HOST="$QWEN3_TTS_HOST" PORT="$QWEN3_TTS_PORT" setsid conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/qwen3_tts_api.py" &
 qwen3_tts_pid=$!
-HOST="$VOXCPM2_HOST" PORT="$VOXCPM2_PORT" conda run --no-capture-output -n "$VOXCPM2_CONDA_ENV" python "$API_DIR/voxcpm2_api.py" &
+HOST="$VOXCPM2_HOST" PORT="$VOXCPM2_PORT" setsid conda run --no-capture-output -n "$VOXCPM2_CONDA_ENV" python "$API_DIR/voxcpm2_api.py" &
 voxcpm2_pid=$!
 
 wait -n "$main_pid" "$dots_pid" "$longcat_pid" "$moss_pid" "$soundeffect_pid" "$omnivoice_pid" "$qwen3_tts_pid" "$voxcpm2_pid"

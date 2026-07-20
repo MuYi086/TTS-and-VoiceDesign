@@ -23,7 +23,7 @@
 conda activate unitale-tts-local
 ```
 
-主 API、`8301` 的 dots HTTP 包装器、`8302` 的 LongCat HTTP 包装器、`8303` 的 MOSS HTTP 包装器、`8304` 的 OmniVoice HTTP 包装器、`8305` 的 Qwen3-TTS HTTP 包装器、`8306` 的 VoxCPM2 HTTP 包装器、IndexTTS2 和 Qwen 子进程使用同一个 conda 环境启动。由于 IndexTTS2 需要
+主 API、`8301` 的 dots HTTP 包装器、`8302` 的 LongCat HTTP 包装器、`8303` 的 MOSS HTTP 包装器、`8304` 的 OmniVoice HTTP 包装器、`8305` 的 Qwen3-TTS HTTP 包装器、`8306` 的 VoxCPM2 HTTP 包装器、IndexTTS2 worker 和 Qwen 子进程使用同一个 conda 环境启动。由于 IndexTTS2 需要
 `transformers==4.52.1/tokenizers==0.21.0`，而 Qwen3-TTS 需要更新版本，Qwen 依赖被侧载到：
 
 ```text
@@ -31,7 +31,13 @@ api/vendor/qwen_libs
 api/vendor/LongCat-AudioDiT
 ```
 
-该目录只会在 Qwen 子进程中加入 `sys.path`，不会污染 IndexTTS2 主进程。Qwen 和 IndexTTS2 都是请求到来时加载，请求结束后卸载。
+该目录只会在 Qwen 子进程中加入 `sys.path`，不会污染 IndexTTS2 worker。Qwen 和 IndexTTS2 都是请求到来时加载，请求结束后卸载。IndexTTS2 的每次合成都由主 API 调用一次性 worker：
+
+```bash
+conda run -n unitale-tts-local python api/indextts_worker.py ...
+```
+
+worker 完成后退出，由操作系统完整回收该次请求的 CUDA 上下文，避免在 API 常驻进程内反复卸载、重载 BigVGAN 和 Transformer 时复用失效的 CUDA 分配器句柄。
 
 `dots.tts-base` 的真实推理不在 `unitale-tts-local` 里执行，而是由 `8301` 服务按请求调用：
 
@@ -309,11 +315,11 @@ curl -X POST http://127.0.0.1:8306/v2/synthesize \
 
 ## 运行策略
 
-- `8300` 的 Qwen 和 IndexTTS2 不同时驻留显存。
+- `8300` 的 Qwen 和 IndexTTS2 worker 不同时占用显存。
 - `8300 /v1/qwen/design` 请求到来时加载 Qwen，返回音频前卸载 Qwen。
-- `8300 /v1/mimo/design` 走 MiMo 云 API，请求前会先卸载已驻留的 Qwen / IndexTTS2。
+- `8300 /v1/mimo/design` 走 MiMo 云 API，请求前会先卸载 Qwen，并终止仍在运行的 IndexTTS2 worker。
 - `8300` 内部通过共享 GPU 锁串行执行 Qwen / MiMo / IndexTTS2，避免本地模型并发占显存。
-- `8300 /v2/synthesize` 会先卸载 Qwen，再按需加载 IndexTTS2，合成结束后卸载 IndexTTS2。
+- `8300 /v2/synthesize` 会先卸载 Qwen，再启动一次性 IndexTTS2 worker；worker 退出后才返回音频并释放共享 GPU 锁。
 - `8301 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `dots_tts` 环境里的 worker，worker 退出即释放模型和显存。
 - `8302 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `longcat_audiodit` 环境里的 worker，worker 退出即释放模型和显存。
 - `8303 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `moss-tts-py310` 环境里的 worker，worker 退出即释放 MOSS 模型、codec 和显存。
