@@ -114,22 +114,14 @@ MOSS_MODEL_DIR = expand_path(
     os.getenv("MOSS_MODEL_DIR", os.path.join(HF_MIRROR_DIR, "OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5"))
 )
 MOSS_CODEC_PATH = os.getenv("MOSS_CODEC_PATH", default_moss_codec_path(HF_MIRROR_DIR))
-MOSS_HELPER_DEFAULT = expand_path(
-    os.path.join("~", "github", "timbre-design", "modelScript", "tts_local_moss_tts_local_transformer.py")
-)
-MOSS_HELPER_LEGACY_PATH = expand_path(
-    os.path.join("~", "github", "timbre-design", "scripts", "tts_local_moss_tts_local_transformer.py")
-)
-MOSS_HELPER_SCRIPT = expand_path(os.getenv("MOSS_HELPER_SCRIPT", MOSS_HELPER_DEFAULT))
-# The helper was moved from scripts/ to modelScript/.  Treat the old default
-# as a stale setting so a shell that previously ran start.sh self-recovers.
-if MOSS_HELPER_SCRIPT == MOSS_HELPER_LEGACY_PATH and os.path.isfile(MOSS_HELPER_DEFAULT):
-    MOSS_HELPER_SCRIPT = MOSS_HELPER_DEFAULT
 MOSS_LANGUAGE = os.getenv("MOSS_LANGUAGE", "Chinese")
 MOSS_INSTRUCTION = env_optional_text("MOSS_INSTRUCTION")
 MOSS_QUALITY = env_optional_text("MOSS_QUALITY")
 MOSS_TOKENS = env_optional_int("MOSS_TOKENS")
 MOSS_MAX_NEW_TOKENS = int(os.getenv("MOSS_MAX_NEW_TOKENS", "4096"))
+MOSS_AUTO_LIMIT_MAX_NEW_TOKENS = env_bool("MOSS_AUTO_LIMIT_MAX_NEW_TOKENS", True)
+MOSS_MIN_NEW_TOKENS = int(os.getenv("MOSS_MIN_NEW_TOKENS", "256"))
+MOSS_NEW_TOKENS_PER_CHAR = float(os.getenv("MOSS_NEW_TOKENS_PER_CHAR", "10"))
 MOSS_N_VQ_FOR_INFERENCE = env_optional_int("MOSS_N_VQ_FOR_INFERENCE")
 MOSS_AUDIO_TEMPERATURE = float(os.getenv("MOSS_AUDIO_TEMPERATURE", "1.7"))
 MOSS_AUDIO_TOP_P = float(os.getenv("MOSS_AUDIO_TOP_P", "0.8"))
@@ -140,10 +132,13 @@ MOSS_TEXT_TOP_P = env_optional_float("MOSS_TEXT_TOP_P")
 MOSS_TEXT_TOP_K = env_optional_int("MOSS_TEXT_TOP_K")
 MOSS_TEXT_REPETITION_PENALTY = env_optional_float("MOSS_TEXT_REPETITION_PENALTY")
 MOSS_ATTN_IMPLEMENTATION = os.getenv("MOSS_ATTN_IMPLEMENTATION", "auto")
+MOSS_SDPA_BACKEND = os.getenv("MOSS_SDPA_BACKEND", "math")
 MOSS_DTYPE = os.getenv("MOSS_DTYPE", "auto")
-MOSS_MAX_CHARS_PER_CHUNK = int(os.getenv("MOSS_MAX_CHARS_PER_CHUNK", "300"))
+MOSS_MAX_CHARS_PER_CHUNK = int(os.getenv("MOSS_MAX_CHARS_PER_CHUNK", "80"))
 MOSS_PAUSE_MS = int(os.getenv("MOSS_PAUSE_MS", "250"))
 MOSS_REQUEST_TIMEOUT = float(os.getenv("MOSS_REQUEST_TIMEOUT", "600"))
+MOSS_CUDA_RETRY_COUNT = max(0, int(os.getenv("MOSS_CUDA_RETRY_COUNT", "1")))
+MOSS_CUDA_RETRY_MAX_NEW_TOKENS = int(os.getenv("MOSS_CUDA_RETRY_MAX_NEW_TOKENS", "512"))
 
 MOSS_WORKER_SCRIPT = os.path.join(API_DIR, "moss_tts_worker.py")
 MOSS_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "moss_worker")
@@ -322,6 +317,20 @@ def worker_error_excerpt(output: str) -> str:
     return " | ".join(lines[-8:])
 
 
+def is_retryable_cuda_error(error: BaseException) -> bool:
+    message = str(error).lower()
+    return any(
+        marker in message
+        for marker in (
+            "cuda driver error",
+            "device not ready",
+            "cuda error:",
+            "cublas_status_",
+            "cudnn_status_",
+        )
+    )
+
+
 class MossSynthesizeRequest(CloneSynthesisRequest):
 
     text: str
@@ -367,12 +376,16 @@ class MossWorkerManager:
             "ref_audio_path": ref_audio_path,
             "model_path": MOSS_MODEL_DIR,
             "codec_path": codec_path,
-            "moss_helper_script": MOSS_HELPER_SCRIPT,
             "language": normalize_language(request.language) if request.language is not None else normalize_language(MOSS_LANGUAGE),
             "instruction": normalize_optional_str(request.instruction) or MOSS_INSTRUCTION,
             "quality": normalize_optional_str(request.quality) or MOSS_QUALITY,
             "tokens": request.tokens if request.tokens is not None else MOSS_TOKENS,
             "max_new_tokens": request.max_new_tokens if request.max_new_tokens is not None else MOSS_MAX_NEW_TOKENS,
+            "auto_limit_max_new_tokens": (
+                MOSS_AUTO_LIMIT_MAX_NEW_TOKENS and request.max_new_tokens is None
+            ),
+            "min_new_tokens": MOSS_MIN_NEW_TOKENS,
+            "new_tokens_per_char": MOSS_NEW_TOKENS_PER_CHAR,
             "n_vq_for_inference": request.n_vq_for_inference if request.n_vq_for_inference is not None else MOSS_N_VQ_FOR_INFERENCE,
             "audio_temperature": request.audio_temperature if request.audio_temperature is not None else MOSS_AUDIO_TEMPERATURE,
             "audio_top_p": request.audio_top_p if request.audio_top_p is not None else MOSS_AUDIO_TOP_P,
@@ -391,6 +404,7 @@ class MossWorkerManager:
                 else MOSS_TEXT_REPETITION_PENALTY
             ),
             "attn_implementation": request.attn_implementation or MOSS_ATTN_IMPLEMENTATION,
+            "sdpa_backend": MOSS_SDPA_BACKEND,
             "dtype": request.dtype or MOSS_DTYPE,
             "max_chars_per_chunk": request.max_chars_per_chunk if request.max_chars_per_chunk is not None else MOSS_MAX_CHARS_PER_CHUNK,
             "pause_ms": request.pause_ms if request.pause_ms is not None else MOSS_PAUSE_MS,
@@ -400,6 +414,38 @@ class MossWorkerManager:
         }
 
     def run_worker(self, payload: dict) -> bytes:
+        attempt_payload = dict(payload)
+        try:
+            for attempt in range(MOSS_CUDA_RETRY_COUNT + 1):
+                try:
+                    audio_bytes = self._run_worker_once(attempt_payload)
+                    self.last_error = None
+                    return audio_bytes
+                except RuntimeError as exc:
+                    if attempt >= MOSS_CUDA_RETRY_COUNT or not is_retryable_cuda_error(exc):
+                        raise
+
+                    retry_number = attempt + 1
+                    print(
+                        f"[MOSS] 检测到可恢复的 CUDA 异常，准备重试 "
+                        f"{retry_number}/{MOSS_CUDA_RETRY_COUNT}: {exc}"
+                    )
+                    attempt_payload = dict(attempt_payload)
+                    attempt_payload["attn_implementation"] = "eager"
+                    attempt_payload["sdpa_backend"] = "math"
+                    attempt_payload["auto_limit_max_new_tokens"] = True
+                    attempt_payload["max_new_tokens"] = min(
+                        int(attempt_payload.get("max_new_tokens") or MOSS_MAX_NEW_TOKENS),
+                        MOSS_CUDA_RETRY_MAX_NEW_TOKENS,
+                    )
+                    wait_after_cuda_release("before MOSS CUDA retry")
+        except Exception as exc:
+            self.last_error = str(exc)
+            raise
+
+        raise RuntimeError("MOSS worker 重试流程异常结束。")
+
+    def _run_worker_once(self, payload: dict) -> bytes:
         conda_exe = resolve_conda_executable()
         if not conda_exe:
             raise RuntimeError("未找到 conda 命令，无法调用 MOSS worker。")
@@ -407,8 +453,6 @@ class MossWorkerManager:
             raise RuntimeError(f"MOSS worker 脚本不存在: {MOSS_WORKER_SCRIPT}")
         if not os.path.isdir(MOSS_MODEL_DIR):
             raise RuntimeError(f"MOSS 模型目录不存在: {MOSS_MODEL_DIR}")
-        if not os.path.isfile(MOSS_HELPER_SCRIPT):
-            raise RuntimeError(f"MOSS 辅助脚本不存在: {MOSS_HELPER_SCRIPT}")
 
         request_fd, request_path = tempfile.mkstemp(dir=MOSS_WORKER_TMP_DIR, prefix="moss_req_", suffix=".json")
         output_fd, output_path = tempfile.mkstemp(dir=MOSS_WORKER_TMP_DIR, prefix="moss_out_", suffix=".wav")
@@ -463,11 +507,7 @@ class MossWorkerManager:
 
             with open(output_path, "rb") as f:
                 audio_bytes = f.read()
-            self.last_error = None
             return audio_bytes
-        except Exception as exc:
-            self.last_error = str(exc)
-            raise
         finally:
             for path in (request_path, output_path):
                 try:
@@ -489,7 +529,7 @@ async def health():
             "hf_mirror_dir": HF_MIRROR_DIR,
             "moss_model_dir": MOSS_MODEL_DIR,
             "moss_codec_path": codec_info["value"],
-            "moss_helper_script": MOSS_HELPER_SCRIPT,
+            "moss_helper_script": MOSS_WORKER_SCRIPT,
             "prompts_dir": PROMPTS_DIR,
             "gpu_lock_file": GPU_LOCK_FILE,
             "worker_script": MOSS_WORKER_SCRIPT,
@@ -498,7 +538,7 @@ async def health():
         "available": {
             "conda": bool(resolve_conda_executable()),
             "worker_script": os.path.isfile(MOSS_WORKER_SCRIPT),
-            "moss_helper_script": os.path.isfile(MOSS_HELPER_SCRIPT),
+            "moss_helper_script": os.path.isfile(MOSS_WORKER_SCRIPT),
             "moss_model_dir": os.path.isdir(MOSS_MODEL_DIR),
             "moss_codec_reference": bool(MOSS_CODEC_PATH),
             "moss_codec_local_path": codec_info["local_path_exists"],
@@ -508,6 +548,7 @@ async def health():
         "cuda": cuda_status(),
         "runtime": {
             "worker_env": MOSS_CONDA_ENV,
+            "helper_source": "bundled in moss_tts_worker.py",
             "local_files_only": LOCAL_FILES_ONLY,
             "request_timeout": MOSS_REQUEST_TIMEOUT,
             "language": MOSS_LANGUAGE,
@@ -515,6 +556,9 @@ async def health():
             "quality": MOSS_QUALITY,
             "tokens": MOSS_TOKENS,
             "max_new_tokens": MOSS_MAX_NEW_TOKENS,
+            "auto_limit_max_new_tokens": MOSS_AUTO_LIMIT_MAX_NEW_TOKENS,
+            "min_new_tokens": MOSS_MIN_NEW_TOKENS,
+            "new_tokens_per_char": MOSS_NEW_TOKENS_PER_CHAR,
             "n_vq_for_inference": MOSS_N_VQ_FOR_INFERENCE,
             "audio_temperature": MOSS_AUDIO_TEMPERATURE,
             "audio_top_p": MOSS_AUDIO_TOP_P,
@@ -525,9 +569,12 @@ async def health():
             "text_top_k": MOSS_TEXT_TOP_K,
             "text_repetition_penalty": MOSS_TEXT_REPETITION_PENALTY,
             "attn_implementation": MOSS_ATTN_IMPLEMENTATION,
+            "sdpa_backend": MOSS_SDPA_BACKEND,
             "dtype": MOSS_DTYPE,
             "max_chars_per_chunk": MOSS_MAX_CHARS_PER_CHUNK,
             "pause_ms": MOSS_PAUSE_MS,
+            "cuda_retry_count": MOSS_CUDA_RETRY_COUNT,
+            "cuda_retry_max_new_tokens": MOSS_CUDA_RETRY_MAX_NEW_TOKENS,
             "codec_reference_kind": codec_info["kind"],
         },
         "last_errors": {
@@ -602,18 +649,24 @@ if __name__ == "__main__":
     print(f"[配置] MOSS worker env: {MOSS_CONDA_ENV}")
     print(f"[配置] MOSS 模型目录: {MOSS_MODEL_DIR}")
     print(f"[配置] MOSS codec: {codec_info['value']} ({codec_info['kind']})")
-    print(f"[配置] MOSS helper: {MOSS_HELPER_SCRIPT}")
+    print(f"[配置] MOSS helpers: bundled in {MOSS_WORKER_SCRIPT}")
     print(f"[配置] prompts 目录: {PROMPTS_DIR}")
     print(f"[配置] GPU 锁文件: {GPU_LOCK_FILE}")
     print(f"[配置] worker 脚本: {MOSS_WORKER_SCRIPT}")
     print(
         f"[配置] language={MOSS_LANGUAGE}, max_new_tokens={MOSS_MAX_NEW_TOKENS}, "
+        f"auto_limit={MOSS_AUTO_LIMIT_MAX_NEW_TOKENS}, "
+        f"min/per_char={MOSS_MIN_NEW_TOKENS}/{MOSS_NEW_TOKENS_PER_CHAR:g}, "
         f"audio_temperature={MOSS_AUDIO_TEMPERATURE}, audio_top_p={MOSS_AUDIO_TOP_P}, "
         f"audio_top_k={MOSS_AUDIO_TOP_K}"
     )
     print(
         f"[配置] attn_implementation={MOSS_ATTN_IMPLEMENTATION}, dtype={MOSS_DTYPE}, "
-        f"max_chars_per_chunk={MOSS_MAX_CHARS_PER_CHUNK}, pause_ms={MOSS_PAUSE_MS}"
+        f"sdpa_backend={MOSS_SDPA_BACKEND}, max_chars_per_chunk={MOSS_MAX_CHARS_PER_CHUNK}, "
+        f"pause_ms={MOSS_PAUSE_MS}"
     )
-    print(f"[配置] local_files_only={LOCAL_FILES_ONLY}, request_timeout={MOSS_REQUEST_TIMEOUT}")
+    print(
+        f"[配置] local_files_only={LOCAL_FILES_ONLY}, request_timeout={MOSS_REQUEST_TIMEOUT}, "
+        f"cuda_retry={MOSS_CUDA_RETRY_COUNT}, retry_cap={MOSS_CUDA_RETRY_MAX_NEW_TOKENS}"
+    )
     uvicorn.run(app, host=API_HOST, port=API_PORT)

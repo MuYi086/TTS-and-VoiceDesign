@@ -63,7 +63,7 @@ conda run -n longcat_audiodit python api/longcat_audiodit_worker.py ...
 conda run -n moss-tts-py310 python api/moss_tts_worker.py ...
 ```
 
-因此 `moss-tts-py310` 环境至少需要安装 OpenMOSS/MOSS-TTS 官方本地运行依赖：`torch`、`torchaudio`、`transformers`。`8303` 的 worker 会复用 `~/github/timbre-design/modelScript/tts_local_moss_tts_local_transformer.py` 里已经验证过的本地 helper，因此该脚本需要存在，且其依赖版本要与 `moss-tts-py310` 环境匹配。不要求在该环境里安装 `fastapi`。
+因此 `moss-tts-py310` 环境至少需要安装 OpenMOSS/MOSS-TTS 官方本地运行依赖：`torch`、`torchaudio`、`transformers`。模型加载、PyTorch/Transformers 兼容补丁和音频收集逻辑均已内置在 `api/moss_tts_worker.py`，不再依赖其他仓库中的 helper 脚本。不要求在该环境里安装 `fastapi`。
 
 `OmniVoice` 的真实推理不在 `unitale-tts-local` 里执行，而是由 `8304` 服务按请求调用：
 
@@ -114,7 +114,6 @@ MiMo 是云端 API，不加载本地模型；默认使用 `https://api.xiaomimim
 /home/muyi086/hf-mirror/google/umt5-base
 /home/muyi086/hf-mirror/FunAudioLLM/SenseVoiceSmall
 /home/muyi086/github/TTS-and-VoiceDesign/api/vendor/LongCat-AudioDiT
-/home/muyi086/github/timbre-design/modelScript/tts_local_moss_tts_local_transformer.py
 /home/muyi086/github/timbre-design/modelScript/tts_local_voxcpm2.py
 ```
 
@@ -154,7 +153,7 @@ curl http://127.0.0.1:8306/v1/health
 
 `indextts_ready=true` 且 `missing.indextts_main=[]`、`missing.indextts_aux=[]` 表示本地文件完整。
 `8302` 的健康检查还会返回 `longcat_repo_path`、`longcat_asr_model_dir` 和自动转写参数。正常情况下 `longcat_repo_path` 应指向当前项目的 `api/vendor/LongCat-AudioDiT`，`longcat_asr_model_dir` 应指向本地 `SenseVoiceSmall`；如果这里为空，再检查 `api/vendor` 或 `hf-mirror` 是否完整。
-`8303` 的健康检查会返回 `moss_helper_script`、`moss_model_dir` 和 `moss_codec_path`。若 `moss_helper_script` 或 `moss_model_dir` 不可用，先检查 `~/github/timbre-design` 和本地 `hf-mirror`。
+`8303` 的健康检查会返回 `moss_helper_script`、`moss_model_dir` 和 `moss_codec_path`。`moss_helper_script` 现在指向仓库内置的 `api/moss_tts_worker.py`；若 MOSS 不可用，只需检查本仓库 worker、本地模型目录和 codec，不再需要 `~/github/timbre-design`。
 `8304` 的健康检查会返回 `omnivoice_model_dir`、`device_map`、`dtype` 和 `prompt_text_fallback`。若 `omnivoice_model_dir` 不可用，先检查本地 `hf-mirror/k2-fsa/OmniVoice`。
 `8305` 的健康检查会返回 `qwen3_tts_model_dir`、`device_map`、`dtype`、`attn_implementation` 和 `prompt_text_fallback`。若 `qwen3_tts_model_dir` 不可用，先检查本地 `hf-mirror/Qwen/Qwen3-TTS-12Hz-1.7B-Base`。
 `8306` 的健康检查会返回 `voxcpm2_model_dir`、`voxcpm2_helper_script`、`device` 和 `prompt_text_fallback`。若 `voxcpm2_model_dir` 或 `voxcpm2_helper_script` 不可用，先检查本地 `hf-mirror/openbmb/VoxCPM2` 与 `~/github/timbre-design/modelScript/tts_local_voxcpm2.py`。
@@ -259,7 +258,7 @@ curl -X POST http://127.0.0.1:8303/v2/synthesize \
   -o moss_synth.wav
 ```
 
-`8303` 的 MOSS 克隆只依赖参考音频，不强制要求 `prompt_text`。如果你希望覆盖默认推理参数，也可以在 `v2/synthesize` 请求里附带 `language`、`instruction`、`quality`、`tokens`、`max_new_tokens` 等可选字段。
+`8303` 的 MOSS 克隆只依赖参考音频，不强制要求 `prompt_text`。默认会按当前文本长度把每个 chunk 的生成预算限制为 `max(256, 字符数 × 10)` 帧（仍不超过 `MOSS_MAX_NEW_TOKENS`），避免模型偶尔未及时输出结束标记时持续扩大 KV cache；显式传入 `max_new_tokens` 可关闭这个自动限制。默认每个 chunk 最多 80 字，并强制 MOSS 的 SDPA 使用稳定的 math kernel；遇到 `CUDA driver error` / `device not ready` 时，API 会以 eager attention 和更小上限自动重试一次。以上行为可通过 `MOSS_AUTO_LIMIT_MAX_NEW_TOKENS`、`MOSS_MIN_NEW_TOKENS`、`MOSS_NEW_TOKENS_PER_CHAR`、`MOSS_MAX_CHARS_PER_CHUNK`、`MOSS_SDPA_BACKEND`、`MOSS_CUDA_RETRY_COUNT` 和 `MOSS_CUDA_RETRY_MAX_NEW_TOKENS` 调整。如果你希望覆盖其他推理参数，也可以在 `v2/synthesize` 请求里附带 `language`、`instruction`、`quality`、`tokens`、`max_new_tokens` 等可选字段。
 
 `8304` 的 `OmniVoice` 复用同一套 WebUI TTS 协议：
 
@@ -324,7 +323,7 @@ curl -X POST http://127.0.0.1:8306/v2/synthesize \
 - `8300 /v2/synthesize` 会先卸载 Qwen，再启动一次性 IndexTTS2 worker；worker 退出后才返回音频并释放共享 GPU 锁。
 - `8301 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `dots_tts` 环境里的 worker，并默认用官方流式 vocoder 限制 BigVGAN 单次解码窗口；worker 退出即释放模型和显存。
 - `8302 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `longcat_audiodit` 环境里的 worker，worker 退出即释放模型和显存。
-- `8303 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `moss-tts-py310` 环境里的 worker，worker 退出即释放 MOSS 模型、codec 和显存。
+- `8303 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `moss-tts-py310` 环境里的 worker，worker 退出即释放 MOSS 模型、codec 和显存；默认限制单 chunk 的生成帧数，并对可恢复的 CUDA 驱动异常自动重试一次。
 - `8311 /v1/generate` 是 MOSS-SoundEffect v2.0 的轻量 HTTP 包装器；每个请求都会在 `moss-soundEffect` 环境中启动独立 worker，worker 退出才向调用方返回音频，因此模型、CUDA 上下文和显存不会在 8311 常驻。
 - `8304 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `omnivoice` 环境里的 worker，worker 退出即释放 OmniVoice 模型、参考音色 prompt 和显存。
 - `8305 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `qwen3-tts` 环境里的 worker，worker 退出即释放 Qwen3-TTS Base 模型、voice clone prompt 和显存。
