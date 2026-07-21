@@ -69,17 +69,28 @@ VOXCPM2_CONDA_ENV = os.getenv("VOXCPM2_CONDA_ENV", "voxcpm2")
 VOXCPM2_MODEL_DIR = expand_path(
     os.getenv("VOXCPM2_MODEL_DIR", os.path.join(HF_MIRROR_DIR, "openbmb/VoxCPM2"))
 )
-VOXCPM2_HELPER_DEFAULT = expand_path(
-    os.path.join("~", "github", "timbre-design", "modelScript", "tts_local_voxcpm2.py")
-)
-VOXCPM2_HELPER_LEGACY_PATH = expand_path(
-    os.path.join("~", "github", "timbre-design", "scripts", "tts_local_voxcpm2.py")
-)
-VOXCPM2_HELPER_SCRIPT = expand_path(os.getenv("VOXCPM2_HELPER_SCRIPT", VOXCPM2_HELPER_DEFAULT))
-# The helper was moved from scripts/ to modelScript/.  Repair the stale path
-# emitted by earlier start.sh versions while preserving any other user override.
-if VOXCPM2_HELPER_SCRIPT == VOXCPM2_HELPER_LEGACY_PATH and os.path.isfile(VOXCPM2_HELPER_DEFAULT):
-    VOXCPM2_HELPER_SCRIPT = VOXCPM2_HELPER_DEFAULT
+VOXCPM2_HELPER_DEFAULT = os.path.join(API_DIR, "voxcpm2_helpers.py")
+VOXCPM2_EXTERNAL_HELPER_PATHS = {
+    expand_path(
+        os.path.join("~", "github", "timbre-design", "modelScript", "tts_local_voxcpm2.py")
+    ),
+    expand_path(
+        os.path.join("~", "github", "timbre-design", "scripts", "tts_local_voxcpm2.py")
+    ),
+}
+
+
+def resolve_voxcpm2_helper_script(configured_path: Optional[str]) -> str:
+    helper_path = expand_path(configured_path or VOXCPM2_HELPER_DEFAULT)
+    # Earlier versions exported a helper from the adjacent timbre-design
+    # project. Fall back only when one of those known stale paths is missing,
+    # while keeping arbitrary user-provided helper overrides intact.
+    if helper_path in VOXCPM2_EXTERNAL_HELPER_PATHS and not os.path.isfile(helper_path):
+        return VOXCPM2_HELPER_DEFAULT
+    return helper_path
+
+
+VOXCPM2_HELPER_SCRIPT = resolve_voxcpm2_helper_script(os.getenv("VOXCPM2_HELPER_SCRIPT"))
 VOXCPM2_CFG_VALUE = float(os.getenv("VOXCPM2_CFG_VALUE", "2.0"))
 VOXCPM2_INFERENCE_TIMESTEPS = int(os.getenv("VOXCPM2_INFERENCE_TIMESTEPS", "10"))
 VOXCPM2_LOAD_DENOISER = env_bool("VOXCPM2_LOAD_DENOISER", False)

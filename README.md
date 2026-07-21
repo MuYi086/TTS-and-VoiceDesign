@@ -87,7 +87,7 @@ conda run -n qwen3-tts python api/qwen3_tts_worker.py ...
 conda run -n voxcpm2 python api/voxcpm2_worker.py ...
 ```
 
-因此 `voxcpm2` 环境至少需要安装 `voxcpm`、`torch`、`numpy`、`soundfile`。`8306` 的 worker 会复用 `~/github/timbre-design/modelScript/tts_local_voxcpm2.py` 里已经验证过的本地 helper，因此该脚本需要存在，且其依赖版本要与 `voxcpm2` 环境匹配。它同样满足“真实用到才加载，请求结束即卸载”：模型只在 worker 进程内按请求加载，worker 退出后显存立即清理。若未提供 `prompt_text`，`8306` 会走仅参考音频的克隆模式，不会额外加载 ASR。
+因此 `voxcpm2` 环境至少需要安装 `voxcpm`、`torch`、`numpy`、`soundfile`。`8306` 默认使用仓库内置的 `api/voxcpm2_helpers.py`，不依赖其他项目目录；如需适配自定义 `voxcpm` 版本，仍可通过 `VOXCPM2_HELPER_SCRIPT` 覆盖。它同样满足“真实用到才加载，请求结束即卸载”：模型只在 worker 进程内按请求加载，worker 退出后显存立即清理。若未提供 `prompt_text`，`8306` 会走仅参考音频的克隆模式，不会额外加载 ASR。
 
 ```bash
 export MIMO_API_KEY=...
@@ -114,7 +114,7 @@ MiMo 是云端 API，不加载本地模型；默认使用 `https://api.xiaomimim
 /home/muyi086/hf-mirror/google/umt5-base
 /home/muyi086/hf-mirror/FunAudioLLM/SenseVoiceSmall
 /home/muyi086/github/TTS-and-VoiceDesign/api/vendor/LongCat-AudioDiT
-/home/muyi086/github/timbre-design/modelScript/tts_local_voxcpm2.py
+/home/muyi086/github/TTS-and-VoiceDesign/api/voxcpm2_helpers.py
 ```
 
 `hf_cache` 内包含 IndexTTS2 辅助模型：`w2v-bert-2.0`、`semantic_codec`、`campplus`、`bigvgan`。
@@ -156,7 +156,7 @@ curl http://127.0.0.1:8306/v1/health
 `8303` 的健康检查会返回 `moss_helper_script`、`moss_model_dir` 和 `moss_codec_path`。`moss_helper_script` 现在指向仓库内置的 `api/moss_tts_worker.py`；若 MOSS 不可用，只需检查本仓库 worker、本地模型目录和 codec，不再需要 `~/github/timbre-design`。
 `8304` 的健康检查会返回 `omnivoice_model_dir`、`device_map`、`dtype` 和 `prompt_text_fallback`。若 `omnivoice_model_dir` 不可用，先检查本地 `hf-mirror/k2-fsa/OmniVoice`。
 `8305` 的健康检查会返回 `qwen3_tts_model_dir`、`device_map`、`dtype`、`attn_implementation` 和 `prompt_text_fallback`。若 `qwen3_tts_model_dir` 不可用，先检查本地 `hf-mirror/Qwen/Qwen3-TTS-12Hz-1.7B-Base`。
-`8306` 的健康检查会返回 `voxcpm2_model_dir`、`voxcpm2_helper_script`、`device` 和 `prompt_text_fallback`。若 `voxcpm2_model_dir` 或 `voxcpm2_helper_script` 不可用，先检查本地 `hf-mirror/openbmb/VoxCPM2` 与 `~/github/timbre-design/modelScript/tts_local_voxcpm2.py`。
+`8306` 的健康检查会返回 `voxcpm2_model_dir`、`voxcpm2_helper_script`、`device` 和 `prompt_text_fallback`。若 `voxcpm2_model_dir` 或 `voxcpm2_helper_script` 不可用，先检查本地 `hf-mirror/openbmb/VoxCPM2` 与仓库内的 `api/voxcpm2_helpers.py`。
 
 ## 本地回归测试
 
