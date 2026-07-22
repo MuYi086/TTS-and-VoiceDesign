@@ -73,7 +73,7 @@ conda run -n moss-tts-py310 python api/moss_tts_worker.py ...
 conda run -n omnivoice python api/omnivoice_tts_worker.py ...
 ```
 
-因此 `omnivoice` 环境至少需要安装 OmniVoice 官方运行时依赖：`omnivoice`、`torch`、`numpy`、`soundfile`。若上传参考音频时没有同时提供 `prompt_text`，`8304` 会让 OmniVoice 在 worker 内部对参考音频执行一次自动转写；该转写相关模块同样只会在请求期间加载，worker 退出即释放。
+因此 `omnivoice` 环境至少需要安装 OmniVoice 官方运行时依赖：`omnivoice`、`torch`、`numpy`、`soundfile`。若上传参考音频时没有同时提供 `prompt_text`，`8304` 会使用 `OMNIVOICE_ASR_MODEL_DIR` 指向的本地 Whisper 模型自动转写；默认目录是 `$HF_MIRROR_DIR/openai/whisper-large-v3-turbo`。该转写相关模块同样只会在请求期间加载，worker 退出即释放。
 
 `Qwen3-TTS-12Hz-1.7B-Base` 的真实推理不在 `unitale-tts-local` 里执行，而是由 `8305` 服务按请求调用：
 
@@ -111,6 +111,7 @@ MiMo 是云端 API，不加载本地模型；默认使用 `https://api.xiaomimim
 /home/muyi086/hf-mirror/OpenMOSS-Team/MOSS-SoundEffect-v2.0
 /home/muyi086/hf-mirror/OpenMOSS-Team/MOSS-Audio-Tokenizer-v2
 /home/muyi086/hf-mirror/k2-fsa/OmniVoice
+/home/muyi086/hf-mirror/openai/whisper-large-v3-turbo
 /home/muyi086/hf-mirror/Qwen/Qwen3-TTS-12Hz-1.7B-Base
 /home/muyi086/hf-mirror/openbmb/VoxCPM2
 /home/muyi086/hf-mirror/google/umt5-base
@@ -156,7 +157,7 @@ curl http://127.0.0.1:8306/v1/health
 `indextts_ready=true` 且 `missing.indextts_main=[]`、`missing.indextts_aux=[]` 表示本地文件完整。
 `8302` 的健康检查还会返回 `longcat_repo_path`、`longcat_asr_model_dir` 和自动转写参数。正常情况下 `longcat_repo_path` 应指向当前项目的 `api/vendor/LongCat-AudioDiT`，`longcat_asr_model_dir` 应指向本地 `SenseVoiceSmall`；如果这里为空，再检查 `api/vendor` 或 `hf-mirror` 是否完整。
 `8303` 的健康检查会返回 `moss_helper_script`、`moss_model_dir` 和 `moss_codec_path`。`moss_helper_script` 现在指向仓库内置的 `api/moss_tts_worker.py`；若 MOSS 不可用，只需检查本仓库 worker、本地模型目录和 codec，不再需要 `~/github/timbre-design`。
-`8304` 的健康检查会返回 `omnivoice_model_dir`、`device_map`、`dtype` 和 `prompt_text_fallback`。若 `omnivoice_model_dir` 不可用，先检查本地 `hf-mirror/k2-fsa/OmniVoice`。
+`8304` 的健康检查会返回 `omnivoice_model_dir`、`omnivoice_asr_model_dir`、`device_map`、`dtype` 和 `prompt_text_fallback`。若 `omnivoice_model_dir` 不可用，先检查本地 `hf-mirror/k2-fsa/OmniVoice`；若未提供 `prompt_text` 且 `omnivoice_asr_model_dir` 不可用，检查本地 `hf-mirror/openai/whisper-large-v3-turbo`，或通过 `OMNIVOICE_ASR_MODEL_DIR` 覆盖路径。
 `8305` 的健康检查会返回 `qwen3_tts_model_dir`、`device_map`、`dtype`、`attn_implementation` 和 `prompt_text_fallback`。若 `qwen3_tts_model_dir` 不可用，先检查本地 `hf-mirror/Qwen/Qwen3-TTS-12Hz-1.7B-Base`。
 `8306` 的健康检查会返回 `voxcpm2_model_dir`、`voxcpm2_helper_script`、`device` 和 `prompt_text_fallback`。若 `voxcpm2_model_dir` 或 `voxcpm2_helper_script` 不可用，先检查本地 `hf-mirror/openbmb/VoxCPM2` 与仓库内的 `api/voxcpm2_helpers.py`。
 
@@ -278,7 +279,7 @@ curl -X POST http://127.0.0.1:8304/v2/synthesize \
   -o omnivoice_synth.wav
 ```
 
-如果未提供 `prompt_text`，`8304` 会在 worker 内部调用 OmniVoice 的参考音频自动转写流程，再继续做克隆。这仍然满足“真实用到才加载、请求结束即卸载”的约束，只是首轮请求通常比显式提供转写更慢。
+如果未提供 `prompt_text`，`8304` 会在 worker 内部从 `OMNIVOICE_ASR_MODEL_DIR` 显式加载本地 Whisper 模型，执行参考音频自动转写后再继续克隆。这仍然满足“真实用到才加载、请求结束即卸载”的约束，只是首轮请求通常比显式提供转写更慢。纯离线部署必须提前准备该目录；若模型不在默认位置，可用 `OMNIVOICE_ASR_MODEL_DIR=/path/to/whisper-large-v3-turbo bash start.sh` 覆盖。
 
 为避免长文本在单次 Qwen3 前向中占用过大的注意力矩阵，OmniVoice 默认每 60 字分段，并使用 SDPA math kernel。遇到 `CUDA driver error` / `device not ready` 时，API 会新启 worker，以 eager attention 和最多 48 字的分段自动重试一次。可通过 `OMNIVOICE_MAX_CHARS_PER_CHUNK`、`OMNIVOICE_ATTN_IMPLEMENTATION`、`OMNIVOICE_SDPA_BACKEND`、`OMNIVOICE_CUDA_RETRY_COUNT` 和 `OMNIVOICE_CUDA_RETRY_MAX_CHARS` 覆盖。对于当前上传的 WAV，OmniVoice 优先使用 SoundFile 解码，因此缺少 ffmpeg 的 pydub 导入警告不影响克隆；MP3/M4A 等格式仍需要系统提供 ffmpeg。
 

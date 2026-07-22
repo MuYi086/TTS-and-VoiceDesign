@@ -52,6 +52,7 @@ class OmniVoiceCudaRecoveryTests(unittest.TestCase):
 
             with (
                 mock.patch.object(omnivoice_api, "PROMPTS_DIR", tmp_dir),
+                mock.patch.object(omnivoice_api, "OMNIVOICE_ASR_MODEL_DIR", tmp_dir),
                 mock.patch.object(omnivoice_api, "OMNIVOICE_MAX_CHARS_PER_CHUNK", 60),
                 mock.patch.object(omnivoice_api, "OMNIVOICE_ATTN_IMPLEMENTATION", "sdpa"),
                 mock.patch.object(omnivoice_api, "OMNIVOICE_SDPA_BACKEND", "math"),
@@ -61,6 +62,55 @@ class OmniVoiceCudaRecoveryTests(unittest.TestCase):
         self.assertEqual(payload["max_chars_per_chunk"], 60)
         self.assertEqual(payload["attn_implementation"], "sdpa")
         self.assertEqual(payload["sdpa_backend"], "math")
+        self.assertEqual(payload["asr_model_path"], tmp_dir)
+
+    def test_missing_asr_model_fails_before_starting_worker(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            audio_name = "reference.wav"
+            audio_path = Path(tmp_dir) / omnivoice_api.hash_filename(audio_name)
+            audio_path.write_bytes(b"fake-wave")
+            missing_asr_dir = str(Path(tmp_dir) / "missing-whisper")
+            request = omnivoice_api.OmniVoiceSynthesizeRequest(
+                text="测试。",
+                audio_path=audio_name,
+            )
+
+            with (
+                mock.patch.object(omnivoice_api, "PROMPTS_DIR", tmp_dir),
+                mock.patch.object(
+                    omnivoice_api,
+                    "OMNIVOICE_ASR_MODEL_DIR",
+                    missing_asr_dir,
+                ),
+            ):
+                with self.assertRaises(omnivoice_api.HTTPException) as context:
+                    omnivoice_api.OmniVoiceWorkerManager().build_worker_payload(request)
+
+        self.assertEqual(context.exception.status_code, 503)
+        self.assertIn("OMNIVOICE_ASR_MODEL_DIR", context.exception.detail)
+
+    def test_prompt_text_does_not_require_asr_model(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            audio_name = "reference.wav"
+            audio_path = Path(tmp_dir) / omnivoice_api.hash_filename(audio_name)
+            audio_path.write_bytes(b"fake-wave")
+            request = omnivoice_api.OmniVoiceSynthesizeRequest(
+                text="测试。",
+                audio_path=audio_name,
+                prompt_text="参考文本。",
+            )
+
+            with (
+                mock.patch.object(omnivoice_api, "PROMPTS_DIR", tmp_dir),
+                mock.patch.object(
+                    omnivoice_api,
+                    "OMNIVOICE_ASR_MODEL_DIR",
+                    str(Path(tmp_dir) / "missing-whisper"),
+                ),
+            ):
+                payload = omnivoice_api.OmniVoiceWorkerManager().build_worker_payload(request)
+
+        self.assertEqual(payload["ref_text"], "参考文本。")
 
     def test_long_text_is_split_before_generation(self):
         chunks = split_text("字" * 102, 60)

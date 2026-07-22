@@ -257,6 +257,16 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
     ref_audio_path = require_path(str(request.get("ref_audio_path") or ""), "参考音频")
     text = normalize_text(str(request.get("text") or ""))
     ref_text = normalize_optional_text(request.get("ref_text"))
+    asr_model_path = None
+    if ref_text is None:
+        asr_model_path = require_path(
+            str(request.get("asr_model_path") or ""),
+            "OmniVoice 自动转写模型目录",
+        )
+        if not asr_model_path.is_dir():
+            raise NotADirectoryError(
+                f"OmniVoice 自动转写模型路径不是目录：{asr_model_path}"
+            )
     language = normalize_optional_text(request.get("language"))
     device_map = normalize_optional_text(request.get("device_map")) or "cuda:0"
     dtype = resolve_dtype(torch, request.get("dtype") or "float16")
@@ -281,6 +291,8 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
         print(f"[OmniVoice worker] 模型目录: {model_path}")
         print(f"[OmniVoice worker] 参考音频: {ref_audio_path}")
         print(f"[OmniVoice worker] 参考文本: {'provided' if ref_text else 'not provided'}")
+        if asr_model_path is not None:
+            print(f"[OmniVoice worker] ASR 模型目录: {asr_model_path}")
         print(f"[OmniVoice worker] 文本长度: {len(text)} 字, chunks={len(chunks)}")
         print(
             f"[OmniVoice worker] device_map={device_map}, dtype={dtype}, "
@@ -295,6 +307,8 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
             local_files_only=local_files_only,
         )
         sample_rate = int(getattr(model, "sampling_rate", 24000))
+        if asr_model_path is not None:
+            model.load_asr_model(model_name=str(asr_model_path))
         voice_clone_prompt = model.create_voice_clone_prompt(
             ref_audio=str(ref_audio_path),
             ref_text=ref_text,

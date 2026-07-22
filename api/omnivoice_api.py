@@ -82,6 +82,12 @@ OMNIVOICE_CONDA_ENV = os.getenv("OMNIVOICE_CONDA_ENV", "omnivoice")
 OMNIVOICE_MODEL_DIR = expand_path(
     os.getenv("OMNIVOICE_MODEL_DIR", os.path.join(HF_MIRROR_DIR, "k2-fsa/OmniVoice"))
 )
+OMNIVOICE_ASR_MODEL_DIR = expand_path(
+    os.getenv(
+        "OMNIVOICE_ASR_MODEL_DIR",
+        os.path.join(HF_MIRROR_DIR, "openai/whisper-large-v3-turbo"),
+    )
+)
 OMNIVOICE_DEVICE_MAP = os.getenv("OMNIVOICE_DEVICE_MAP", "cuda:0")
 OMNIVOICE_DTYPE = os.getenv("OMNIVOICE_DTYPE", "float16")
 OMNIVOICE_ATTN_IMPLEMENTATION = os.getenv("OMNIVOICE_ATTN_IMPLEMENTATION", "sdpa")
@@ -295,12 +301,22 @@ class OmniVoiceWorkerManager:
         prompt_text = request.prompt_text.strip() if request.prompt_text and request.prompt_text.strip() else None
         if prompt_text is None:
             prompt_text = load_prompt_text_sidecar(request.audio_path)
+        if prompt_text is None and not os.path.isdir(OMNIVOICE_ASR_MODEL_DIR):
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "OmniVoice 自动转写模型目录不存在："
+                    f"{OMNIVOICE_ASR_MODEL_DIR}。请设置 OMNIVOICE_ASR_MODEL_DIR，"
+                    "或在上传参考音频时提供 prompt_text。"
+                ),
+            )
 
         return {
             "text": normalize_synthesis_text(request.text),
             "ref_audio_path": ref_audio_path,
             "ref_text": prompt_text,
             "model_path": OMNIVOICE_MODEL_DIR,
+            "asr_model_path": OMNIVOICE_ASR_MODEL_DIR,
             "device_map": request.device_map or OMNIVOICE_DEVICE_MAP,
             "dtype": request.dtype or OMNIVOICE_DTYPE,
             "attn_implementation": (
@@ -490,6 +506,7 @@ async def health():
         "paths": {
             "hf_mirror_dir": HF_MIRROR_DIR,
             "omnivoice_model_dir": OMNIVOICE_MODEL_DIR,
+            "omnivoice_asr_model_dir": OMNIVOICE_ASR_MODEL_DIR,
             "prompts_dir": PROMPTS_DIR,
             "gpu_lock_file": GPU_LOCK_FILE,
             "worker_script": OMNIVOICE_WORKER_SCRIPT,
@@ -499,6 +516,7 @@ async def health():
             "conda": bool(resolve_conda_executable()),
             "worker_script": os.path.isfile(OMNIVOICE_WORKER_SCRIPT),
             "omnivoice_model_dir": os.path.isdir(OMNIVOICE_MODEL_DIR),
+            "omnivoice_asr_model_dir": os.path.isdir(OMNIVOICE_ASR_MODEL_DIR),
             "torch": module_available("torch"),
             "cuda": cuda["available"],
         },
@@ -533,7 +551,7 @@ async def health():
             "pause_ms": OMNIVOICE_PAUSE_MS,
             "cuda_retry_count": OMNIVOICE_CUDA_RETRY_COUNT,
             "cuda_retry_max_chars": OMNIVOICE_CUDA_RETRY_MAX_CHARS,
-            "prompt_text_fallback": "upload sidecar -> OmniVoice internal ASR",
+            "prompt_text_fallback": "upload sidecar -> local Whisper ASR",
         },
         "last_errors": {
             "omnivoice_tts": manager.last_error,
@@ -605,6 +623,7 @@ if __name__ == "__main__":
     print("==================================================")
     print(f"[配置] OmniVoice worker env: {OMNIVOICE_CONDA_ENV}")
     print(f"[配置] OmniVoice 模型目录: {OMNIVOICE_MODEL_DIR}")
+    print(f"[配置] OmniVoice ASR 模型目录: {OMNIVOICE_ASR_MODEL_DIR}")
     print(f"[配置] prompts 目录: {PROMPTS_DIR}")
     print(f"[配置] GPU 锁文件: {GPU_LOCK_FILE}")
     print(f"[配置] worker 脚本: {OMNIVOICE_WORKER_SCRIPT}")
