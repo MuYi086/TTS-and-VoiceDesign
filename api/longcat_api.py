@@ -1,12 +1,10 @@
 import fcntl
-import gc
 import hashlib
 import importlib.util
 import json
 import os
 import re
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
@@ -20,12 +18,12 @@ from typing import Optional, List
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:128")
 os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
 
-import torch
 import uvicorn
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from synthesis_request import CloneSynthesisRequest
+from gpu_runtime import cuda_status, terminate_process_group
 
 # ==========================================
 # 0. 系统配置
@@ -208,50 +206,12 @@ def gpu_runtime_lock(label: str):
             print(f"[GPU 锁] 已退出: {label}")
 
 
-def clear_cuda_cache(label: str = "") -> None:
-    gc.collect()
-    if not torch.cuda.is_available():
-        return
-
-    prefix = f"[CUDA] {label}: " if label else "[CUDA] "
-    try:
-        torch.cuda.synchronize()
-    except Exception as exc:
-        print(f"{prefix}synchronize 跳过: {exc}")
-    try:
-        torch.cuda.empty_cache()
-        torch.cuda.ipc_collect()
-    except Exception as exc:
-        print(f"{prefix}cache cleanup 跳过: {exc}")
-
-
 def wait_after_cuda_release(label: str = "") -> None:
     if CUDA_RELEASE_DELAY <= 0:
         return
     if label:
         print(f"[CUDA] 等待 {CUDA_RELEASE_DELAY:.1f}s 释放显存: {label}")
     time.sleep(CUDA_RELEASE_DELAY)
-
-
-def cuda_status() -> dict:
-    status = {"available": False}
-    try:
-        status["available"] = torch.cuda.is_available()
-        if not status["available"]:
-            return status
-
-        status["device_count"] = torch.cuda.device_count()
-        status["device_name"] = torch.cuda.get_device_name(0)
-        free_bytes, total_bytes = torch.cuda.mem_get_info()
-        status["memory"] = {
-            "free_mib": round(free_bytes / 1024 / 1024, 1),
-            "total_mib": round(total_bytes / 1024 / 1024, 1),
-            "allocated_mib": round(torch.cuda.memory_allocated() / 1024 / 1024, 1),
-            "reserved_mib": round(torch.cuda.memory_reserved() / 1024 / 1024, 1),
-        }
-    except Exception as exc:
-        status["error"] = str(exc)
-    return status
 
 
 def normalize_synthesis_text(text: str) -> str:
@@ -352,6 +312,7 @@ class LongCatWorkerManager:
 
         result_fd, result_path = tempfile.mkstemp(dir=LONGCAT_WORKER_TMP_DIR, prefix="longcat_prompt_", suffix=".json")
         os.close(result_fd)
+        proc: Optional[subprocess.Popen] = None
 
         try:
             command = [
@@ -389,8 +350,8 @@ class LongCatWorkerManager:
             try:
                 stdout, stderr = proc.communicate(timeout=LONGCAT_ASR_TIMEOUT)
             except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGTERM)
-                stdout, stderr = proc.communicate(timeout=10)
+                terminate_process_group(proc, "LongCat ASR")
+                stdout, stderr = proc.communicate()
                 raise RuntimeError(f"LongCat prompt 自动转写超时（>{LONGCAT_ASR_TIMEOUT:.0f}s）")
 
             elapsed = time.perf_counter() - started
@@ -418,6 +379,7 @@ class LongCatWorkerManager:
             self.last_asr_error = str(exc)
             raise
         finally:
+            terminate_process_group(proc, "LongCat ASR")
             try:
                 if os.path.exists(result_path):
                     os.remove(result_path)
@@ -500,6 +462,7 @@ class LongCatWorkerManager:
         output_fd, output_path = tempfile.mkstemp(dir=LONGCAT_WORKER_TMP_DIR, prefix="longcat_out_", suffix=".wav")
         os.close(request_fd)
         os.close(output_fd)
+        proc: Optional[subprocess.Popen] = None
 
         try:
             with open(request_path, "w", encoding="utf-8") as f:
@@ -538,8 +501,8 @@ class LongCatWorkerManager:
             try:
                 stdout, stderr = proc.communicate(timeout=LONGCAT_REQUEST_TIMEOUT)
             except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGTERM)
-                stdout, stderr = proc.communicate(timeout=10)
+                terminate_process_group(proc, "LongCat")
+                stdout, stderr = proc.communicate()
                 raise RuntimeError(f"LongCat worker 超时（>{LONGCAT_REQUEST_TIMEOUT:.0f}s）")
 
             elapsed = time.perf_counter() - started
@@ -562,6 +525,7 @@ class LongCatWorkerManager:
             self.last_error = str(exc)
             raise
         finally:
+            terminate_process_group(proc, "LongCat")
             for path in (request_path, output_path):
                 try:
                     if os.path.exists(path):
@@ -577,6 +541,7 @@ manager = LongCatWorkerManager()
 async def health():
     resolved_repo_path = resolve_longcat_repo_path()
     repo_candidates = [str(path) for path in iter_longcat_repo_candidates()]
+    cuda = cuda_status()
     return {
         "code": 200,
         "paths": {
@@ -601,11 +566,12 @@ async def health():
             "longcat_repo_path": bool(resolved_repo_path),
             "longcat_asr_model_dir": os.path.isdir(LONGCAT_ASR_MODEL_DIR),
             "torch": module_available("torch"),
-            "cuda": cuda_status()["available"],
+            "cuda": cuda["available"],
         },
-        "cuda": cuda_status(),
+        "cuda": cuda,
         "runtime": {
             "worker_env": LONGCAT_CONDA_ENV,
+            "model_lifecycle": "one request -> one worker -> process exit releases VRAM",
             "local_files_only": LOCAL_FILES_ONLY,
             "request_timeout": LONGCAT_REQUEST_TIMEOUT,
             "max_chars_per_chunk": LONGCAT_MAX_CHARS_PER_CHUNK,
@@ -639,9 +605,10 @@ async def health():
 @app.post("/internal/unload_all")
 async def internal_unload_all(request: Request):
     assert_local_request(request)
-    clear_cuda_cache("longcat api internal unload")
-    wait_after_cuda_release("longcat api internal unload")
-    return JSONResponse({"code": 200, "msg": "longcat wrapper 无常驻模型，已完成显存清理等待"})
+    with gpu_runtime_lock("longcat/unload"):
+        with manager.lock:
+            pass
+    return JSONResponse({"code": 200, "msg": "longcat worker 已退出，无常驻模型"})
 
 
 @app.post("/v1/upload_audio")
@@ -662,7 +629,19 @@ async def upload_audio(
     auto_prompt_text_error = None
     if normalized_prompt_text is None and LONGCAT_AUTO_PROMPT_TEXT:
         try:
-            normalized_prompt_text = manager.transcribe_prompt_audio(full_path, save_path)
+            asr_uses_gpu = not LONGCAT_ASR_DEVICE.strip().lower().startswith("cpu")
+            if asr_uses_gpu:
+                with gpu_runtime_lock("longcat/prompt-asr"):
+                    with manager.lock:
+                        try:
+                            normalized_prompt_text = manager.transcribe_prompt_audio(
+                                full_path,
+                                save_path,
+                            )
+                        finally:
+                            wait_after_cuda_release("after LongCat prompt ASR worker")
+            else:
+                normalized_prompt_text = manager.transcribe_prompt_audio(full_path, save_path)
             prompt_text_source = "auto"
         except Exception as exc:
             auto_prompt_text_error = str(exc)
@@ -702,7 +681,6 @@ async def synthesize_v2(request: LongCatSynthesizeRequest):
                 traceback.print_exc()
                 raise HTTPException(status_code=500, detail=str(exc))
             finally:
-                clear_cuda_cache("after longcat worker")
                 wait_after_cuda_release("after longcat worker")
 
 

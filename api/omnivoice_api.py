@@ -1,12 +1,10 @@
 import fcntl
-import gc
 import hashlib
 import importlib.util
 import json
 import os
 import re
 import shutil
-import signal
 import subprocess
 import tempfile
 import threading
@@ -18,12 +16,12 @@ from typing import Optional, Any
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:128")
 os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
 
-import torch
 import uvicorn
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from synthesis_request import CloneSynthesisRequest
+from gpu_runtime import cuda_status, terminate_process_group
 
 # ==========================================
 # 0. 系统配置
@@ -219,50 +217,12 @@ def gpu_runtime_lock(label: str):
             print(f"[GPU 锁] 已退出: {label}")
 
 
-def clear_cuda_cache(label: str = "") -> None:
-    gc.collect()
-    if not torch.cuda.is_available():
-        return
-
-    prefix = f"[CUDA] {label}: " if label else "[CUDA] "
-    try:
-        torch.cuda.synchronize()
-    except Exception as exc:
-        print(f"{prefix}synchronize 跳过: {exc}")
-    try:
-        torch.cuda.empty_cache()
-        torch.cuda.ipc_collect()
-    except Exception as exc:
-        print(f"{prefix}cache cleanup 跳过: {exc}")
-
-
 def wait_after_cuda_release(label: str = "") -> None:
     if CUDA_RELEASE_DELAY <= 0:
         return
     if label:
         print(f"[CUDA] 等待 {CUDA_RELEASE_DELAY:.1f}s 释放显存: {label}")
     time.sleep(CUDA_RELEASE_DELAY)
-
-
-def cuda_status() -> dict:
-    status = {"available": False}
-    try:
-        status["available"] = torch.cuda.is_available()
-        if not status["available"]:
-            return status
-
-        status["device_count"] = torch.cuda.device_count()
-        status["device_name"] = torch.cuda.get_device_name(0)
-        free_bytes, total_bytes = torch.cuda.mem_get_info()
-        status["memory"] = {
-            "free_mib": round(free_bytes / 1024 / 1024, 1),
-            "total_mib": round(total_bytes / 1024 / 1024, 1),
-            "allocated_mib": round(torch.cuda.memory_allocated() / 1024 / 1024, 1),
-            "reserved_mib": round(torch.cuda.memory_reserved() / 1024 / 1024, 1),
-        }
-    except Exception as exc:
-        status["error"] = str(exc)
-    return status
 
 
 def normalize_synthesis_text(text: str) -> str:
@@ -458,6 +418,7 @@ class OmniVoiceWorkerManager:
         )
         os.close(request_fd)
         os.close(output_fd)
+        proc: Optional[subprocess.Popen] = None
 
         try:
             with open(request_path, "w", encoding="utf-8") as f:
@@ -489,8 +450,8 @@ class OmniVoiceWorkerManager:
             try:
                 stdout, stderr = proc.communicate(timeout=OMNIVOICE_REQUEST_TIMEOUT)
             except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGTERM)
-                stdout, stderr = proc.communicate(timeout=10)
+                terminate_process_group(proc, "OmniVoice")
+                stdout, stderr = proc.communicate()
                 raise RuntimeError(f"OmniVoice worker 超时（>{OMNIVOICE_REQUEST_TIMEOUT:.0f}s）")
 
             elapsed = time.perf_counter() - started
@@ -509,6 +470,7 @@ class OmniVoiceWorkerManager:
                 audio_bytes = f.read()
             return audio_bytes
         finally:
+            terminate_process_group(proc, "OmniVoice")
             for path in (request_path, output_path):
                 try:
                     if os.path.exists(path):
@@ -522,6 +484,7 @@ manager = OmniVoiceWorkerManager()
 
 @app.get("/v1/health")
 async def health():
+    cuda = cuda_status()
     return {
         "code": 200,
         "paths": {
@@ -537,11 +500,12 @@ async def health():
             "worker_script": os.path.isfile(OMNIVOICE_WORKER_SCRIPT),
             "omnivoice_model_dir": os.path.isdir(OMNIVOICE_MODEL_DIR),
             "torch": module_available("torch"),
-            "cuda": cuda_status()["available"],
+            "cuda": cuda["available"],
         },
-        "cuda": cuda_status(),
+        "cuda": cuda,
         "runtime": {
             "worker_env": OMNIVOICE_CONDA_ENV,
+            "model_lifecycle": "one request -> one worker -> process exit releases VRAM",
             "local_files_only": LOCAL_FILES_ONLY,
             "request_timeout": OMNIVOICE_REQUEST_TIMEOUT,
             "device_map": OMNIVOICE_DEVICE_MAP,
@@ -580,9 +544,10 @@ async def health():
 @app.post("/internal/unload_all")
 async def internal_unload_all(request: Request):
     assert_local_request(request)
-    clear_cuda_cache("omnivoice api internal unload")
-    wait_after_cuda_release("omnivoice api internal unload")
-    return JSONResponse({"code": 200, "msg": "omnivoice wrapper 无常驻模型，已完成显存清理等待"})
+    with gpu_runtime_lock("omnivoice/unload"):
+        with manager.lock:
+            pass
+    return JSONResponse({"code": 200, "msg": "omnivoice worker 已退出，无常驻模型"})
 
 
 @app.post("/v1/upload_audio")
@@ -631,7 +596,6 @@ async def synthesize_v2(request: OmniVoiceSynthesizeRequest):
                 traceback.print_exc()
                 raise HTTPException(status_code=500, detail=str(exc))
             finally:
-                clear_cuda_cache("after omnivoice worker")
                 wait_after_cuda_release("after omnivoice worker")
 
 

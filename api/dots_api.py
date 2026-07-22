@@ -1,12 +1,10 @@
 import fcntl
-import gc
 import hashlib
 import importlib.util
 import json
 import os
 import re
 import shutil
-import signal
 import subprocess
 import tempfile
 import threading
@@ -18,12 +16,12 @@ from typing import Optional, List
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:128")
 os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
 
-import torch
 import uvicorn
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from synthesis_request import CloneSynthesisRequest
+from gpu_runtime import cuda_status, terminate_process_group
 
 # ==========================================
 # 0. 系统配置
@@ -166,50 +164,12 @@ def gpu_runtime_lock(label: str):
             print(f"[GPU 锁] 已退出: {label}")
 
 
-def clear_cuda_cache(label: str = "") -> None:
-    gc.collect()
-    if not torch.cuda.is_available():
-        return
-
-    prefix = f"[CUDA] {label}: " if label else "[CUDA] "
-    try:
-        torch.cuda.synchronize()
-    except Exception as exc:
-        print(f"{prefix}synchronize 跳过: {exc}")
-    try:
-        torch.cuda.empty_cache()
-        torch.cuda.ipc_collect()
-    except Exception as exc:
-        print(f"{prefix}cache cleanup 跳过: {exc}")
-
-
 def wait_after_cuda_release(label: str = "") -> None:
     if CUDA_RELEASE_DELAY <= 0:
         return
     if label:
         print(f"[CUDA] 等待 {CUDA_RELEASE_DELAY:.1f}s 释放显存: {label}")
     time.sleep(CUDA_RELEASE_DELAY)
-
-
-def cuda_status() -> dict:
-    status = {"available": False}
-    try:
-        status["available"] = torch.cuda.is_available()
-        if not status["available"]:
-            return status
-
-        status["device_count"] = torch.cuda.device_count()
-        status["device_name"] = torch.cuda.get_device_name(0)
-        free_bytes, total_bytes = torch.cuda.mem_get_info()
-        status["memory"] = {
-            "free_mib": round(free_bytes / 1024 / 1024, 1),
-            "total_mib": round(total_bytes / 1024 / 1024, 1),
-            "allocated_mib": round(torch.cuda.memory_allocated() / 1024 / 1024, 1),
-            "reserved_mib": round(torch.cuda.memory_reserved() / 1024 / 1024, 1),
-        }
-    except Exception as exc:
-        status["error"] = str(exc)
-    return status
 
 
 def normalize_synthesis_text(text: str) -> str:
@@ -312,6 +272,7 @@ class DotsWorkerManager:
         output_fd, output_path = tempfile.mkstemp(dir=DOTS_WORKER_TMP_DIR, prefix="dots_out_", suffix=".wav")
         os.close(request_fd)
         os.close(output_fd)
+        proc: Optional[subprocess.Popen] = None
 
         try:
             with open(request_path, "w", encoding="utf-8") as f:
@@ -343,8 +304,8 @@ class DotsWorkerManager:
             try:
                 stdout, stderr = proc.communicate(timeout=DOTS_REQUEST_TIMEOUT)
             except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGTERM)
-                stdout, stderr = proc.communicate(timeout=10)
+                terminate_process_group(proc, "dots.tts")
+                stdout, stderr = proc.communicate()
                 raise RuntimeError(f"dots.tts worker 超时（>{DOTS_REQUEST_TIMEOUT:.0f}s）")
 
             elapsed = time.perf_counter() - started
@@ -367,6 +328,7 @@ class DotsWorkerManager:
             self.last_error = str(exc)
             raise
         finally:
+            terminate_process_group(proc, "dots.tts")
             for path in (request_path, output_path):
                 try:
                     if os.path.exists(path):
@@ -380,6 +342,7 @@ manager = DotsWorkerManager()
 
 @app.get("/v1/health")
 async def health():
+    cuda = cuda_status()
     return {
         "code": 200,
         "paths": {
@@ -395,11 +358,12 @@ async def health():
             "worker_script": os.path.isfile(DOTS_WORKER_SCRIPT),
             "dots_model_dir": os.path.isdir(DOTS_MODEL_DIR),
             "torch": module_available("torch"),
-            "cuda": cuda_status()["available"],
+            "cuda": cuda["available"],
         },
-        "cuda": cuda_status(),
+        "cuda": cuda,
         "runtime": {
             "worker_env": DOTS_CONDA_ENV,
+            "model_lifecycle": "one request -> one worker -> process exit releases VRAM",
             "local_files_only": LOCAL_FILES_ONLY,
             "request_timeout": DOTS_REQUEST_TIMEOUT,
             "language": DOTS_LANGUAGE,
@@ -424,9 +388,10 @@ async def health():
 @app.post("/internal/unload_all")
 async def internal_unload_all(request: Request):
     assert_local_request(request)
-    clear_cuda_cache("dots api internal unload")
-    wait_after_cuda_release("dots api internal unload")
-    return JSONResponse({"code": 200, "msg": "dots_tts wrapper 无常驻模型，已完成显存清理等待"})
+    with gpu_runtime_lock("dots_tts/unload"):
+        with manager.lock:
+            pass
+    return JSONResponse({"code": 200, "msg": "dots_tts worker 已退出，无常驻模型"})
 
 
 @app.post("/v1/upload_audio")
@@ -479,7 +444,6 @@ async def synthesize_v2(request: DotsSynthesizeRequest):
                 traceback.print_exc()
                 raise HTTPException(status_code=500, detail=str(exc))
             finally:
-                clear_cuda_cache("after dots_tts worker")
                 wait_after_cuda_release("after dots_tts worker")
 
 

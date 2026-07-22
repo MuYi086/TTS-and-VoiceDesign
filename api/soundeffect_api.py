@@ -13,7 +13,6 @@ import fcntl
 import json
 import os
 import shutil
-import signal
 import subprocess
 import tempfile
 import threading
@@ -27,6 +26,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from starlette.middleware.base import BaseHTTPMiddleware
+from gpu_runtime import cuda_status, terminate_process_group
 
 
 API_DIR = Path(__file__).resolve().parent
@@ -195,6 +195,7 @@ class SoundEffectWorkerManager:
         )
         os.close(request_fd)
         os.close(output_fd)
+        process: Optional[subprocess.Popen] = None
         try:
             with open(request_path, "w", encoding="utf-8") as file:
                 json.dump(payload, file, ensure_ascii=False)
@@ -225,8 +226,8 @@ class SoundEffectWorkerManager:
             try:
                 stdout, stderr = process.communicate(timeout=MOSS_SOUNDEFFECT_REQUEST_TIMEOUT)
             except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGTERM)
-                stdout, stderr = process.communicate(timeout=10)
+                terminate_process_group(process, "SoundEffect")
+                stdout, stderr = process.communicate()
                 raise RuntimeError(f"SoundEffect worker 超时（>{MOSS_SOUNDEFFECT_REQUEST_TIMEOUT:.0f}s）")
 
             elapsed = time.perf_counter() - started
@@ -247,6 +248,7 @@ class SoundEffectWorkerManager:
             self.last_error = str(exc)
             raise
         finally:
+            terminate_process_group(process, "SoundEffect")
             for path in (request_path, output_path):
                 try:
                     if os.path.exists(path):
@@ -262,6 +264,7 @@ manager = SoundEffectWorkerManager()
 
 @app.get("/v1/health")
 async def health() -> dict:
+    cuda = cuda_status()
     return {
         "code": 200,
         "paths": {
@@ -275,7 +278,9 @@ async def health() -> dict:
             "model_dir": MOSS_SOUNDEFFECT_MODEL_DIR.is_dir(),
             "model_weights_complete": local_model_is_complete(MOSS_SOUNDEFFECT_MODEL_DIR),
             "worker_script": WORKER_SCRIPT.is_file(),
+            "cuda": cuda["available"],
         },
+        "cuda": cuda,
         "runtime": {
             "worker_env": MOSS_SOUNDEFFECT_CONDA_ENV,
             "local_files_only": LOCAL_FILES_ONLY,
@@ -296,6 +301,9 @@ async def health() -> dict:
 @app.post("/internal/unload_all")
 async def internal_unload_all(request: Request) -> JSONResponse:
     assert_local_request(request)
+    with gpu_runtime_lock("soundeffect/unload"):
+        with manager.lock:
+            pass
     return JSONResponse(
         {
             "code": 200,

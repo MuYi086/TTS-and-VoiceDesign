@@ -10,7 +10,6 @@ import multiprocessing
 import os
 import queue
 import re
-import signal
 import subprocess
 import sys
 import tempfile
@@ -25,7 +24,6 @@ from contextlib import contextmanager
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:128")
 os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
 
-import torch
 import uvicorn
 import soundfile as sf
 from typing import Any, Optional, List
@@ -34,6 +32,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 from synthesis_request import CloneSynthesisRequest
+from gpu_runtime import cuda_status, terminate_process_group
 
 # ==========================================
 # 0. 系统配置
@@ -86,6 +85,20 @@ INDEXTTS_USE_FP16 = env_bool("INDEXTTS_USE_FP16", True)
 INDEXTTS_USE_CUDA_KERNEL = env_bool("INDEXTTS_USE_CUDA_KERNEL", False)
 INDEXTTS_NUM_BEAMS = int(os.getenv("INDEXTTS_NUM_BEAMS", "1"))
 INDEXTTS_REQUEST_TIMEOUT = float(os.getenv("INDEXTTS_REQUEST_TIMEOUT", "600"))
+INDEXTTS_CUDA_RETRY_COUNT = max(0, int(os.getenv("INDEXTTS_CUDA_RETRY_COUNT", "1")))
+INDEXTTS_MAX_TEXT_TOKENS_PER_SEGMENT = max(
+    20,
+    int(os.getenv("INDEXTTS_MAX_TEXT_TOKENS_PER_SEGMENT", "80")),
+)
+INDEXTTS_MAX_MEL_TOKENS = max(256, int(os.getenv("INDEXTTS_MAX_MEL_TOKENS", "1200")))
+INDEXTTS_CUDA_RETRY_MAX_TEXT_TOKENS = max(
+    20,
+    int(os.getenv("INDEXTTS_CUDA_RETRY_MAX_TEXT_TOKENS", "50")),
+)
+INDEXTTS_CUDA_RETRY_MAX_MEL_TOKENS = max(
+    256,
+    int(os.getenv("INDEXTTS_CUDA_RETRY_MAX_MEL_TOKENS", "900")),
+)
 CUDA_RELEASE_DELAY = float(os.getenv("CUDA_RELEASE_DELAY", "2.0"))
 QWEN_DEVICE = os.getenv("QWEN_DEVICE") or None
 QWEN_DTYPE = os.getenv("QWEN_DTYPE") or None
@@ -248,6 +261,20 @@ def is_cuda_runtime_error(exc: BaseException | str) -> bool:
     return any(marker in text for marker in CUDA_ERROR_MARKERS)
 
 
+def is_retryable_cuda_error(exc: BaseException | str) -> bool:
+    text = str(exc).lower()
+    return any(
+        marker in text
+        for marker in (
+            "cuda driver error",
+            "device not ready",
+            "cuda error:",
+            "cublas_status_",
+            "cudnn_status_",
+        )
+    )
+
+
 def worker_error_excerpt(output: str) -> str:
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     if not lines:
@@ -255,19 +282,20 @@ def worker_error_excerpt(output: str) -> str:
     return " | ".join(lines[-12:])
 
 
-def clear_cuda_cache(label: str = "") -> None:
+def clear_worker_cuda_cache(torch_module: Any, label: str = "") -> None:
+    """Clear CUDA only inside the short-lived process that owns the model."""
     gc.collect()
-    if not torch.cuda.is_available():
+    if not torch_module.cuda.is_available():
         return
 
     prefix = f"[CUDA] {label}: " if label else "[CUDA] "
     try:
-        torch.cuda.synchronize()
+        torch_module.cuda.synchronize()
     except Exception as exc:
         print(f"{prefix}synchronize 跳过: {exc}")
     try:
-        torch.cuda.empty_cache()
-        torch.cuda.ipc_collect()
+        torch_module.cuda.empty_cache()
+        torch_module.cuda.ipc_collect()
     except Exception as exc:
         print(f"{prefix}cache cleanup 跳过: {exc}")
 
@@ -278,27 +306,6 @@ def wait_after_cuda_release(label: str = "") -> None:
     if label:
         print(f"[CUDA] 等待 {CUDA_RELEASE_DELAY:.1f}s 释放显存: {label}")
     time.sleep(CUDA_RELEASE_DELAY)
-
-
-def cuda_status() -> dict:
-    status = {"available": False}
-    try:
-        status["available"] = torch.cuda.is_available()
-        if not status["available"]:
-            return status
-
-        status["device_count"] = torch.cuda.device_count()
-        status["device_name"] = torch.cuda.get_device_name(0)
-        free_bytes, total_bytes = torch.cuda.mem_get_info()
-        status["memory"] = {
-            "free_mib": round(free_bytes / 1024 / 1024, 1),
-            "total_mib": round(total_bytes / 1024 / 1024, 1),
-            "allocated_mib": round(torch.cuda.memory_allocated() / 1024 / 1024, 1),
-            "reserved_mib": round(torch.cuda.memory_reserved() / 1024 / 1024, 1),
-        }
-    except Exception as exc:
-        status["error"] = str(exc)
-    return status
 
 
 def close_mp_queue(q: Optional[multiprocessing.Queue]) -> None:
@@ -318,6 +325,7 @@ def close_mp_queue(q: Optional[multiprocessing.Queue]) -> None:
 # ==========================================
 def qwen_daemon(input_q, output_q):
     model = None
+    torch_module = None
     try:
         if QWEN_LIBS:
             qwen_libs_path = expand_path(QWEN_LIBS)
@@ -326,6 +334,7 @@ def qwen_daemon(input_q, output_q):
 
         import torch
         import sox
+        torch_module = torch
 
         try:
             from qwen_tts import Qwen3TTSModel
@@ -396,7 +405,8 @@ def qwen_daemon(input_q, output_q):
     finally:
         if model:
             del model
-        clear_cuda_cache("Qwen daemon exit")
+        if torch_module is not None:
+            clear_worker_cuda_cache(torch_module, "Qwen daemon exit")
         print("🔴 [Qwen Daemon] 进程销毁，显存释放")
 
 # ==========================================
@@ -483,6 +493,10 @@ class ModelManager:
             "use_fp16": INDEXTTS_USE_FP16,
             "use_cuda_kernel": INDEXTTS_USE_CUDA_KERNEL,
             "num_beams": INDEXTTS_NUM_BEAMS,
+            "qwen_emo_device": "cpu",
+            "offload_conditioning_models": True,
+            "max_text_tokens_per_segment": INDEXTTS_MAX_TEXT_TOKENS_PER_SEGMENT,
+            "max_mel_tokens": INDEXTTS_MAX_MEL_TOKENS,
             "local_files_only": LOCAL_FILES_ONLY,
             "runtime_cache_dir": RUNTIME_CACHE_DIR,
             "hf_mirror_dir": HF_MIRROR_DIR,
@@ -490,29 +504,47 @@ class ModelManager:
 
     @staticmethod
     def _terminate_indextts_worker(proc: subprocess.Popen) -> None:
-        if proc.poll() is not None:
-            return
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            return
-        except Exception as exc:
-            print(f"⚠️ [IndexTTS2] 终止 worker 进程组失败: {exc}")
-            proc.terminate()
-
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            print("⚠️ [IndexTTS2] worker 未及时退出，强制终止")
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            except Exception:
-                proc.kill()
-            proc.wait(timeout=5)
+        terminate_process_group(proc, "IndexTTS2")
 
     def run_indextts_worker(self, payload: dict) -> bytes:
+        attempt_payload = dict(payload)
+        try:
+            for attempt in range(INDEXTTS_CUDA_RETRY_COUNT + 1):
+                try:
+                    audio_bytes = self._run_indextts_worker_once(attempt_payload)
+                    self.indextts_error = None
+                    return audio_bytes
+                except RuntimeError as exc:
+                    if attempt >= INDEXTTS_CUDA_RETRY_COUNT or not is_retryable_cuda_error(exc):
+                        raise
+
+                    retry_number = attempt + 1
+                    print(
+                        f"[IndexTTS2] 检测到可恢复的 CUDA 异常，自动启动新 worker 重试 "
+                        f"{retry_number}/{INDEXTTS_CUDA_RETRY_COUNT}: {exc}"
+                    )
+                    attempt_payload = dict(attempt_payload)
+                    attempt_payload["max_text_tokens_per_segment"] = min(
+                        int(
+                            attempt_payload.get("max_text_tokens_per_segment")
+                            or INDEXTTS_MAX_TEXT_TOKENS_PER_SEGMENT
+                        ),
+                        INDEXTTS_CUDA_RETRY_MAX_TEXT_TOKENS,
+                    )
+                    attempt_payload["max_mel_tokens"] = min(
+                        int(
+                            attempt_payload.get("max_mel_tokens")
+                            or INDEXTTS_MAX_MEL_TOKENS
+                        ),
+                        INDEXTTS_CUDA_RETRY_MAX_MEL_TOKENS,
+                    )
+        except Exception as exc:
+            self.indextts_error = str(exc)
+            raise
+
+        raise RuntimeError("IndexTTS2 worker 重试流程异常结束。")
+
+    def _run_indextts_worker_once(self, payload: dict) -> bytes:
         if not os.path.isfile(INDEXTTS_WORKER_SCRIPT):
             raise RuntimeError(f"IndexTTS2 worker 脚本不存在: {INDEXTTS_WORKER_SCRIPT}")
 
@@ -576,11 +608,7 @@ class ModelManager:
 
             with open(output_path, "rb") as f:
                 audio_bytes = f.read()
-            self.indextts_error = None
             return audio_bytes
-        except Exception as exc:
-            self.indextts_error = str(exc)
-            raise
         finally:
             if proc is not None:
                 self._terminate_indextts_worker(proc)
@@ -603,10 +631,6 @@ class ModelManager:
         self._kill_zombies() 
         self.unload_indextts()
         
-        print("🧹 [调度器] 正在清理显存缓存...")
-        clear_cuda_cache("before Qwen load")
-        wait_after_cuda_release("before Qwen load")
-
         print("🟡 [调度器] 拉起 Qwen3 守护进程...")
         self.qwen_in_q = multiprocessing.Queue()
         self.qwen_out_q = multiprocessing.Queue()
@@ -627,23 +651,25 @@ class ModelManager:
             try:
                 if self.qwen_in_q is not None:
                     self.qwen_in_q.put({"command": "STOP"})
-                proc.join(timeout=10)
-                if proc.is_alive():
-                    print("⚠️ [调度器] Qwen3 未及时退出，强制终止")
-                    proc.terminate()
-                    proc.join(timeout=10)
-                if proc.is_alive():
-                    proc.kill()
-                    proc.join(timeout=5)
             except Exception as e:
-                print(f"⚠️ [调度器] 卸载 Qwen3 时发生异常: {e}")
+                print(f"⚠️ [调度器] 发送 Qwen3 停止指令失败: {e}")
+
+            proc.join(timeout=10)
+            if proc.is_alive():
+                print("⚠️ [调度器] Qwen3 未及时退出，强制终止")
+                proc.terminate()
+                proc.join(timeout=10)
+            if proc.is_alive():
+                proc.kill()
+                proc.join(timeout=5)
+            if proc.is_alive():
+                raise RuntimeError("Qwen3 子进程无法退出，拒绝释放 GPU 锁")
 
         close_mp_queue(self.qwen_in_q)
         close_mp_queue(self.qwen_out_q)
         self.qwen_process = None
         self.qwen_in_q = None
         self.qwen_out_q = None
-        clear_cuda_cache("after Qwen unload")
         wait_after_cuda_release("after Qwen unload")
         print("✅ [调度器] Qwen3 已卸载")
 
@@ -1049,8 +1075,18 @@ async def health():
         "runtime": {
             "voice_design_providers": ["qwen", "mimo"],
             "qwen_request_timeout": QWEN_REQUEST_TIMEOUT,
+            "qwen_model_lifecycle": "one request -> one child process -> process exit releases VRAM",
             "indextts_request_timeout": INDEXTTS_REQUEST_TIMEOUT,
+            "indextts_cuda_retry_count": INDEXTTS_CUDA_RETRY_COUNT,
+            "indextts_max_text_tokens_per_segment": INDEXTTS_MAX_TEXT_TOKENS_PER_SEGMENT,
+            "indextts_max_mel_tokens": INDEXTTS_MAX_MEL_TOKENS,
+            "indextts_retry_max_text_tokens": INDEXTTS_CUDA_RETRY_MAX_TEXT_TOKENS,
+            "indextts_retry_max_mel_tokens": INDEXTTS_CUDA_RETRY_MAX_MEL_TOKENS,
+            "indextts_qwen_emo_device": "cpu",
+            "indextts_offload_conditioning_models": True,
             "indextts_model_lifecycle": "one request -> one worker -> process exit releases VRAM",
+            "api_cuda_context": "disabled; health uses nvidia-smi",
+            "gpu_scheduling": "all local services share one exclusive file lock",
             "mimo_model": MIMO_MODEL,
             "mimo_auth_header": MIMO_AUTH_HEADER,
             "mimo_timeout": MIMO_TIMEOUT,
@@ -1089,8 +1125,9 @@ async def voice_design_providers():
 @app.post("/internal/unload_all")
 async def internal_unload_all(request: Request):
     assert_local_request(request)
-    with manager.lock:
-        manager.unload_all()
+    with gpu_runtime_lock("main/unload"):
+        with manager.lock:
+            manager.unload_all()
     return JSONResponse({"code": 200, "msg": "已卸载 Qwen 并终止活动的 IndexTTS2 worker"})
 
 @app.post("/v1/upload_audio")
@@ -1163,11 +1200,20 @@ async def synthesize_v2(request: TextToSpeechRequest):
                 manager.indextts_error = str(e)
                 traceback.print_exc()
                 if is_cuda_runtime_error(e):
+                    if is_retryable_cuda_error(e) and INDEXTTS_CUDA_RETRY_COUNT > 0:
+                        retry_detail = (
+                            f"已自动创建新 worker 重试 {INDEXTTS_CUDA_RETRY_COUNT} 次，"
+                        )
+                    elif is_retryable_cuda_error(e):
+                        retry_detail = "未启用自动重试，"
+                    else:
+                        retry_detail = "该异常不属于可自动恢复类型，"
                     raise HTTPException(
                         status_code=500,
                         detail=(
-                            f"{e}. IndexTTS2 worker 已退出，当前请求的 CUDA 上下文已由进程边界回收；"
-                            "可以直接重试。如果新 worker 仍报 device not ready，"
+                            f"{e}. IndexTTS2 {retry_detail}但 CUDA 仍不可用。"
+                            "worker 已退出，当前请求的 CUDA 上下文已由进程边界回收；"
+                            "如果后续新请求仍报 device not ready，"
                             "需要重启 WSL 或宿主机 NVIDIA 驱动。"
                         ),
                     )
@@ -1193,6 +1239,9 @@ if __name__ == "__main__":
         f"indextts_fp16={INDEXTTS_USE_FP16}, "
         f"indextts_cuda_kernel={INDEXTTS_USE_CUDA_KERNEL}, "
         f"indextts_num_beams={INDEXTTS_NUM_BEAMS}, "
-        f"request_timeout={INDEXTTS_REQUEST_TIMEOUT:.0f}s"
+        f"request_timeout={INDEXTTS_REQUEST_TIMEOUT:.0f}s, "
+        f"cuda_retry={INDEXTTS_CUDA_RETRY_COUNT}, "
+        f"segment_tokens={INDEXTTS_MAX_TEXT_TOKENS_PER_SEGMENT}, "
+        f"max_mel_tokens={INDEXTTS_MAX_MEL_TOKENS}"
     )
     uvicorn.run(app, host=API_HOST, port=API_PORT)

@@ -1,6 +1,8 @@
+import json
 import sys
 import tempfile
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from unittest import mock
 
@@ -24,6 +26,10 @@ class FakeCuda:
 
 class FakeTorch:
     cuda = FakeCuda()
+
+    @staticmethod
+    def inference_mode():
+        return nullcontext()
 
 
 class FakeIndexTTS2:
@@ -67,6 +73,29 @@ class FakeProcess:
         return self.returncode
 
 
+class RetryableCudaProcess(FakeProcess):
+    attempts = 0
+    payloads = []
+
+    def __init__(self, command, **kwargs):
+        super().__init__(command, **kwargs)
+        type(self).attempts += 1
+        self.attempt = type(self).attempts
+        request_index = self.command.index("--input-json") + 1
+        with open(self.command[request_index], "r", encoding="utf-8") as f:
+            type(self).payloads.append(json.load(f))
+
+    def communicate(self, timeout=None):
+        if self.attempt == 1:
+            self.returncode = 1
+            return "", "RuntimeError: CUDA driver error: device not ready"
+
+        output_index = self.command.index("--output-wav") + 1
+        Path(self.command[output_index]).write_bytes(b"RIFF-retried-wave")
+        self.returncode = 0
+        return "worker completed after retry", ""
+
+
 class IndexTTSWorkerTests(unittest.TestCase):
     def setUp(self):
         FakeIndexTTS2.instances.clear()
@@ -98,6 +127,10 @@ class IndexTTSWorkerTests(unittest.TestCase):
                 "use_fp16": False,
                 "use_cuda_kernel": False,
                 "num_beams": 1,
+                "qwen_emo_device": "cpu",
+                "offload_conditioning_models": True,
+                "max_text_tokens_per_segment": 80,
+                "max_mel_tokens": 1200,
                 "local_files_only": True,
                 "runtime_cache_dir": str(runtime_dir),
                 "hf_mirror_dir": str(root / "hf-mirror"),
@@ -120,6 +153,8 @@ class IndexTTSWorkerTests(unittest.TestCase):
             self.assertEqual(instance.infer_kwargs["num_beams"], 1)
             self.assertFalse(instance.infer_kwargs["use_emo_text"])
             self.assertEqual(instance.infer_kwargs["emo_alpha"], 0.6)
+            self.assertEqual(instance.infer_kwargs["max_text_tokens_per_segment"], 80)
+            self.assertEqual(instance.infer_kwargs["max_mel_tokens"], 1200)
 
     def test_each_request_starts_a_fresh_process_and_cleans_temp_files(self):
         manager = api.ModelManager()
@@ -147,6 +182,102 @@ class IndexTTSWorkerTests(unittest.TestCase):
             self.assertTrue(all(proc.kwargs["start_new_session"] for proc in processes))
             self.assertIsNone(manager.indextts_process)
             self.assertEqual(list(Path(tmp_dir).iterdir()), [])
+
+    def test_cuda_driver_error_retries_in_a_fresh_worker(self):
+        manager = api.ModelManager()
+        RetryableCudaProcess.attempts = 0
+        RetryableCudaProcess.payloads = []
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with (
+                mock.patch.object(api, "INDEXTTS_WORKER_SCRIPT", __file__),
+                mock.patch.object(api, "INDEXTTS_WORKER_TMP_DIR", tmp_dir),
+                mock.patch.object(api, "INDEXTTS_CUDA_RETRY_COUNT", 1),
+                mock.patch.object(api, "CUDA_RELEASE_DELAY", 0),
+                mock.patch.object(
+                    api.subprocess,
+                    "Popen",
+                    side_effect=RetryableCudaProcess,
+                ),
+            ):
+                audio = manager.run_indextts_worker({"request": "retry"})
+
+            self.assertEqual(audio, b"RIFF-retried-wave")
+            self.assertEqual(RetryableCudaProcess.attempts, 2)
+            self.assertEqual(
+                RetryableCudaProcess.payloads[1]["max_text_tokens_per_segment"],
+                api.INDEXTTS_CUDA_RETRY_MAX_TEXT_TOKENS,
+            )
+            self.assertEqual(
+                RetryableCudaProcess.payloads[1]["max_mel_tokens"],
+                api.INDEXTTS_CUDA_RETRY_MAX_MEL_TOKENS,
+            )
+            self.assertIsNone(manager.indextts_process)
+            self.assertIsNone(manager.indextts_error)
+            self.assertEqual(list(Path(tmp_dir).iterdir()), [])
+
+    def test_only_transient_cuda_driver_errors_are_retryable(self):
+        self.assertTrue(api.is_retryable_cuda_error("CUDA driver error: device not ready"))
+        self.assertFalse(api.is_retryable_cuda_error("CUDA out of memory"))
+
+    def test_conditioning_models_are_offloaded_after_both_embeddings(self):
+        class FakeMemoryCuda:
+            allocated = 300 * 1024 * 1024
+            cache_cleared = False
+
+            @classmethod
+            def memory_allocated(cls):
+                return cls.allocated
+
+            @classmethod
+            def empty_cache(cls):
+                cls.cache_cleared = True
+
+        class FakeMemoryTorch:
+            cuda = FakeMemoryCuda
+
+        class MoveableModule:
+            def __init__(self, memory_mib):
+                self.device = "cuda:0"
+                self.memory_bytes = memory_mib * 1024 * 1024
+
+            def to(self, device):
+                if self.device != device:
+                    FakeMemoryCuda.allocated -= self.memory_bytes
+                    self.device = device
+                return self
+
+        class FakeConditioningModel:
+            device = "cuda:0"
+
+            def __init__(self):
+                self.semantic_model = MoveableModule(200)
+                self.campplus_model = MoveableModule(25)
+
+            @staticmethod
+            def get_emb(value):
+                return value
+
+        FakeMemoryCuda.allocated = 300 * 1024 * 1024
+        FakeMemoryCuda.cache_cleared = False
+        model = FakeConditioningModel()
+
+        installed = indextts_worker.install_conditioning_model_offload(
+            model,
+            FakeMemoryTorch,
+        )
+        first = model.get_emb("speaker")
+
+        self.assertTrue(installed)
+        self.assertEqual(first, "speaker")
+        self.assertEqual(model.semantic_model.device, "cuda:0")
+
+        second = model.get_emb("emotion")
+
+        self.assertEqual(second, "emotion")
+        self.assertEqual(model.semantic_model.device, "cpu")
+        self.assertEqual(model.campplus_model.device, "cpu")
+        self.assertTrue(FakeMemoryCuda.cache_cleared)
 
 
 if __name__ == "__main__":

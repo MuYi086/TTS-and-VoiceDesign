@@ -37,7 +37,9 @@ api/vendor/LongCat-AudioDiT
 conda run -n unitale-tts-local python api/indextts_worker.py ...
 ```
 
-worker 完成后退出，由操作系统完整回收该次请求的 CUDA 上下文，避免在 API 常驻进程内反复卸载、重载 BigVGAN 和 Transformer 时复用失效的 CUDA 分配器句柄。
+worker 完成后退出，由操作系统完整回收该次请求的 CUDA 上下文，避免在 API 常驻进程内反复卸载、重载 BigVGAN 和 Transformer 时复用失效的 CUDA 分配器句柄。IndexTTS2 worker 还会使用全局 `torch.inference_mode()`，把仅用于参考音频特征提取的 W2V-BERT/CAMPPlus 在生成前卸载到 CPU，并把只在 `emo_text` 模式使用的 Qwen 情感模型改为按需在 CPU 加载，避免 BigVGAN 阶段触发 WSL GPU residency 内存不足。长文本默认按最多 80 个文本 token 分段，每段最多生成 1200 个 mel token；可通过 `INDEXTTS_MAX_TEXT_TOKENS_PER_SEGMENT` 和 `INDEXTTS_MAX_MEL_TOKENS` 调整。
+
+遇到可恢复的 `CUDA driver error` / `device not ready` 时，主 API 会在同一请求和同一把 GPU 锁内自动启动全新的 worker 重试一次，并把重试收紧到每段 50 个文本 token / 900 个 mel token。可通过 `INDEXTTS_CUDA_RETRY_COUNT`、`INDEXTTS_CUDA_RETRY_MAX_TEXT_TOKENS` 和 `INDEXTTS_CUDA_RETRY_MAX_MEL_TOKENS` 调整。以上设置只传给 IndexTTS2 worker，不改变其他 TTS 服务的 worker 环境、请求参数或模型切换流程。
 
 `dots.tts-base` 的真实推理不在 `unitale-tts-local` 里执行，而是由 `8301` 服务按请求调用：
 
@@ -322,7 +324,7 @@ curl -X POST http://127.0.0.1:8306/v2/synthesize \
 - `8300 /v1/qwen/design` 请求到来时加载 Qwen，返回音频前卸载 Qwen。
 - `8300 /v1/mimo/design` 走 MiMo 云 API，请求前会先卸载 Qwen，并终止仍在运行的 IndexTTS2 worker。
 - `8300` 内部通过共享 GPU 锁串行执行 Qwen / MiMo / IndexTTS2，避免本地模型并发占显存。
-- `8300 /v2/synthesize` 会先卸载 Qwen，再启动一次性 IndexTTS2 worker；worker 退出后才返回音频并释放共享 GPU 锁。
+- `8300 /v2/synthesize` 会先卸载 Qwen，再启动低显存的一次性 IndexTTS2 worker；参考条件模型会在正式生成前移出 GPU，若仍遇到可恢复的 CUDA 驱动异常，会在当前请求内用更小分段自动启动新 worker 重试，最后一个 worker 退出后才返回音频并释放共享 GPU 锁。
 - `8301 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `dots_tts` 环境里的 worker，并默认用官方流式 vocoder 限制 BigVGAN 单次解码窗口；worker 退出即释放模型和显存。
 - `8302 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `longcat_audiodit` 环境里的 worker，worker 退出即释放模型和显存。
 - `8303 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `moss-tts-py310` 环境里的 worker，worker 退出即释放 MOSS 模型、codec 和显存；默认限制单 chunk 的生成帧数，并对可恢复的 CUDA 驱动异常自动重试一次。
@@ -331,6 +333,8 @@ curl -X POST http://127.0.0.1:8306/v2/synthesize \
 - `8305 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `qwen3-tts` 环境里的 worker，worker 退出即释放 Qwen3-TTS Base 模型、voice clone prompt 和显存。
 - `8306 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `voxcpm2` 环境里的 worker，worker 退出即释放 VoxCPM2 模型和显存。
 - `8300`、`8301`、`8302`、`8303`、`8304`、`8305`、`8306`、`8311` 共享同一个 `GPU_LOCK_FILE`，因此 Qwen / MiMo / IndexTTS2 / dots.tts / LongCat / MOSS / MOSS-SoundEffect / OmniVoice / Qwen3-TTS Base / VoxCPM2 不会并发抢占显存。
+- 所有常驻 HTTP API 进程都不在模块级导入 PyTorch，也不会调用 `torch.cuda.empty_cache()`；健康检查改用 `nvidia-smi` 读取整卡状态，不会因为查显存而创建常驻 CUDA 上下文。
+- 所有一次性 worker 都在 `finally` 中检查完整进程组：正常完成、推理异常和请求超时都会等待 worker 退出，必要时先发送 `SIGTERM`、再升级为 `SIGKILL`。只有确认进程退出并等待 `CUDA_RELEASE_DELAY` 后，接口才释放共享 GPU 锁并返回。
 - 默认离线加载模型：`LOCAL_FILES_ONLY=1`。
 - 不再执行云端脚本里的 apt 改源、`/app` 代码同步或清理所有 Python 进程。
 
