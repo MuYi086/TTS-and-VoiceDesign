@@ -11,7 +11,17 @@ if str(API_DIR) not in sys.path:
     sys.path.insert(0, str(API_DIR))
 
 import moss_api
-from moss_tts_worker import generation_frame_budget
+from moss_tts_worker import build_clone_conversation, generation_frame_budget
+
+
+class FakeProcessor:
+    @staticmethod
+    def build_user_message(**kwargs):
+        return {"role": "user", **kwargs}
+
+    @staticmethod
+    def build_assistant_message(**kwargs):
+        return {"role": "assistant", **kwargs}
 
 
 class FakeProcess:
@@ -54,6 +64,42 @@ class RetryableCudaProcess:
 
 
 class MossBundledHelpersTests(unittest.TestCase):
+    def test_reference_transcript_selects_official_continuation_clone_mode(self):
+        conversation, mode = build_clone_conversation(
+            FakeProcessor(),
+            chunk="这是待合成的台词。",
+            ref_audio_path=Path("reference.wav"),
+            prompt_text="这是参考音频的准确转写。",
+            instruction=None,
+            tokens=None,
+            quality=None,
+            language="Chinese",
+        )
+
+        self.assertEqual(mode, "continuation")
+        self.assertEqual(
+            conversation[0]["text"],
+            "这是参考音频的准确转写。 这是待合成的台词。",
+        )
+        self.assertNotIn("reference", conversation[0])
+        self.assertEqual(conversation[1]["audio_codes_list"], ["reference.wav"])
+
+    def test_missing_reference_transcript_keeps_audio_reference_clone_mode(self):
+        conversation, mode = build_clone_conversation(
+            FakeProcessor(),
+            chunk="这是待合成的台词。",
+            ref_audio_path=Path("reference.wav"),
+            prompt_text=None,
+            instruction=None,
+            tokens=None,
+            quality=None,
+            language="Chinese",
+        )
+
+        self.assertEqual(mode, "generation")
+        self.assertEqual(conversation[0]["text"], "这是待合成的台词。")
+        self.assertEqual(conversation[0]["reference"], ["reference.wav"])
+
     def test_worker_payload_has_no_external_helper_dependency(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             audio_name = "reference.wav"

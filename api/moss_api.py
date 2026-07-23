@@ -329,11 +329,15 @@ class MossWorkerManager:
         if not os.path.isfile(ref_audio_path):
             raise HTTPException(status_code=404, detail="音频不存在")
 
+        prompt_text = request.prompt_text.strip() if request.prompt_text and request.prompt_text.strip() else None
+        if prompt_text is None:
+            prompt_text = load_prompt_text_sidecar(request.audio_path)
         codec_path = normalize_optional_str(request.codec_path) or MOSS_CODEC_PATH
 
         return {
             "text": normalize_synthesis_text(request.text),
             "ref_audio_path": ref_audio_path,
+            "prompt_text": prompt_text,
             "model_path": MOSS_MODEL_DIR,
             "codec_path": codec_path,
             "language": normalize_language(request.language) if request.language is not None else normalize_language(MOSS_LANGUAGE),

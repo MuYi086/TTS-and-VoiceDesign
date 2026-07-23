@@ -199,7 +199,19 @@ curl -X POST http://127.0.0.1:8300/v1/upload_audio \
 
 合成音频：
 
-所有 `POST /v2/synthesize` 都是参考音频克隆接口，不接受 `style_prompt`（字段出现即返回 `422`，包括值为 `null` 的情况）。音色/风格应在生成参考音频阶段通过 `/v1/qwen/design` 或 `/v1/mimo/design` 的 `voice_description` 决定；合成阶段只朗读 `text`。
+所有 `POST /v2/synthesize` 都是参考音频克隆接口，不接受 `style_prompt`（字段出现即返回 `422`，包括值为 `null` 的情况）。音色/风格应在生成参考音频阶段通过 `/v1/qwen/design` 或 `/v1/mimo/design` 的 `voice_description` 决定；合成阶段只朗读 `text`。`prompt_text` 的含义是参考音频的准确转写，它不是公共基类中的占位字段，而是由确实支持参考转写的模型请求显式声明并传入 worker。
+
+| 服务 | `prompt_text` 能力 |
+| --- | --- |
+| `8300` IndexTTS2 | 不声明该字段；官方 `IndexTTS2.infer` 克隆签名使用 `spk_audio_prompt`，不接参考转写 |
+| `8301` dots.tts-base | 原样传给官方 `DotsTtsRuntime.generate(prompt_text=...)`；官方把“参考音频 + 准确转写”列为推荐克隆方式 |
+| `8302` LongCat-AudioDiT-1B | 原样传入并与目标文本拼接；缺失时按配置使用本地 ASR 自动转写 |
+| `8303` MOSS-TTS Local v1.5 | 有文案时走官方 continuation 克隆（参考转写 + 目标文本 + 前缀音频）；缺失时保留官方 reference 音频克隆 |
+| `8304` OmniVoice | 映射为 `ref_text`；缺失时由官方能力配合本地 Whisper 自动转写 |
+| `8305` Qwen3-TTS Base | 映射为官方 `ref_text`；缺失时退回 `x-vector-only`，质量可能降低 |
+| `8306` VoxCPM2 | 有文案时同时传 `prompt_text`、`prompt_wav_path` 和 `reference_wav_path`（Ultimate Cloning）；缺失时使用 reference-only 克隆 |
+
+上述映射逐项依据模型官方资料核对：[IndexTTS2](https://github.com/index-tts/index-tts)、[dots.tts-base](https://huggingface.co/rednote-hilab/dots.tts-base)、[LongCat-AudioDiT](https://github.com/meituan-longcat/LongCat-AudioDiT)、[MOSS-TTS-Local-Transformer-v1.5](https://huggingface.co/OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5)、[OmniVoice](https://github.com/k2-fsa/OmniVoice)、[Qwen3-TTS Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base) 和 [VoxCPM2](https://huggingface.co/openbmb/VoxCPM2)。
 
 ```bash
 curl -X POST http://127.0.0.1:8300/v2/synthesize \
@@ -220,11 +232,11 @@ curl -X POST http://127.0.0.1:8301/v1/upload_audio \
 ```bash
 curl -X POST http://127.0.0.1:8301/v2/synthesize \
   -H 'Content-Type: application/json' \
-  -d '{"text":"这是一次 dots.tts 本地合成测试。","audio_path":"qwen_test.wav"}' \
+  -d '{"text":"这是一次 dots.tts 本地合成测试。","audio_path":"qwen_test.wav","prompt_text":"这是参考音频的准确转写，可选但建议提供"}' \
   -o dots_synth.wav
 ```
 
-如果未提供 `prompt_text`，`dots.tts-base` 仍会执行基于参考音频的克隆，但通常比“参考音频 + 准确转写”质量更弱。当前 WebUI 现有 TTS 配置只会自动上传音频，因此 `8301` 默认走这个兼容降级路径；若你后续愿意扩展 WebUI，可在上传时额外提交 `prompt_text`。
+`prompt_text` 在 HTTP schema 中保持可选以兼容旧客户端，但 WebUI 的“参考文本克隆”协议会在上传参考音频和调用 `/v2/synthesize` 时同时提交角色绑定音色的准确参考文案；这与 dots.tts 官方推荐的 continuation voice cloning 调用一致。
 
 `8301` 默认使用低峰值流式 vocoder，API 契约和最终 WAV 返回方式不变。只有在使用不支持 `generate_stream()` 的旧版 dots.tts 时，才应通过环境变量 `DOTS_USE_STREAMING_VOCODER=0` 或单次请求字段 `"use_streaming_vocoder": false` 回退到整段解码。
 
@@ -251,17 +263,18 @@ curl -X POST http://127.0.0.1:8302/v2/synthesize \
 ```bash
 curl -X POST http://127.0.0.1:8303/v1/upload_audio \
   -F "full_path=qwen_test.wav" \
-  -F "audio=@qwen_test.wav"
+  -F "audio=@qwen_test.wav" \
+  -F "prompt_text=这是参考音频的准确转写"
 ```
 
 ```bash
 curl -X POST http://127.0.0.1:8303/v2/synthesize \
   -H 'Content-Type: application/json' \
-  -d '{"text":"这是一次 MOSS 本地合成测试。","audio_path":"qwen_test.wav"}' \
+  -d '{"text":"这是一次 MOSS 本地合成测试。","audio_path":"qwen_test.wav","prompt_text":"这是参考音频的准确转写"}' \
   -o moss_synth.wav
 ```
 
-`8303` 的 MOSS 克隆只依赖参考音频，不强制要求 `prompt_text`。默认会按当前文本长度把每个 chunk 的生成预算限制为 `max(256, 字符数 × 10)` 帧（仍不超过 `MOSS_MAX_NEW_TOKENS`），避免模型偶尔未及时输出结束标记时持续扩大 KV cache；显式传入 `max_new_tokens` 可关闭这个自动限制。默认每个 chunk 最多 80 字，并强制 MOSS 的 SDPA 使用稳定的 math kernel；遇到 `CUDA driver error` / `device not ready` 时，API 会以 eager attention 和更小上限自动重试一次。以上行为可通过 `MOSS_AUTO_LIMIT_MAX_NEW_TOKENS`、`MOSS_MIN_NEW_TOKENS`、`MOSS_NEW_TOKENS_PER_CHAR`、`MOSS_MAX_CHARS_PER_CHUNK`、`MOSS_SDPA_BACKEND`、`MOSS_CUDA_RETRY_COUNT` 和 `MOSS_CUDA_RETRY_MAX_NEW_TOKENS` 调整。如果你希望覆盖其他推理参数，也可以在 `v2/synthesize` 请求里附带 `language`、`instruction`、`quality`、`tokens`、`max_new_tokens` 等可选字段。
+`8303` 会优先读取本次请求的 `prompt_text`，再回退到上传参考音频时保存的 sidecar。有参考转写时，worker 按官方 continuation 示例把“参考转写 + 目标文本”交给 user message，并把参考音频作为 assistant 前缀；没有参考转写时，仍按官方 generation 示例通过 `reference=[audio]` 克隆。默认会按当前目标文本长度把每个 chunk 的生成预算限制为 `max(256, 字符数 × 10)` 帧（仍不超过 `MOSS_MAX_NEW_TOKENS`），避免模型偶尔未及时输出结束标记时持续扩大 KV cache；显式传入 `max_new_tokens` 可关闭这个自动限制。默认每个 chunk 最多 80 字，并强制 MOSS 的 SDPA 使用稳定的 math kernel；遇到 `CUDA driver error` / `device not ready` 时，API 会以 eager attention 和更小上限自动重试一次。以上行为可通过 `MOSS_AUTO_LIMIT_MAX_NEW_TOKENS`、`MOSS_MIN_NEW_TOKENS`、`MOSS_NEW_TOKENS_PER_CHAR`、`MOSS_MAX_CHARS_PER_CHUNK`、`MOSS_SDPA_BACKEND`、`MOSS_CUDA_RETRY_COUNT` 和 `MOSS_CUDA_RETRY_MAX_NEW_TOKENS` 调整。如果你希望覆盖其他推理参数，也可以在 `v2/synthesize` 请求里附带 `language`、`instruction`、`quality`、`tokens`、`max_new_tokens` 等可选字段。
 
 `8304` 的 `OmniVoice` 复用同一套 WebUI TTS 协议：
 
@@ -295,7 +308,7 @@ curl -X POST http://127.0.0.1:8305/v1/upload_audio \
 ```bash
 curl -X POST http://127.0.0.1:8305/v2/synthesize \
   -H 'Content-Type: application/json' \
-  -d '{"text":"这是一次 Qwen3-TTS 本地合成测试。","audio_path":"qwen_test.wav"}' \
+  -d '{"text":"这是一次 Qwen3-TTS 本地合成测试。","audio_path":"qwen_test.wav","prompt_text":"这是参考音频的准确转写，可选但建议提供"}' \
   -o qwen3_tts_synth.wav
 ```
 

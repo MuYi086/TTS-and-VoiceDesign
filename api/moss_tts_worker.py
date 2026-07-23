@@ -430,6 +430,40 @@ def collect_audio(decoded_messages: Any, torch: Any) -> Any:
     return torch.cat(waveforms, dim=-1)
 
 
+def build_clone_conversation(
+    processor: Any,
+    *,
+    chunk: str,
+    ref_audio_path: Path,
+    prompt_text: str | None,
+    instruction: str | None,
+    tokens: int | None,
+    quality: str | None,
+    language: str,
+) -> tuple[list[Any], str]:
+    """Build the official MOSS clone prompt for the available reference data."""
+    user_message_kwargs = {
+        "instruction": instruction,
+        "tokens": tokens,
+        "quality": quality,
+        "language": language,
+    }
+    if prompt_text:
+        continued_text = f"{prompt_text} {chunk}"
+        return [
+            processor.build_user_message(text=continued_text, **user_message_kwargs),
+            processor.build_assistant_message(audio_codes_list=[str(ref_audio_path)]),
+        ], "continuation"
+
+    return [
+        processor.build_user_message(
+            text=chunk,
+            reference=[str(ref_audio_path)],
+            **user_message_kwargs,
+        )
+    ], "generation"
+
+
 def synthesize(request: dict[str, Any], output_wav: Path) -> None:
     prepare_environment(request)
 
@@ -440,6 +474,7 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
     ref_audio_path = require_path(str(request.get("ref_audio_path") or ""), "参考音频")
     codec_path = parse_codec_path(request.get("codec_path"))
     text = normalize_text(str(request.get("text") or ""))
+    prompt_text = normalize_optional_str(request.get("prompt_text"))
     language = normalize_optional_str(request.get("language")) or "Chinese"
     instruction = normalize_optional_str(request.get("instruction"))
     quality = normalize_optional_str(request.get("quality"))
@@ -487,6 +522,14 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
         print(f"[MOSS worker] 模型目录: {model_path}")
         print(f"[MOSS worker] codec: {codec_path}")
         print(f"[MOSS worker] 参考音频: {ref_audio_path}")
+        print(
+            "[MOSS worker] 参考文本: "
+            + (
+                "provided; using continuation cloning"
+                if prompt_text
+                else "not provided; using reference-audio cloning"
+            )
+        )
         print(f"[MOSS worker] 文本长度: {len(text)} 字, chunks={len(chunks)}")
         print(f"[MOSS worker] language={language}, device={device}, dtype={resolved_dtype}")
         print(
@@ -529,17 +572,17 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
                     f"[MOSS worker] 合成 chunk {index}/{len(chunks)} "
                     f"({len(chunk)} chars, frame_budget={chunk_frame_budget})"
                 )
-                conversation = [
-                    processor.build_user_message(
-                        text=chunk,
-                        reference=[str(ref_audio_path)],
-                        instruction=instruction,
-                        tokens=tokens,
-                        quality=quality,
-                        language=language,
-                    )
-                ]
-                batch = processor([conversation], mode="generation")
+                conversation, processor_mode = build_clone_conversation(
+                    processor,
+                    chunk=chunk,
+                    ref_audio_path=ref_audio_path,
+                    prompt_text=prompt_text,
+                    instruction=instruction,
+                    tokens=tokens,
+                    quality=quality,
+                    language=language,
+                )
+                batch = processor([conversation], mode=processor_mode)
                 input_ids = batch["input_ids"].to(device)
                 attention_mask = batch["attention_mask"].to(device)
 

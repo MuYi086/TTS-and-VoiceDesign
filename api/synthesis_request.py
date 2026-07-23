@@ -12,7 +12,9 @@ class CloneSynthesisRequest(BaseModel):
     The WebUI may send model-specific compatibility fields, so unknown fields
     remain ignored.  ``style_prompt`` is deliberately an exception: synthesis
     is only for cloning an uploaded reference voice, not voice design, and a
-    style prompt can be mistaken for text that should be spoken.
+    style prompt can be mistaken for text that should be spoken.  Reference
+    transcripts are model capabilities, so models that consume ``prompt_text``
+    declare it explicitly in their own request schema.
     """
 
     model_config = ConfigDict(extra="ignore")
