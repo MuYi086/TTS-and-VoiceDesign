@@ -368,6 +368,73 @@ def prompt_latent_frames(model: Any, prompt_audio: Any, full_hop: int, device: s
     return int(latents.shape[-1])
 
 
+def estimate_generation_frames(
+    gen_text: str,
+    prompt_text: str | None,
+    prompt_frames: int,
+    sample_rate: int,
+    full_hop: int,
+    max_duration: float,
+    duration_scale: float,
+    np: Any,
+) -> int:
+    """估算单个文本块所需的生成帧，不占用参考音频的时长预算。"""
+    prompt_time = prompt_frames * full_hop / sample_rate
+    gen_duration = approx_duration_from_text(gen_text, max_duration=max_duration)
+
+    if prompt_text:
+        approx_prompt_duration = approx_duration_from_text(prompt_text, max_duration=max_duration)
+        if approx_prompt_duration > 0:
+            ratio = float(np.clip(prompt_time / approx_prompt_duration, 1.0, 1.5))
+            gen_duration *= ratio
+
+    gen_duration *= max(duration_scale, 0.1)
+    max_frames = max(1, int(max_duration * sample_rate // full_hop))
+    max_generation_frames = max(1, max_frames - 1)
+    return min(max(1, int(gen_duration * sample_rate // full_hop)), max_generation_frames)
+
+
+def prompt_frame_budget(
+    chunks: list[str],
+    prompt_text: str | None,
+    prompt_frames: int,
+    sample_rate: int,
+    full_hop: int,
+    max_duration: float,
+    duration_scale: float,
+    np: Any,
+) -> int:
+    """为最长文本块预留生成空间后，返回参考音频最多可占用的帧数。"""
+    max_frames = max(1, int(max_duration * sample_rate // full_hop))
+    generation_frames = max(
+        estimate_generation_frames(
+            gen_text=chunk,
+            prompt_text=prompt_text,
+            prompt_frames=prompt_frames,
+            sample_rate=sample_rate,
+            full_hop=full_hop,
+            max_duration=max_duration,
+            duration_scale=duration_scale,
+            np=np,
+        )
+        for chunk in chunks
+    )
+    return max(1, max_frames - generation_frames)
+
+
+def truncate_prompt_text(
+    prompt_text: str | None,
+    kept_frames: int,
+    original_frames: int,
+) -> str | None:
+    """按参考音频保留比例截取转写前缀，避免音频与文本明显错位。"""
+    if not prompt_text or kept_frames >= original_frames or original_frames <= 0:
+        return prompt_text
+
+    kept_chars = max(1, int(len(prompt_text) * kept_frames / original_frames))
+    return prompt_text[:kept_chars].rstrip() or prompt_text[:1]
+
+
 def estimate_duration_frames(
     gen_text: str,
     prompt_text: str | None,
@@ -474,6 +541,29 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
         max_duration = float(model.config.max_wav_duration)
         prompt_audio = load_prompt_audio(ref_audio_path, sample_rate, librosa, torch)
         prompt_frames = prompt_latent_frames(model, prompt_audio, full_hop, device, F, torch)
+        original_prompt_frames = prompt_frames
+        max_prompt_frames = prompt_frame_budget(
+            chunks=chunks,
+            prompt_text=prompt_text,
+            prompt_frames=prompt_frames,
+            sample_rate=sample_rate,
+            full_hop=full_hop,
+            max_duration=max_duration,
+            duration_scale=duration_scale,
+            np=np,
+        )
+        if prompt_frames > max_prompt_frames:
+            original_prompt_text = prompt_text
+            prompt_audio = prompt_audio[..., : max_prompt_frames * full_hop]
+            prompt_text = truncate_prompt_text(prompt_text, max_prompt_frames, prompt_frames)
+            prompt_frames = prompt_latent_frames(model, prompt_audio, full_hop, device, F, torch)
+            print(
+                "[LongCat worker] 参考音频超过模型总时长预算，"
+                f"已截取 {original_prompt_frames} -> {prompt_frames} latent frames"
+                f"（{original_prompt_frames * full_hop / sample_rate:.2f}s -> "
+                f"{prompt_frames * full_hop / sample_rate:.2f}s），"
+                f"prompt_text={len(original_prompt_text or '')} -> {len(prompt_text or '')} chars"
+            )
         prompt_time = prompt_frames * full_hop / sample_rate
         print(f"[LongCat worker] sample_rate={sample_rate}, prompt_duration={prompt_time:.2f}s")
 
