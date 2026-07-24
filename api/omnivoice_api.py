@@ -111,12 +111,33 @@ OMNIVOICE_PAD_DURATION = float(os.getenv("OMNIVOICE_PAD_DURATION", "0.1"))
 OMNIVOICE_FADE_DURATION = float(os.getenv("OMNIVOICE_FADE_DURATION", "0.1"))
 OMNIVOICE_MAX_CHARS_PER_CHUNK = int(os.getenv("OMNIVOICE_MAX_CHARS_PER_CHUNK", "60"))
 OMNIVOICE_PAUSE_MS = int(os.getenv("OMNIVOICE_PAUSE_MS", "250"))
+OMNIVOICE_MAX_REFERENCE_SECONDS = max(
+    0.0,
+    float(os.getenv("OMNIVOICE_MAX_REFERENCE_SECONDS", "10.0")),
+)
 OMNIVOICE_REQUEST_TIMEOUT = float(os.getenv("OMNIVOICE_REQUEST_TIMEOUT", "600"))
-OMNIVOICE_CUDA_RETRY_COUNT = max(0, int(os.getenv("OMNIVOICE_CUDA_RETRY_COUNT", "1")))
+OMNIVOICE_CUDA_RETRY_COUNT = max(0, int(os.getenv("OMNIVOICE_CUDA_RETRY_COUNT", "2")))
 OMNIVOICE_CUDA_RETRY_MAX_CHARS = max(
     1,
     int(os.getenv("OMNIVOICE_CUDA_RETRY_MAX_CHARS", "48")),
 )
+OMNIVOICE_CUDA_RETRY_DELAY = max(
+    0.0,
+    float(os.getenv("OMNIVOICE_CUDA_RETRY_DELAY", "5.0")),
+)
+OMNIVOICE_CUDA_RETRY_AUDIO_CHUNK_DURATION = max(
+    0.1,
+    float(os.getenv("OMNIVOICE_CUDA_RETRY_AUDIO_CHUNK_DURATION", "8.0")),
+)
+OMNIVOICE_CUDA_RETRY_AUDIO_CHUNK_THRESHOLD = max(
+    0.1,
+    float(os.getenv("OMNIVOICE_CUDA_RETRY_AUDIO_CHUNK_THRESHOLD", "8.0")),
+)
+OMNIVOICE_CUDA_RETRY_MAX_REFERENCE_SECONDS = max(
+    3.0,
+    float(os.getenv("OMNIVOICE_CUDA_RETRY_MAX_REFERENCE_SECONDS", "10.0")),
+)
+OMNIVOICE_CUDA_RETRY_CODEC_CPU = env_bool("OMNIVOICE_CUDA_RETRY_CODEC_CPU", True)
 
 OMNIVOICE_WORKER_SCRIPT = os.path.join(API_DIR, "omnivoice_tts_worker.py")
 OMNIVOICE_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "omnivoice_worker")
@@ -229,6 +250,17 @@ def wait_after_cuda_release(label: str = "") -> None:
     if label:
         print(f"[CUDA] 等待 {CUDA_RELEASE_DELAY:.1f}s 释放显存: {label}")
     time.sleep(CUDA_RELEASE_DELAY)
+
+
+def wait_before_cuda_retry(retry_number: int) -> None:
+    delay = max(CUDA_RELEASE_DELAY, OMNIVOICE_CUDA_RETRY_DELAY * retry_number)
+    if delay <= 0:
+        return
+    print(
+        f"[CUDA] 等待 {delay:.1f}s 恢复设备状态: "
+        f"before OmniVoice CUDA retry {retry_number}"
+    )
+    time.sleep(delay)
 
 
 def normalize_synthesis_text(text: str) -> str:
@@ -374,6 +406,11 @@ class OmniVoiceWorkerManager:
                 else OMNIVOICE_MAX_CHARS_PER_CHUNK
             ),
             "pause_ms": request.pause_ms if request.pause_ms is not None else OMNIVOICE_PAUSE_MS,
+            "max_reference_seconds": (
+                OMNIVOICE_MAX_REFERENCE_SECONDS
+                if OMNIVOICE_MAX_REFERENCE_SECONDS > 0
+                else None
+            ),
             "local_files_only": LOCAL_FILES_ONLY,
             "runtime_cache_dir": RUNTIME_CACHE_DIR,
             "hf_mirror_dir": HF_MIRROR_DIR,
@@ -406,7 +443,34 @@ class OmniVoiceWorkerManager:
                         ),
                         OMNIVOICE_CUDA_RETRY_MAX_CHARS,
                     )
-                    wait_after_cuda_release("before OmniVoice CUDA retry")
+                    attempt_payload["audio_chunk_duration"] = min(
+                        float(
+                            attempt_payload.get("audio_chunk_duration")
+                            or OMNIVOICE_AUDIO_CHUNK_DURATION
+                        ),
+                        OMNIVOICE_CUDA_RETRY_AUDIO_CHUNK_DURATION,
+                    )
+                    attempt_payload["audio_chunk_threshold"] = min(
+                        float(
+                            attempt_payload.get("audio_chunk_threshold")
+                            or OMNIVOICE_AUDIO_CHUNK_THRESHOLD
+                        ),
+                        OMNIVOICE_CUDA_RETRY_AUDIO_CHUNK_THRESHOLD,
+                    )
+                    attempt_payload["max_reference_seconds"] = min(
+                        float(
+                            attempt_payload.get("max_reference_seconds")
+                            or OMNIVOICE_CUDA_RETRY_MAX_REFERENCE_SECONDS
+                        ),
+                        OMNIVOICE_CUDA_RETRY_MAX_REFERENCE_SECONDS,
+                    )
+                    if OMNIVOICE_CUDA_RETRY_CODEC_CPU and retry_number >= 2:
+                        attempt_payload["audio_tokenizer_device"] = "cpu"
+                        print(
+                            "[OmniVoice] 连续 CUDA 异常，下一次重试将 DAC "
+                            "音频 tokenizer 移到 CPU"
+                        )
+                    wait_before_cuda_retry(retry_number)
         except Exception as exc:
             self.last_error = str(exc)
             raise
@@ -549,8 +613,14 @@ async def health():
             "fade_duration": OMNIVOICE_FADE_DURATION,
             "max_chars_per_chunk": OMNIVOICE_MAX_CHARS_PER_CHUNK,
             "pause_ms": OMNIVOICE_PAUSE_MS,
+            "max_reference_seconds": OMNIVOICE_MAX_REFERENCE_SECONDS,
             "cuda_retry_count": OMNIVOICE_CUDA_RETRY_COUNT,
             "cuda_retry_max_chars": OMNIVOICE_CUDA_RETRY_MAX_CHARS,
+            "cuda_retry_delay": OMNIVOICE_CUDA_RETRY_DELAY,
+            "cuda_retry_audio_chunk_duration": OMNIVOICE_CUDA_RETRY_AUDIO_CHUNK_DURATION,
+            "cuda_retry_audio_chunk_threshold": OMNIVOICE_CUDA_RETRY_AUDIO_CHUNK_THRESHOLD,
+            "cuda_retry_max_reference_seconds": OMNIVOICE_CUDA_RETRY_MAX_REFERENCE_SECONDS,
+            "cuda_retry_codec_cpu": OMNIVOICE_CUDA_RETRY_CODEC_CPU,
             "prompt_text_fallback": "upload sidecar -> local Whisper ASR",
         },
         "last_errors": {
@@ -636,11 +706,18 @@ if __name__ == "__main__":
     )
     print(
         f"[配置] speed={OMNIVOICE_SPEED}, duration={OMNIVOICE_DURATION}, "
-        f"max_chars_per_chunk={OMNIVOICE_MAX_CHARS_PER_CHUNK}, pause_ms={OMNIVOICE_PAUSE_MS}"
+        f"max_chars_per_chunk={OMNIVOICE_MAX_CHARS_PER_CHUNK}, "
+        f"max_reference_seconds={OMNIVOICE_MAX_REFERENCE_SECONDS}, "
+        f"pause_ms={OMNIVOICE_PAUSE_MS}"
     )
     print(
         f"[配置] local_files_only={LOCAL_FILES_ONLY}, request_timeout={OMNIVOICE_REQUEST_TIMEOUT}, "
         f"cuda_retry={OMNIVOICE_CUDA_RETRY_COUNT}, "
-        f"retry_max_chars={OMNIVOICE_CUDA_RETRY_MAX_CHARS}"
+        f"retry_max_chars={OMNIVOICE_CUDA_RETRY_MAX_CHARS}, "
+        f"retry_delay={OMNIVOICE_CUDA_RETRY_DELAY}s, "
+        f"retry_audio_chunk={OMNIVOICE_CUDA_RETRY_AUDIO_CHUNK_DURATION}s/"
+        f"{OMNIVOICE_CUDA_RETRY_AUDIO_CHUNK_THRESHOLD}s, "
+        f"retry_max_reference={OMNIVOICE_CUDA_RETRY_MAX_REFERENCE_SECONDS}s, "
+        f"retry_codec_cpu={OMNIVOICE_CUDA_RETRY_CODEC_CPU}"
     )
     uvicorn.run(app, host=API_HOST, port=API_PORT)

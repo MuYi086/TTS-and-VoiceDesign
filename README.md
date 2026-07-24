@@ -240,6 +240,8 @@ curl -X POST http://127.0.0.1:8301/v2/synthesize \
 
 `8301` 默认使用低峰值流式 vocoder，API 契约和最终 WAV 返回方式不变。只有在使用不支持 `generate_stream()` 的旧版 dots.tts 时，才应通过环境变量 `DOTS_USE_STREAMING_VOCODER=0` 或单次请求字段 `"use_streaming_vocoder": false` 回退到整段解码。
 
+dots.tts 官方建议参考音频控制在约 10 秒，并确保 `prompt_text` 与实际语音完全一致。对于过长参考音频或转写偏差导致的 prompt continuation 立即 EOS，worker 会先更换随机种子重试一次；仍失败时自动降级为官方支持的仅参考音频 x-vector 克隆模式，后续文本分段沿用该模式。
+
 `8302` 的 `LongCat-AudioDiT-1B` 复用同一套 WebUI TTS 协议：
 
 ```bash
@@ -294,7 +296,7 @@ curl -X POST http://127.0.0.1:8304/v2/synthesize \
 
 如果未提供 `prompt_text`，`8304` 会在 worker 内部从 `OMNIVOICE_ASR_MODEL_DIR` 显式加载本地 Whisper 模型，执行参考音频自动转写后再继续克隆。这仍然满足“真实用到才加载、请求结束即卸载”的约束，只是首轮请求通常比显式提供转写更慢。纯离线部署必须提前准备该目录；若模型不在默认位置，可用 `OMNIVOICE_ASR_MODEL_DIR=/path/to/whisper-large-v3-turbo bash start.sh` 覆盖。
 
-为避免长文本在单次 Qwen3 前向中占用过大的注意力矩阵，OmniVoice 默认每 60 字分段，并使用 SDPA math kernel。遇到 `CUDA driver error` / `device not ready` 时，API 会新启 worker，以 eager attention 和最多 48 字的分段自动重试一次。可通过 `OMNIVOICE_MAX_CHARS_PER_CHUNK`、`OMNIVOICE_ATTN_IMPLEMENTATION`、`OMNIVOICE_SDPA_BACKEND`、`OMNIVOICE_CUDA_RETRY_COUNT` 和 `OMNIVOICE_CUDA_RETRY_MAX_CHARS` 覆盖。对于当前上传的 WAV，OmniVoice 优先使用 SoundFile 解码，因此缺少 ffmpeg 的 pydub 导入警告不影响克隆；MP3/M4A 等格式仍需要系统提供 ffmpeg。
+为避免过长参考上下文或长文本使 Qwen3/DAC 的单次 CUDA 压力过高，OmniVoice 默认把超过 10 秒的参考音频在内存中按静音边界截短，并按保留时长比例在标点附近同步截取参考文本；原始 WAV 和 sidecar 不会被修改。目标文本默认每 60 字分段，并使用 SDPA math kernel。遇到 `CUDA driver error` / `device not ready` 时，API 会等待驱动状态恢复并新启 worker，先以 eager attention、最多 48 字分段和 8 秒内部音频块重试；若仍失败，第二次重试会把 DAC 音频 tokenizer 移到 CPU，仅保留主生成模型在 GPU。可通过 `OMNIVOICE_MAX_REFERENCE_SECONDS`、`OMNIVOICE_MAX_CHARS_PER_CHUNK`、`OMNIVOICE_ATTN_IMPLEMENTATION`、`OMNIVOICE_SDPA_BACKEND`、`OMNIVOICE_CUDA_RETRY_COUNT`、`OMNIVOICE_CUDA_RETRY_MAX_CHARS`、`OMNIVOICE_CUDA_RETRY_DELAY`、`OMNIVOICE_CUDA_RETRY_AUDIO_CHUNK_DURATION`、`OMNIVOICE_CUDA_RETRY_AUDIO_CHUNK_THRESHOLD`、`OMNIVOICE_CUDA_RETRY_MAX_REFERENCE_SECONDS` 和 `OMNIVOICE_CUDA_RETRY_CODEC_CPU` 覆盖。对于当前上传的 WAV，OmniVoice 优先使用 SoundFile 解码，因此缺少 ffmpeg 的 pydub 导入警告不影响克隆；MP3/M4A 等格式仍需要系统提供 ffmpeg。
 
 `8305` 的 `Qwen3-TTS-12Hz-1.7B-Base` 也复用同一套 WebUI TTS 协议：
 

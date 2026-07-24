@@ -39,6 +39,18 @@ class NonStreamingRuntime:
         return {"audio": np.array([[[0.6, 0.7]]], dtype=np.float32)}
 
 
+class RecoveringStreamingRuntime:
+    def __init__(self, failures):
+        self.failures = list(failures)
+        self.calls = []
+
+    def generate_stream(self, **kwargs):
+        self.calls.append(dict(kwargs))
+        if self.failures:
+            raise RuntimeError(self.failures.pop(0))
+        yield np.array([[[0.8, 0.9]]], dtype=np.float32)
+
+
 class DotsStreamingVocoderTests(unittest.TestCase):
     def test_streaming_mode_concatenates_official_runtime_chunks(self):
         runtime = StreamingRuntime()
@@ -86,6 +98,60 @@ class DotsStreamingVocoderTests(unittest.TestCase):
                 payload = dots_api.DotsWorkerManager().build_worker_payload(request)
 
         self.assertTrue(payload["use_streaming_vocoder"])
+
+    def test_no_payload_error_retries_then_falls_back_to_audio_only(self):
+        error = dots_tts_worker.PROMPT_CONTINUATION_NO_PAYLOAD_ERROR
+        runtime = RecoveringStreamingRuntime([error, error])
+        seed_everything = mock.Mock()
+        torch = mock.Mock()
+        torch.cuda.is_available.return_value = False
+
+        waveform, used_audio_only_fallback = (
+            dots_tts_worker.generate_chunk_audio_with_recovery(
+                runtime,
+                {
+                    "text": "测试恢复。",
+                    "prompt_audio_path": "/tmp/reference.wav",
+                    "prompt_text": "参考音频转写。",
+                },
+                use_streaming_vocoder=True,
+                np=np,
+                seed_everything=seed_everything,
+                seed=42,
+                torch=torch,
+            )
+        )
+
+        np.testing.assert_allclose(waveform, [0.8, 0.9])
+        self.assertTrue(used_audio_only_fallback)
+        self.assertEqual(len(runtime.calls), 3)
+        self.assertEqual(runtime.calls[0]["prompt_text"], "参考音频转写。")
+        self.assertEqual(runtime.calls[1]["prompt_text"], "参考音频转写。")
+        self.assertIsNone(runtime.calls[2]["prompt_text"])
+        self.assertEqual(seed_everything.call_args_list, [mock.call(43), mock.call(44)])
+
+    def test_unrelated_generation_error_is_not_retried(self):
+        runtime = RecoveringStreamingRuntime(["CUDA out of memory"])
+        seed_everything = mock.Mock()
+        torch = mock.Mock()
+
+        with self.assertRaisesRegex(RuntimeError, "CUDA out of memory"):
+            dots_tts_worker.generate_chunk_audio_with_recovery(
+                runtime,
+                {
+                    "text": "测试错误。",
+                    "prompt_audio_path": "/tmp/reference.wav",
+                    "prompt_text": "参考音频转写。",
+                },
+                use_streaming_vocoder=True,
+                np=np,
+                seed_everything=seed_everything,
+                seed=42,
+                torch=torch,
+            )
+
+        self.assertEqual(len(runtime.calls), 1)
+        seed_everything.assert_not_called()
 
 
 if __name__ == "__main__":

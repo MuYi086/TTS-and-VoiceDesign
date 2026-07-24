@@ -109,6 +109,72 @@ def normalize_optional_text(value: Any) -> str | None:
     return normalized
 
 
+def truncate_reference_text(text: str, retained_ratio: float) -> str:
+    normalized = text.strip()
+    if not normalized or retained_ratio >= 1:
+        return normalized
+
+    target_length = max(
+        1,
+        min(len(normalized), round(len(normalized) * retained_ratio)),
+    )
+    boundaries = [
+        match.end()
+        for match in re.finditer(r"[。！？；;!?，,]", normalized)
+        if max(1, target_length // 2) <= match.end() <= min(
+            len(normalized),
+            max(target_length + 8, round(target_length * 1.5)),
+        )
+    ]
+    cut_index = (
+        min(boundaries, key=lambda value: abs(value - target_length))
+        if boundaries
+        else target_length
+    )
+    return normalized[:cut_index].strip()
+
+
+def bound_reference_prompt(
+    ref_audio_path: Path,
+    ref_text: str | None,
+    *,
+    max_seconds: float | None,
+    sample_rate: int,
+    load_audio: Any,
+    trim_long_audio: Any,
+) -> tuple[Any, str | None]:
+    if max_seconds is None or max_seconds <= 0:
+        return str(ref_audio_path), ref_text
+
+    waveform = load_audio(str(ref_audio_path), sample_rate)
+    original_samples = int(waveform.shape[-1])
+    max_samples = int(sample_rate * max_seconds)
+    if original_samples <= max_samples:
+        return (waveform, sample_rate), ref_text
+
+    trimmed = trim_long_audio(
+        waveform,
+        sample_rate,
+        max_duration=max_seconds,
+        min_duration=min(3.0, max_seconds),
+        trim_threshold=max_seconds,
+    )
+    if trimmed.shape[-1] > max_samples:
+        trimmed = trimmed[..., :max_samples]
+    retained_ratio = float(trimmed.shape[-1]) / original_samples
+    bounded_text = (
+        truncate_reference_text(ref_text, retained_ratio)
+        if ref_text is not None
+        else None
+    )
+    print(
+        f"[OmniVoice worker] 参考音频裁剪: "
+        f"{original_samples / sample_rate:.2f}s -> {trimmed.shape[-1] / sample_rate:.2f}s, "
+        f"参考文本 {len(ref_text or '')} -> {len(bounded_text or '')} 字"
+    )
+    return (trimmed, sample_rate), bounded_text
+
+
 def resolve_dtype(torch: Any, dtype_name: Any) -> Any:
     normalized = str(dtype_name or "float16").strip().lower()
     if normalized in {"float16", "fp16", "half"}:
@@ -214,12 +280,13 @@ def import_runtime():
         import soundfile as sf
         import torch
         from omnivoice import OmniVoice
+        from omnivoice.utils.audio import load_audio, trim_long_audio
     except ImportError as exc:
         raise RuntimeError(
             "OmniVoice 运行时不可导入。请确认 omnivoice conda 环境已安装 omnivoice、"
             f"torch、numpy、soundfile。缺失导入：{exc.name or exc}"
         ) from exc
-    return OmniVoice, np, sf, torch
+    return OmniVoice, load_audio, np, sf, torch, trim_long_audio
 
 
 def build_generation_kwargs(request: dict[str, Any]) -> dict[str, Any]:
@@ -251,7 +318,7 @@ def build_generation_kwargs(request: dict[str, Any]) -> dict[str, Any]:
 
 def synthesize(request: dict[str, Any], output_wav: Path) -> None:
     prepare_environment(request)
-    OmniVoice, np, sf, torch = import_runtime()
+    OmniVoice, load_audio, np, sf, torch, trim_long_audio = import_runtime()
 
     model_path = require_path(str(request.get("model_path") or ""), "模型路径")
     ref_audio_path = require_path(str(request.get("ref_audio_path") or ""), "参考音频")
@@ -277,6 +344,19 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
     max_chars_per_chunk = int(request.get("max_chars_per_chunk") or 60)
     pause_ms = int(request.get("pause_ms") or 250)
     local_files_only = bool(request.get("local_files_only", True))
+    audio_tokenizer_device = (
+        normalize_optional_text(request.get("audio_tokenizer_device")) or "model"
+    ).lower()
+    if audio_tokenizer_device not in {"model", "cpu"}:
+        raise ValueError(
+            "不支持的 audio_tokenizer_device："
+            f"{audio_tokenizer_device}，仅支持 model/cpu。"
+        )
+    max_reference_seconds = (
+        float(request["max_reference_seconds"])
+        if request.get("max_reference_seconds") is not None
+        else None
+    )
 
     if not torch.cuda.is_available():
         raise RuntimeError("OmniVoice 合成需要 CUDA GPU。")
@@ -306,25 +386,47 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
             attn_implementation=attn_implementation,
             local_files_only=local_files_only,
         )
+        if audio_tokenizer_device == "cpu":
+            if getattr(model, "audio_tokenizer", None) is None:
+                raise RuntimeError("OmniVoice 未加载 DAC 音频 tokenizer，无法切换到 CPU。")
+            model.audio_tokenizer.to("cpu")
+            clear_cuda_cache(torch)
+            print("[OmniVoice worker] DAC 音频 tokenizer 已移到 CPU")
         sample_rate = int(getattr(model, "sampling_rate", 24000))
         if asr_model_path is not None:
             model.load_asr_model(model_name=str(asr_model_path))
-        voice_clone_prompt = model.create_voice_clone_prompt(
-            ref_audio=str(ref_audio_path),
-            ref_text=ref_text,
-            preprocess_prompt=preprocess_prompt,
+        reference_input, effective_ref_text = bound_reference_prompt(
+            ref_audio_path,
+            ref_text,
+            max_seconds=max_reference_seconds,
+            sample_rate=sample_rate,
+            load_audio=load_audio,
+            trim_long_audio=trim_long_audio,
         )
+        try:
+            voice_clone_prompt = model.create_voice_clone_prompt(
+                ref_audio=reference_input,
+                ref_text=effective_ref_text,
+                preprocess_prompt=preprocess_prompt,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"OmniVoice 参考音频 DAC 编码失败: {exc}") from exc
 
         waveforms = []
         generation_kwargs = build_generation_kwargs(request)
         for index, chunk in enumerate(chunks, start=1):
             print(f"[OmniVoice worker] 合成 chunk {index}/{len(chunks)} ({len(chunk)} chars)")
-            audios = model.generate(
-                text=chunk,
-                language=language,
-                voice_clone_prompt=voice_clone_prompt,
-                **generation_kwargs,
-            )
+            try:
+                audios = model.generate(
+                    text=chunk,
+                    language=language,
+                    voice_clone_prompt=voice_clone_prompt,
+                    **generation_kwargs,
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    f"OmniVoice chunk {index}/{len(chunks)} 生成或 DAC 解码失败: {exc}"
+                ) from exc
             if not audios:
                 raise RuntimeError("OmniVoice 未返回音频片段。")
             waveforms.append(audios[0])

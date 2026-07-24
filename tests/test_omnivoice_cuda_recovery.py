@@ -11,12 +11,13 @@ if str(API_DIR) not in sys.path:
     sys.path.insert(0, str(API_DIR))
 
 import omnivoice_api
-from omnivoice_tts_worker import split_text
+from omnivoice_tts_worker import split_text, truncate_reference_text
 
 
 class RetryableCudaProcess:
     calls = 0
     payloads = []
+    failures_before_success = 1
 
     def __init__(self, command, **kwargs):
         self.command = command
@@ -29,7 +30,7 @@ class RetryableCudaProcess:
         type(self).calls += 1
 
     def communicate(self, timeout=None):
-        if type(self).calls == 1:
+        if type(self).calls <= type(self).failures_before_success:
             self.returncode = 1
             return "", "RuntimeError: CUDA driver error: device not ready"
 
@@ -63,6 +64,7 @@ class OmniVoiceCudaRecoveryTests(unittest.TestCase):
         self.assertEqual(payload["attn_implementation"], "sdpa")
         self.assertEqual(payload["sdpa_backend"], "math")
         self.assertEqual(payload["asr_model_path"], tmp_dir)
+        self.assertEqual(payload["max_reference_seconds"], 10.0)
 
     def test_missing_asr_model_fails_before_starting_worker(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -117,10 +119,18 @@ class OmniVoiceCudaRecoveryTests(unittest.TestCase):
 
         self.assertEqual([len(chunk) for chunk in chunks], [60, 42])
 
+    def test_long_reference_text_is_truncated_near_punctuation(self):
+        text = "第一句话用于克隆。第二句话不应进入短参考。第三句话也不应进入。"
+
+        truncated = truncate_reference_text(text, 0.32)
+
+        self.assertEqual(truncated, "第一句话用于克隆。")
+
     def test_cuda_driver_error_retries_with_eager_and_smaller_chunks(self):
         manager = omnivoice_api.OmniVoiceWorkerManager()
         RetryableCudaProcess.calls = 0
         RetryableCudaProcess.payloads = []
+        RetryableCudaProcess.failures_before_success = 1
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             with (
@@ -130,6 +140,7 @@ class OmniVoiceCudaRecoveryTests(unittest.TestCase):
                 mock.patch.object(omnivoice_api, "OMNIVOICE_CUDA_RETRY_COUNT", 1),
                 mock.patch.object(omnivoice_api, "OMNIVOICE_CUDA_RETRY_MAX_CHARS", 48),
                 mock.patch.object(omnivoice_api, "CUDA_RELEASE_DELAY", 0),
+                mock.patch.object(omnivoice_api, "OMNIVOICE_CUDA_RETRY_DELAY", 0),
                 mock.patch.object(
                     omnivoice_api,
                     "resolve_conda_executable",
@@ -158,6 +169,54 @@ class OmniVoiceCudaRecoveryTests(unittest.TestCase):
         )
         self.assertEqual(RetryableCudaProcess.payloads[1]["sdpa_backend"], "math")
         self.assertEqual(RetryableCudaProcess.payloads[1]["max_chars_per_chunk"], 48)
+        self.assertEqual(RetryableCudaProcess.payloads[1]["audio_chunk_duration"], 8.0)
+        self.assertEqual(RetryableCudaProcess.payloads[1]["audio_chunk_threshold"], 8.0)
+        self.assertEqual(RetryableCudaProcess.payloads[1]["max_reference_seconds"], 10.0)
+        self.assertNotIn("audio_tokenizer_device", RetryableCudaProcess.payloads[1])
+        self.assertIsNone(manager.last_error)
+
+    def test_second_cuda_retry_moves_dac_tokenizer_to_cpu(self):
+        manager = omnivoice_api.OmniVoiceWorkerManager()
+        RetryableCudaProcess.calls = 0
+        RetryableCudaProcess.payloads = []
+        RetryableCudaProcess.failures_before_success = 2
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with (
+                mock.patch.object(omnivoice_api, "OMNIVOICE_WORKER_SCRIPT", __file__),
+                mock.patch.object(omnivoice_api, "OMNIVOICE_MODEL_DIR", tmp_dir),
+                mock.patch.object(omnivoice_api, "OMNIVOICE_WORKER_TMP_DIR", tmp_dir),
+                mock.patch.object(omnivoice_api, "OMNIVOICE_CUDA_RETRY_COUNT", 2),
+                mock.patch.object(omnivoice_api, "OMNIVOICE_CUDA_RETRY_CODEC_CPU", True),
+                mock.patch.object(omnivoice_api, "CUDA_RELEASE_DELAY", 0),
+                mock.patch.object(omnivoice_api, "OMNIVOICE_CUDA_RETRY_DELAY", 0),
+                mock.patch.object(
+                    omnivoice_api,
+                    "resolve_conda_executable",
+                    return_value="/fake/conda",
+                ),
+                mock.patch.object(
+                    omnivoice_api.subprocess,
+                    "Popen",
+                    RetryableCudaProcess,
+                ),
+            ):
+                audio = manager.run_worker(
+                    {
+                        "text": "测试。",
+                        "attn_implementation": "sdpa",
+                        "sdpa_backend": "auto",
+                        "max_chars_per_chunk": 120,
+                    }
+                )
+
+        self.assertEqual(audio, b"RIFF-omnivoice-retried")
+        self.assertEqual(RetryableCudaProcess.calls, 3)
+        self.assertNotIn("audio_tokenizer_device", RetryableCudaProcess.payloads[1])
+        self.assertEqual(
+            RetryableCudaProcess.payloads[2]["audio_tokenizer_device"],
+            "cpu",
+        )
         self.assertIsNone(manager.last_error)
 
 

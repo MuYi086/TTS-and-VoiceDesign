@@ -16,6 +16,11 @@ from typing import Any
 from audio_trim import trim_leading_silence
 
 
+PROMPT_CONTINUATION_NO_PAYLOAD_ERROR = (
+    "Generation produced no payload latents after discarding the regenerated prompt-tail patch"
+)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="One-shot dots.tts worker")
     parser.add_argument("--input-json", required=True, help="Request JSON file path")
@@ -180,6 +185,78 @@ def generate_chunk_audio(
     return waveform
 
 
+def is_prompt_continuation_no_payload_error(exc: BaseException) -> bool:
+    return PROMPT_CONTINUATION_NO_PAYLOAD_ERROR in str(exc)
+
+
+def generate_chunk_audio_with_recovery(
+    runtime: Any,
+    generation_kwargs: dict[str, Any],
+    *,
+    use_streaming_vocoder: bool,
+    np: Any,
+    seed_everything: Any,
+    seed: int,
+    torch: Any,
+) -> tuple[Any, bool]:
+    """Recover from prompt continuation ending before its first payload patch.
+
+    Returns the generated waveform and whether generation had to fall back to
+    reference-audio-only (x-vector) conditioning.
+    """
+    try:
+        waveform = generate_chunk_audio(
+            runtime,
+            generation_kwargs,
+            use_streaming_vocoder=use_streaming_vocoder,
+            np=np,
+        )
+        return waveform, False
+    except Exception as exc:
+        if (
+            not generation_kwargs.get("prompt_text")
+            or not is_prompt_continuation_no_payload_error(exc)
+        ):
+            raise
+
+    retry_seed = seed + 1
+    print(
+        "[dots.tts worker] prompt continuation 在首个有效 patch 前触发 EOS，"
+        f"换 seed={retry_seed} 重试"
+    )
+    clear_cuda_cache(torch)
+    seed_everything(retry_seed)
+    try:
+        waveform = generate_chunk_audio(
+            runtime,
+            generation_kwargs,
+            use_streaming_vocoder=use_streaming_vocoder,
+            np=np,
+        )
+        return waveform, False
+    except Exception as exc:
+        if not is_prompt_continuation_no_payload_error(exc):
+            raise
+
+    fallback_seed = seed + 2
+    print(
+        "[dots.tts worker] prompt continuation 重试后仍立即 EOS，"
+        "自动降级为仅参考音频的 x-vector 克隆模式，"
+        f"seed={fallback_seed}"
+    )
+    clear_cuda_cache(torch)
+    seed_everything(fallback_seed)
+    fallback_kwargs = dict(generation_kwargs)
+    fallback_kwargs["prompt_text"] = None
+    waveform = generate_chunk_audio(
+        runtime,
+        fallback_kwargs,
+        use_streaming_vocoder=use_streaming_vocoder,
+        np=np,
+    )
+    return waveform, True
+
+
 def clear_cuda_cache(torch: Any) -> None:
     gc.collect()
     if not torch.cuda.is_available():
@@ -273,6 +350,12 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
         print(f"[dots.tts worker] 文本长度: {len(text)} 字, chunks={len(chunks)}")
         print(f"[dots.tts worker] prompt_text: {'provided' if prompt_text else 'not provided'}")
         print(f"[dots.tts worker] use_streaming_vocoder={use_streaming_vocoder}")
+        reference_info = sf.info(str(ref_audio_path))
+        if reference_info.duration > 15:
+            print(
+                f"[dots.tts worker] 警告: 参考音频为 {reference_info.duration:.2f}s；"
+                "官方建议约 10s，过长会增加 prompt continuation 立即 EOS 的概率。"
+            )
         runtime = DotsTtsRuntime.from_pretrained(
             str(model_path),
             precision=precision,
@@ -280,12 +363,13 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
         )
 
         waveforms = []
+        active_prompt_text = prompt_text
         for index, chunk in enumerate(chunks, start=1):
             print(f"[dots.tts worker] 合成 chunk {index}/{len(chunks)} ({len(chunk)} chars)")
             generation_kwargs = {
                 "text": chunk,
                 "prompt_audio_path": str(ref_audio_path),
-                "prompt_text": prompt_text,
+                "prompt_text": active_prompt_text,
                 "language": language,
                 "template_name": template_name,
                 "ode_method": ode_method,
@@ -295,14 +379,18 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
                 "normalize_text": normalize_text_flag,
                 "profile_inference": profile_inference,
             }
-            waveforms.append(
-                generate_chunk_audio(
-                    runtime,
-                    generation_kwargs,
-                    use_streaming_vocoder=use_streaming_vocoder,
-                    np=np,
-                )
+            waveform, used_audio_only_fallback = generate_chunk_audio_with_recovery(
+                runtime,
+                generation_kwargs,
+                use_streaming_vocoder=use_streaming_vocoder,
+                np=np,
+                seed_everything=seed_everything,
+                seed=seed + (index - 1) * 3,
+                torch=torch,
             )
+            waveforms.append(waveform)
+            if used_audio_only_fallback:
+                active_prompt_text = None
 
         sample_rate = int(runtime.sample_rate)
         waveform = join_waveforms(waveforms, sample_rate, pause_ms, np)
