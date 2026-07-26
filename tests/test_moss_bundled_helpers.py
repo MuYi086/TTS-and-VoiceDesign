@@ -11,7 +11,11 @@ if str(API_DIR) not in sys.path:
     sys.path.insert(0, str(API_DIR))
 
 import moss_api
-from moss_tts_worker import build_clone_conversation, generation_frame_budget
+from moss_tts_worker import (
+    build_clone_conversation,
+    generate_outputs_with_recovery,
+    generation_frame_budget,
+)
 
 
 class FakeProcessor:
@@ -22,6 +26,38 @@ class FakeProcessor:
     @staticmethod
     def build_assistant_message(**kwargs):
         return {"role": "assistant", **kwargs}
+
+
+class FakeTensor:
+    def __init__(self, frame_count=0):
+        self.shape = (frame_count, 13)
+
+    def to(self, _device):
+        return self
+
+
+class RecoveryProcessor(FakeProcessor):
+    def __init__(self):
+        self.modes = []
+
+    def __call__(self, _conversations, *, mode):
+        self.modes.append(mode)
+        return {
+            "input_ids": FakeTensor(),
+            "attention_mask": FakeTensor(),
+        }
+
+
+class RecoveryModel:
+    def __init__(self, generated_counts):
+        self.generated_counts = list(generated_counts)
+        self.calls = []
+
+    def generate(self, **kwargs):
+        self.calls.append(kwargs)
+        generated_count = self.generated_counts.pop(0)
+        start_length = 4
+        return [(start_length, FakeTensor(start_length + 1 + generated_count))]
 
 
 class FakeProcess:
@@ -165,6 +201,74 @@ class MossBundledHelpersTests(unittest.TestCase):
             ),
             4096,
         )
+
+    def test_immediate_eos_retries_continuation_then_falls_back_to_reference(self):
+        processor = RecoveryProcessor()
+        model = RecoveryModel([0, 0, 12])
+
+        outputs, used_reference_fallback = generate_outputs_with_recovery(
+            processor,
+            model,
+            device="cuda",
+            chunk="你好。",
+            chunk_index=1,
+            ref_audio_path=Path("reference.wav"),
+            prompt_text="参考音频转写。",
+            instruction=None,
+            tokens=None,
+            quality=None,
+            language="Chinese",
+            generation_kwargs={"max_new_tokens": 256},
+        )
+
+        self.assertTrue(used_reference_fallback)
+        self.assertEqual(processor.modes, ["continuation", "continuation", "generation"])
+        self.assertEqual(len(model.calls), 3)
+        self.assertEqual(outputs[0][1].shape[0], 17)
+
+    def test_immediate_eos_retry_can_keep_continuation_mode(self):
+        processor = RecoveryProcessor()
+        model = RecoveryModel([0, 8])
+
+        _outputs, used_reference_fallback = generate_outputs_with_recovery(
+            processor,
+            model,
+            device="cuda",
+            chunk="你好。",
+            chunk_index=1,
+            ref_audio_path=Path("reference.wav"),
+            prompt_text="参考音频转写。",
+            instruction=None,
+            tokens=None,
+            quality=None,
+            language="Chinese",
+            generation_kwargs={"max_new_tokens": 256},
+        )
+
+        self.assertFalse(used_reference_fallback)
+        self.assertEqual(processor.modes, ["continuation", "continuation"])
+
+    def test_reference_mode_reports_repeated_immediate_eos(self):
+        processor = RecoveryProcessor()
+        model = RecoveryModel([0, 0])
+
+        with self.assertRaisesRegex(RuntimeError, "连续两次"):
+            generate_outputs_with_recovery(
+                processor,
+                model,
+                device="cuda",
+                chunk="你好。",
+                chunk_index=1,
+                ref_audio_path=Path("reference.wav"),
+                prompt_text=None,
+                instruction=None,
+                tokens=None,
+                quality=None,
+                language="Chinese",
+                generation_kwargs={"max_new_tokens": 256},
+            )
+
+        self.assertEqual(processor.modes, ["generation", "generation"])
 
     def test_worker_starts_without_checking_an_external_helper_file(self):
         manager = moss_api.MossWorkerManager()

@@ -7,6 +7,7 @@ import gc
 import importlib.util
 import inspect
 import json
+import logging
 import math
 import os
 import re
@@ -170,6 +171,12 @@ def generated_frame_counts(outputs: Any) -> list[int]:
             continue
         counts.append(max(0, int(shape[0]) - int(start_length) - 1))
     return counts
+
+
+def generated_audio_is_empty(outputs: Any) -> bool:
+    """Return whether MOSS stopped before producing its first new audio frame."""
+    counts = generated_frame_counts(outputs)
+    return not counts or not any(count > 0 for count in counts)
 
 
 def parse_codec_path(value: Any) -> str:
@@ -402,6 +409,77 @@ def patch_autocast_enabled_device_arg(torch: Any) -> None:
         torch.get_autocast_dtype = get_autocast_dtype_compat
 
 
+class _MistralRegexWarningFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "with an incorrect regex pattern" not in record.getMessage()
+
+
+def patch_mistral_tokenizer_regex(tokenizer: Any) -> None:
+    """Apply the tokenizer fix recommended by Transformers without its v5.0 loader bug.
+
+    Transformers 5.0.0 passes ``fix_mistral_regex`` twice internally when the
+    documented flag is supplied, so loading fails with ``multiple values``.
+    MOSS currently runs in that environment; patching the loaded backend is the
+    equivalent compatible path until the runtime dependency is upgraded.
+    """
+    try:
+        import tokenizers
+    except ImportError as exc:
+        raise RuntimeError("MOSS tokenizer regex 修复需要 tokenizers。") from exc
+
+    backend = getattr(tokenizer, "backend_tokenizer", None)
+    if backend is None:
+        raise RuntimeError("MOSS tokenizer 不支持 regex 兼容修复。")
+
+    split_pretokenizer = tokenizers.pre_tokenizers.Split(
+        pattern=tokenizers.Regex(
+            r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*"
+            r"[\p{Ll}\p{Lm}\p{Lo}\p{M}]+|"
+            r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+"
+            r"[\p{Ll}\p{Lm}\p{Lo}\p{M}]*|\p{N}|"
+            r" ?[^\s\p{L}\p{N}]+[\r\n/]*|\s*[\r\n]+|\s+(?!\S)|\s+"
+        ),
+        behavior="isolated",
+    )
+    current_pretokenizer = backend.pre_tokenizer
+    if isinstance(current_pretokenizer, tokenizers.pre_tokenizers.Sequence):
+        current_pretokenizer[0] = split_pretokenizer
+    else:
+        if isinstance(current_pretokenizer, tokenizers.pre_tokenizers.Metaspace):
+            current_pretokenizer = tokenizers.pre_tokenizers.ByteLevel(
+                add_prefix_space=False,
+                use_regex=False,
+            )
+        backend.pre_tokenizer = tokenizers.pre_tokenizers.Sequence(
+            [split_pretokenizer, current_pretokenizer]
+        )
+
+    tokenizer.fix_mistral_regex = True
+
+
+def load_moss_processor(
+    AutoProcessor: Any,
+    model_path: Path,
+    *,
+    codec_path: str,
+) -> Any:
+    """Load the official processor and install the tokenizer regex correction."""
+    tokenizer_logger = logging.getLogger("transformers.tokenization_utils_tokenizers")
+    warning_filter = _MistralRegexWarningFilter()
+    tokenizer_logger.addFilter(warning_filter)
+    try:
+        processor = AutoProcessor.from_pretrained(
+            str(model_path),
+            trust_remote_code=True,
+            codec_path=codec_path,
+        )
+    finally:
+        tokenizer_logger.removeFilter(warning_filter)
+
+    patch_mistral_tokenizer_regex(processor.tokenizer)
+    return processor
+
+
 def collect_audio(decoded_messages: Any, torch: Any) -> Any:
     waveforms = []
     channels = None
@@ -462,6 +540,86 @@ def build_clone_conversation(
             **user_message_kwargs,
         )
     ], "generation"
+
+
+def generate_outputs_with_recovery(
+    processor: Any,
+    model: Any,
+    *,
+    device: str,
+    chunk: str,
+    chunk_index: int,
+    ref_audio_path: Path,
+    prompt_text: str | None,
+    instruction: str | None,
+    tokens: int | None,
+    quality: str | None,
+    language: str,
+    generation_kwargs: dict[str, Any],
+) -> tuple[Any, bool]:
+    """Retry an immediate EOS, then fall back from continuation cloning.
+
+    Returns model outputs and whether reference-audio cloning had to replace
+    continuation cloning. A caller can keep that fallback active for later
+    chunks from the same request.
+    """
+
+    def generate(active_prompt_text: str | None, attempt_label: str) -> tuple[Any, list[int]]:
+        conversation, processor_mode = build_clone_conversation(
+            processor,
+            chunk=chunk,
+            ref_audio_path=ref_audio_path,
+            prompt_text=active_prompt_text,
+            instruction=instruction,
+            tokens=tokens,
+            quality=quality,
+            language=language,
+        )
+        batch = processor([conversation], mode=processor_mode)
+        outputs = model.generate(
+            input_ids=batch["input_ids"].to(device),
+            attention_mask=batch["attention_mask"].to(device),
+            **generation_kwargs,
+        )
+        frame_counts = generated_frame_counts(outputs)
+        print(
+            f"[MOSS worker] chunk {chunk_index} {attempt_label}生成帧数={frame_counts}"
+            + (
+                "（达到安全上限）"
+                if any(
+                    count >= int(generation_kwargs["max_new_tokens"])
+                    for count in frame_counts
+                )
+                else ""
+            )
+        )
+        return outputs, frame_counts
+
+    outputs, _frame_counts = generate(prompt_text, "")
+    if not generated_audio_is_empty(outputs):
+        return outputs, False
+
+    print(
+        "[MOSS worker] 首个音频帧前触发 EOS，"
+        "保持当前克隆模式重试一次"
+    )
+    outputs, _frame_counts = generate(prompt_text, "重试")
+    if not generated_audio_is_empty(outputs):
+        return outputs, False
+
+    if prompt_text is None:
+        raise RuntimeError("MOSS-TTS 连续两次在首个音频帧前触发 EOS。")
+
+    print(
+        "[MOSS worker] continuation 重试后仍在首帧前触发 EOS，"
+        "自动降级为仅参考音频的克隆模式"
+    )
+    outputs, _frame_counts = generate(None, "降级后")
+    if generated_audio_is_empty(outputs):
+        raise RuntimeError(
+            "MOSS-TTS continuation 重试及参考音频克隆均在首个音频帧前触发 EOS。"
+        )
+    return outputs, True
 
 
 def synthesize(request: dict[str, Any], output_wav: Path) -> None:
@@ -541,11 +699,12 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
             f"floor:{min_new_tokens}, per_char:{new_tokens_per_char:g}, hard_cap:{max_new_tokens}"
         )
 
-        processor = AutoProcessor.from_pretrained(
-            str(model_path),
-            trust_remote_code=True,
+        processor = load_moss_processor(
+            AutoProcessor,
+            model_path,
             codec_path=codec_path,
         )
+        print("[MOSS worker] tokenizer regex fix: enabled")
         processor.audio_tokenizer = processor.audio_tokenizer.to(device)
 
         model = AutoModel.from_pretrained(
@@ -558,6 +717,7 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
         model.eval()
 
         waveforms = []
+        active_prompt_text = prompt_text
         with torch.no_grad():
             for index, chunk in enumerate(chunks, start=1):
                 chunk_frame_budget = generation_frame_budget(
@@ -572,20 +732,6 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
                     f"[MOSS worker] 合成 chunk {index}/{len(chunks)} "
                     f"({len(chunk)} chars, frame_budget={chunk_frame_budget})"
                 )
-                conversation, processor_mode = build_clone_conversation(
-                    processor,
-                    chunk=chunk,
-                    ref_audio_path=ref_audio_path,
-                    prompt_text=prompt_text,
-                    instruction=instruction,
-                    tokens=tokens,
-                    quality=quality,
-                    language=language,
-                )
-                batch = processor([conversation], mode=processor_mode)
-                input_ids = batch["input_ids"].to(device)
-                attention_mask = batch["attention_mask"].to(device)
-
                 generation_kwargs: dict[str, Any] = {
                     "max_new_tokens": chunk_frame_budget,
                     "audio_temperature": audio_temperature,
@@ -604,22 +750,23 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
                 if text_repetition_penalty is not None:
                     generation_kwargs["text_repetition_penalty"] = text_repetition_penalty
 
-                outputs = model.generate(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    **generation_kwargs,
+                outputs, used_reference_fallback = generate_outputs_with_recovery(
+                    processor,
+                    model,
+                    device=device,
+                    chunk=chunk,
+                    chunk_index=index,
+                    ref_audio_path=ref_audio_path,
+                    prompt_text=active_prompt_text,
+                    instruction=instruction,
+                    tokens=tokens,
+                    quality=quality,
+                    language=language,
+                    generation_kwargs=generation_kwargs,
                 )
-                frame_counts = generated_frame_counts(outputs)
-                if frame_counts:
-                    print(
-                        f"[MOSS worker] chunk {index} 生成帧数={frame_counts}"
-                        + (
-                            "（达到安全上限）"
-                            if any(count >= chunk_frame_budget for count in frame_counts)
-                            else ""
-                        )
-                    )
                 waveforms.append(collect_audio(processor.decode(outputs), torch))
+                if used_reference_fallback:
+                    active_prompt_text = None
 
         sample_rate = int(processor.model_config.sampling_rate)
         waveform = join_waveforms(waveforms, sample_rate, pause_ms, torch)

@@ -276,7 +276,7 @@ curl -X POST http://127.0.0.1:8303/v2/synthesize \
   -o moss_synth.wav
 ```
 
-`8303` 会优先读取本次请求的 `prompt_text`，再回退到上传参考音频时保存的 sidecar。有参考转写时，worker 按官方 continuation 示例把“参考转写 + 目标文本”交给 user message，并把参考音频作为 assistant 前缀；没有参考转写时，仍按官方 generation 示例通过 `reference=[audio]` 克隆。默认会按当前目标文本长度把每个 chunk 的生成预算限制为 `max(256, 字符数 × 10)` 帧（仍不超过 `MOSS_MAX_NEW_TOKENS`），避免模型偶尔未及时输出结束标记时持续扩大 KV cache；显式传入 `max_new_tokens` 可关闭这个自动限制。默认每个 chunk 最多 80 字，并强制 MOSS 的 SDPA 使用稳定的 math kernel；遇到 `CUDA driver error` / `device not ready` 时，API 会以 eager attention 和更小上限自动重试一次。以上行为可通过 `MOSS_AUTO_LIMIT_MAX_NEW_TOKENS`、`MOSS_MIN_NEW_TOKENS`、`MOSS_NEW_TOKENS_PER_CHAR`、`MOSS_MAX_CHARS_PER_CHUNK`、`MOSS_SDPA_BACKEND`、`MOSS_CUDA_RETRY_COUNT` 和 `MOSS_CUDA_RETRY_MAX_NEW_TOKENS` 调整。如果你希望覆盖其他推理参数，也可以在 `v2/synthesize` 请求里附带 `language`、`instruction`、`quality`、`tokens`、`max_new_tokens` 等可选字段。
+`8303` 会优先读取本次请求的 `prompt_text`，再回退到上传参考音频时保存的 sidecar。有参考转写时，worker 按官方 continuation 示例把“参考转写 + 目标文本”交给 user message，并把参考音频作为 assistant 前缀；没有参考转写时，仍按官方 generation 示例通过 `reference=[audio]` 克隆。continuation 偶尔在首个音频帧前直接输出 EOS 时，worker 会先保持当前模式重试一次；仍失败则自动降级为仅参考音频克隆，后续分段沿用该模式。默认会按当前目标文本长度把每个 chunk 的生成预算限制为 `max(256, 字符数 × 10)` 帧（仍不超过 `MOSS_MAX_NEW_TOKENS`），避免模型偶尔未及时输出结束标记时持续扩大 KV cache；显式传入 `max_new_tokens` 可关闭这个自动限制。默认每个 chunk 最多 80 字，并强制 MOSS 的 SDPA 使用稳定的 math kernel；遇到 `CUDA driver error` / `device not ready` 时，API 会以 eager attention 和更小上限自动重试一次。以上行为可通过 `MOSS_AUTO_LIMIT_MAX_NEW_TOKENS`、`MOSS_MIN_NEW_TOKENS`、`MOSS_NEW_TOKENS_PER_CHAR`、`MOSS_MAX_CHARS_PER_CHUNK`、`MOSS_SDPA_BACKEND`、`MOSS_CUDA_RETRY_COUNT` 和 `MOSS_CUDA_RETRY_MAX_NEW_TOKENS` 调整。如果你希望覆盖其他推理参数，也可以在 `v2/synthesize` 请求里附带 `language`、`instruction`、`quality`、`tokens`、`max_new_tokens` 等可选字段。
 
 `8304` 的 `OmniVoice` 复用同一套 WebUI TTS 协议：
 
