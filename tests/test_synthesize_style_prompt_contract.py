@@ -12,10 +12,6 @@ API_DIR = Path(__file__).resolve().parents[1] / "api"
 sys.path.insert(0, str(API_DIR))
 
 import api
-import dots_api
-import longcat_api
-import moss_api
-import omnivoice_api
 import qwen3_tts_api
 import voxcpm2_api
 import voxcpm2_worker
@@ -23,52 +19,16 @@ import voxcpm2_worker
 
 SYNTHESIS_REQUEST_MODELS = {
     "8300 IndexTTS2": api.TextToSpeechRequest,
-    "8301 dots.tts": dots_api.DotsSynthesizeRequest,
-    "8302 LongCat": longcat_api.LongCatSynthesizeRequest,
-    "8303 MOSS": moss_api.MossSynthesizeRequest,
-    "8304 OmniVoice": omnivoice_api.OmniVoiceSynthesizeRequest,
     "8305 Qwen3-TTS": qwen3_tts_api.Qwen3TtsSynthesizeRequest,
     "8306 VoxCPM2": voxcpm2_api.VoxCpm2SynthesizeRequest,
 }
 
 REFERENCE_TEXT_REQUEST_MODELS = {
-    "8301 dots.tts": dots_api.DotsSynthesizeRequest,
-    "8302 LongCat": longcat_api.LongCatSynthesizeRequest,
-    "8303 MOSS": moss_api.MossSynthesizeRequest,
-    "8304 OmniVoice": omnivoice_api.OmniVoiceSynthesizeRequest,
     "8305 Qwen3-TTS": qwen3_tts_api.Qwen3TtsSynthesizeRequest,
     "8306 VoxCPM2": voxcpm2_api.VoxCpm2SynthesizeRequest,
 }
 
 REFERENCE_TEXT_MANAGER_CASES = (
-    (
-        "8301 dots.tts",
-        dots_api,
-        dots_api.DotsSynthesizeRequest,
-        dots_api.DotsWorkerManager,
-        "prompt_text",
-    ),
-    (
-        "8302 LongCat",
-        longcat_api,
-        longcat_api.LongCatSynthesizeRequest,
-        longcat_api.LongCatWorkerManager,
-        "prompt_text",
-    ),
-    (
-        "8303 MOSS",
-        moss_api,
-        moss_api.MossSynthesizeRequest,
-        moss_api.MossWorkerManager,
-        "prompt_text",
-    ),
-    (
-        "8304 OmniVoice",
-        omnivoice_api,
-        omnivoice_api.OmniVoiceSynthesizeRequest,
-        omnivoice_api.OmniVoiceWorkerManager,
-        "ref_text",
-    ),
     (
         "8305 Qwen3-TTS",
         qwen3_tts_api,

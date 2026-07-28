@@ -10,7 +10,7 @@ Activate the main environment before local work:
 
 ```bash
 conda activate unitale-tts-local
-bash start.sh                         # starts ports 8300–8306
+bash start.sh                         # 启动 8300、8305、8306 与 8311 服务
 conda run -n unitale-tts-local python -m unittest discover -s tests  # runs repository regression tests
 curl http://127.0.0.1:8300/v1/health # checks the main service
 ```

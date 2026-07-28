@@ -1,371 +1,118 @@
 # Unitale AI Local Backend
 
-本项目是 Unitale 前端使用的本地后端，整合：
+本项目是 Unitale 前端使用的本地后端，当前提供：
 
-- IndexTTS2：参考音频 + 文本合成
-- dots.tts-base：参考音频 + 文本合成，独立暴露 `8301`
-- LongCat-AudioDiT-1B：参考音频 + 文本合成，独立暴露 `8302`
-- MOSS-TTS-Local-Transformer-v1.5：参考音频 + 文本合成，独立暴露 `8303`
-- MOSS-SoundEffect v2.0：根据中英文提示词生成 48 kHz 声效，独立暴露 `8311`
-- OmniVoice：参考音频 + 文本合成，独立暴露 `8304`
-- Qwen3-TTS-12Hz-1.7B-Base：参考音频 + 文本合成，独立暴露 `8305`
-- VoxCPM2：参考音频 + 文本合成，独立暴露 `8306`
-- Qwen3-TTS VoiceDesign：根据音色描述生成参考音频
+- IndexTTS2：参考音频 + 文本合成，端口 `8300`
+- Qwen3-TTS-12Hz-1.7B-Base：参考音频 + 文本合成，端口 `8305`
+- VoxCPM2：参考音频 + 文本合成，端口 `8306`
+- MOSS-SoundEffect v2.0：根据中英文提示词生成 48 kHz 声效，端口 `8311`
+- Qwen3-TTS VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/qwen/design`
 - MiMo TTS VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/mimo/design`
 
-运行时 API、各模型 worker 和共享音频处理模块统一放在 `api/`；运行资源也随之归档在 `api/prompts/`、`api/.cache/`、`api/vendor/`。根目录只保留启动入口 `start.sh`、文档、测试和其他项目内容；`start.sh` 仍从根目录启动，所有端口和接口保持不变。
+运行时 API、各模型 worker 和共享音频处理模块统一位于 `api/`；上传资源、缓存和供应商代码位于 `api/prompts/`、`api/.cache/` 与 `api/vendor/`。不要把生成音频或模型权重提交到 Git。
 
 ## 本地环境
 
-当前本机已创建专用 conda 环境：
+主 API 与 IndexTTS2 worker 使用：
 
 ```bash
 conda activate unitale-tts-local
 ```
 
-主 API、`8301` 的 dots HTTP 包装器、`8302` 的 LongCat HTTP 包装器、`8303` 的 MOSS HTTP 包装器、`8304` 的 OmniVoice HTTP 包装器、`8305` 的 Qwen3-TTS HTTP 包装器、`8306` 的 VoxCPM2 HTTP 包装器、IndexTTS2 worker 和 Qwen 子进程使用同一个 conda 环境启动。由于 IndexTTS2 需要
-`transformers==4.52.1/tokenizers==0.21.0`，而 Qwen3-TTS 需要更新版本，Qwen 依赖被侧载到：
-
-```text
-api/vendor/qwen_libs
-api/vendor/LongCat-AudioDiT
-```
-
-该目录只会在 Qwen 子进程中加入 `sys.path`，不会污染 IndexTTS2 worker。Qwen 和 IndexTTS2 都是请求到来时加载，请求结束后卸载。IndexTTS2 的每次合成都由主 API 调用一次性 worker：
+Qwen3-TTS 和 VoxCPM2 各自在请求期间由对应 Conda 环境拉起一次性 worker。模型在请求结束后由 worker 退出释放显存；主 API、各包装器和 worker 共享 `GPU_LOCK_FILE`，避免并发抢占 GPU。
 
 ```bash
 conda run -n unitale-tts-local python api/indextts_worker.py ...
-```
-
-worker 完成后退出，由操作系统完整回收该次请求的 CUDA 上下文，避免在 API 常驻进程内反复卸载、重载 BigVGAN 和 Transformer 时复用失效的 CUDA 分配器句柄。IndexTTS2 worker 还会使用全局 `torch.inference_mode()`，把仅用于参考音频特征提取的 W2V-BERT/CAMPPlus 在生成前卸载到 CPU，并把只在 `emo_text` 模式使用的 Qwen 情感模型改为按需在 CPU 加载，避免 BigVGAN 阶段触发 WSL GPU residency 内存不足。长文本默认按最多 80 个文本 token 分段，每段最多生成 1200 个 mel token；可通过 `INDEXTTS_MAX_TEXT_TOKENS_PER_SEGMENT` 和 `INDEXTTS_MAX_MEL_TOKENS` 调整。
-
-遇到可恢复的 `CUDA driver error` / `device not ready` 时，主 API 会在同一请求和同一把 GPU 锁内自动启动全新的 worker 重试一次，并把重试收紧到每段 50 个文本 token / 900 个 mel token。可通过 `INDEXTTS_CUDA_RETRY_COUNT`、`INDEXTTS_CUDA_RETRY_MAX_TEXT_TOKENS` 和 `INDEXTTS_CUDA_RETRY_MAX_MEL_TOKENS` 调整。以上设置只传给 IndexTTS2 worker，不改变其他 TTS 服务的 worker 环境、请求参数或模型切换流程。
-
-`dots.tts-base` 的真实推理不在 `unitale-tts-local` 里执行，而是由 `8301` 服务按请求调用：
-
-```bash
-conda run -n dots_tts python api/dots_tts_worker.py ...
-```
-
-因此 `dots_tts` 环境至少需要安装 `rednote-hilab/dots.tts`、`torch`、`numpy`、`soundfile`；不要求安装 `fastapi`。默认启用 `DOTS_USE_STREAMING_VOCODER=1`，通过 dots.tts 官方 `generate_stream()` 按固定窗口解码 BigVGAN，避免长文本在一次性解码全部 latent patch 时触发过大的 CUDA kernel。
-
-`LongCat-AudioDiT-1B` 的真实推理不在 `unitale-tts-local` 里执行，而是由 `8302` 服务按请求调用：
-
-```bash
-conda run -n longcat_audiodit python api/longcat_audiodit_worker.py ...
-```
-
-因此 `longcat_audiodit` 环境至少需要安装 LongCat 运行时依赖：`torch`、`numpy`、`soundfile`、`librosa`、`transformers`、`funasr`。
-`audiodit` 源码默认从当前项目的 `api/vendor/LongCat-AudioDiT` 读取；只有你想覆盖默认实现时，才需要额外设置 `LONGCAT_REPO_PATH` 或 `PYTHONPATH`。若 WebUI 只上传参考音频而不提供 `prompt_text`，`8302` 会自动调用本地 `SenseVoiceSmall` 离线生成转写 sidecar，再交给 LongCat 做克隆。
-不要求在该环境里安装 `fastapi`，也不再依赖别的项目目录。
-
-`MOSS-TTS-Local-Transformer-v1.5` 的真实推理不在 `unitale-tts-local` 里执行，而是由 `8303` 服务按请求调用：
-
-```bash
-conda run -n moss-tts-py310 python api/moss_tts_worker.py ...
-```
-
-因此 `moss-tts-py310` 环境至少需要安装 OpenMOSS/MOSS-TTS 官方本地运行依赖：`torch`、`torchaudio`、`transformers`。模型加载、PyTorch/Transformers 兼容补丁和音频收集逻辑均已内置在 `api/moss_tts_worker.py`，不再依赖其他仓库中的 helper 脚本。不要求在该环境里安装 `fastapi`。
-
-`OmniVoice` 的真实推理不在 `unitale-tts-local` 里执行，而是由 `8304` 服务按请求调用：
-
-```bash
-conda run -n omnivoice python api/omnivoice_tts_worker.py ...
-```
-
-因此 `omnivoice` 环境至少需要安装 OmniVoice 官方运行时依赖：`omnivoice`、`torch`、`numpy`、`soundfile`。若上传参考音频时没有同时提供 `prompt_text`，`8304` 会使用 `OMNIVOICE_ASR_MODEL_DIR` 指向的本地 Whisper 模型自动转写；默认目录是 `$HF_MIRROR_DIR/openai/whisper-large-v3-turbo`。该转写相关模块同样只会在请求期间加载，worker 退出即释放。
-
-`Qwen3-TTS-12Hz-1.7B-Base` 的真实推理不在 `unitale-tts-local` 里执行，而是由 `8305` 服务按请求调用：
-
-```bash
 conda run -n qwen3-tts python api/qwen3_tts_worker.py ...
-```
-
-因此 `qwen3-tts` 环境至少需要安装 `qwen-tts`、`torch`、`numpy`、`soundfile`。它使用参考脚本同一套克隆方式：有 `prompt_text` 时走 reference transcript 克隆；没有时退回 `x-vector-only` 模式，只依赖参考音频本身，不会额外加载 ASR。
-
-`VoxCPM2` 的真实推理不在 `unitale-tts-local` 里执行，而是由 `8306` 服务按请求调用：
-
-```bash
 conda run -n voxcpm2 python api/voxcpm2_worker.py ...
 ```
 
-因此 `voxcpm2` 环境至少需要安装 `voxcpm`、`torch`、`numpy`、`soundfile`。`8306` 默认使用仓库内置的 `api/voxcpm2_helpers.py`，不依赖其他项目目录；如需适配自定义 `voxcpm` 版本，仍可通过 `VOXCPM2_HELPER_SCRIPT` 覆盖。它同样满足“真实用到才加载，请求结束即卸载”：模型只在 worker 进程内按请求加载，worker 退出后显存立即清理。若未提供 `prompt_text`，`8306` 会走仅参考音频的克隆模式，不会额外加载 ASR。
+MOSS-SoundEffect 使用独立的 `moss-soundEffect` 环境。MiMo 是云端 API，须通过环境变量提供密钥：
 
 ```bash
 export MIMO_API_KEY=...
 ```
 
-MiMo 是云端 API，不加载本地模型；默认使用 `https://api.xiaomimimo.com/v1` 和 `mimo-v2.5-tts-voicedesign`。
-
 ## 模型路径
 
-默认使用以下本地模型目录：
+默认读取以下本地目录；可在启动前用同名环境变量覆盖：
 
 ```text
 /home/muyi086/hf-mirror/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
 /home/muyi086/hf-mirror/IndexTeam/IndexTTS-2
 /home/muyi086/hf-mirror/IndexTeam/IndexTTS-2/hf_cache
-/home/muyi086/hf-mirror/rednote-hilab/dots.tts-base
-/home/muyi086/hf-mirror/meituan-longcat/LongCat-AudioDiT-1B
-/home/muyi086/hf-mirror/OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5
 /home/muyi086/hf-mirror/OpenMOSS-Team/MOSS-SoundEffect-v2.0
-/home/muyi086/hf-mirror/OpenMOSS-Team/MOSS-Audio-Tokenizer-v2
-/home/muyi086/hf-mirror/k2-fsa/OmniVoice
-/home/muyi086/hf-mirror/openai/whisper-large-v3-turbo
 /home/muyi086/hf-mirror/Qwen/Qwen3-TTS-12Hz-1.7B-Base
 /home/muyi086/hf-mirror/openbmb/VoxCPM2
-/home/muyi086/hf-mirror/google/umt5-base
-/home/muyi086/hf-mirror/FunAudioLLM/SenseVoiceSmall
-/home/muyi086/github/TTS-and-VoiceDesign/api/vendor/LongCat-AudioDiT
 /home/muyi086/github/TTS-and-VoiceDesign/api/voxcpm2_helpers.py
 ```
 
-`hf_cache` 内包含 IndexTTS2 辅助模型：`w2v-bert-2.0`、`semantic_codec`、`campplus`、`bigvgan`。
+`hf_cache` 内包含 IndexTTS2 辅助模型：`w2v-bert-2.0`、`semantic_codec`、`campplus` 和 `bigvgan`。
 
-## 启动
+## 启动与健康检查
 
 ```bash
 bash start.sh
-```
-
-默认监听：
-
-```text
-http://127.0.0.1:8300
-http://127.0.0.1:8301
-http://127.0.0.1:8302
-http://127.0.0.1:8303
-http://127.0.0.1:8311
-http://127.0.0.1:8304
-http://127.0.0.1:8305
-http://127.0.0.1:8306
-```
-
-健康检查：
-
-```bash
 curl http://127.0.0.1:8300/v1/health
-curl http://127.0.0.1:8301/v1/health
-curl http://127.0.0.1:8302/v1/health
-curl http://127.0.0.1:8303/v1/health
-curl http://127.0.0.1:8311/v1/health
-curl http://127.0.0.1:8304/v1/health
 curl http://127.0.0.1:8305/v1/health
 curl http://127.0.0.1:8306/v1/health
+curl http://127.0.0.1:8311/v1/health
 ```
 
-`indextts_ready=true` 且 `missing.indextts_main=[]`、`missing.indextts_aux=[]` 表示本地文件完整。
-`8302` 的健康检查还会返回 `longcat_repo_path`、`longcat_asr_model_dir` 和自动转写参数。正常情况下 `longcat_repo_path` 应指向当前项目的 `api/vendor/LongCat-AudioDiT`，`longcat_asr_model_dir` 应指向本地 `SenseVoiceSmall`；如果这里为空，再检查 `api/vendor` 或 `hf-mirror` 是否完整。
-`8303` 的健康检查会返回 `moss_helper_script`、`moss_model_dir` 和 `moss_codec_path`。`moss_helper_script` 现在指向仓库内置的 `api/moss_tts_worker.py`；若 MOSS 不可用，只需检查本仓库 worker、本地模型目录和 codec，不再需要 `~/github/timbre-design`。
-`8304` 的健康检查会返回 `omnivoice_model_dir`、`omnivoice_asr_model_dir`、`device_map`、`dtype` 和 `prompt_text_fallback`。若 `omnivoice_model_dir` 不可用，先检查本地 `hf-mirror/k2-fsa/OmniVoice`；若未提供 `prompt_text` 且 `omnivoice_asr_model_dir` 不可用，检查本地 `hf-mirror/openai/whisper-large-v3-turbo`，或通过 `OMNIVOICE_ASR_MODEL_DIR` 覆盖路径。
-`8305` 的健康检查会返回 `qwen3_tts_model_dir`、`device_map`、`dtype`、`attn_implementation` 和 `prompt_text_fallback`。若 `qwen3_tts_model_dir` 不可用，先检查本地 `hf-mirror/Qwen/Qwen3-TTS-12Hz-1.7B-Base`。
-`8306` 的健康检查会返回 `voxcpm2_model_dir`、`voxcpm2_helper_script`、`device` 和 `prompt_text_fallback`。若 `voxcpm2_model_dir` 或 `voxcpm2_helper_script` 不可用，先检查本地 `hf-mirror/openbmb/VoxCPM2` 与仓库内的 `api/voxcpm2_helpers.py`。
+默认服务地址：
 
-## 本地回归测试
+```text
+http://127.0.0.1:8300  IndexTTS2 与音色设计
+http://127.0.0.1:8305  Qwen3-TTS-12Hz-1.7B-Base
+http://127.0.0.1:8306  VoxCPM2
+http://127.0.0.1:8311  MOSS-SoundEffect v2.0
+```
 
-测试依赖主运行环境中的 `numpy`、`torch`、FastAPI 和各 API 的验证模型，但不会下载权重、调用外部服务或加载 TTS 模型。请从项目根目录执行：
+## 语音合成接口
+
+三个语音合成服务均支持以下流程：
+
+1. `POST /v1/upload_audio` 上传参考音频。
+2. `GET /v1/check/audio?file_name=...` 确认后端已保存。
+3. `POST /v2/synthesize` 生成目标音频。
+
+所有 `/v2/synthesize` 仅做参考音频克隆，不接受 `style_prompt`；音色或风格应在生成参考音频阶段通过 Qwen 或 MiMo 的音色设计接口确定。
+
+| 服务 | `prompt_text` 处理 |
+| --- | --- |
+| `8300` IndexTTS2 | 不使用参考转写，只接收参考音频与情绪向量。 |
+| `8305` Qwen3-TTS Base | 映射为官方 `ref_text`；缺失时回退到仅参考音频的克隆。 |
+| `8306` VoxCPM2 | 有文案时走 Ultimate Cloning；缺失时使用仅参考音频克隆。 |
 
 ```bash
-conda run -n unitale-tts-local python -m unittest discover -s tests -v
+curl -X POST http://127.0.0.1:8300/v2/synthesize \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"这是一次本地合成测试。","audio_path":"reference.wav"}' \
+  -o synth.wav
 ```
 
-当前测试覆盖共享前导静音裁剪逻辑，以及所有语音克隆服务拒绝 `style_prompt` 的 API 契约。若使用了不同的主环境名称，请将命令中的 `unitale-tts-local` 替换为 `CONDA_ENV` 的值。
-
-## 常用接口
-
-生成参考音色：
+音色设计端点：
 
 ```bash
 curl -X POST http://127.0.0.1:8300/v1/qwen/design \
   -H 'Content-Type: application/json' \
   -d '{"voice_description":"成年女性，声音清晰自然，语速中等。","text":"你好。"}' \
-  -o qwen_test.wav
-```
+  -o qwen_reference.wav
 
-```bash
 curl -X POST http://127.0.0.1:8300/v1/mimo/design \
   -H 'Content-Type: application/json' \
   -d '{"voice_description":"成年女性，声音清晰自然，语速中等。","text":"你好。"}' \
-  -o mimo_test.wav
+  -o mimo_reference.wav
 ```
 
-上传参考音频：
+`8311` 是独立的声效接口，不属于 WebUI 当前自动调用的 TTS 流程；生成的音频可手动导入前端 SFX 素材库。
+
+## 本地回归测试
+
+测试不会下载权重、调用外部服务或加载 TTS 模型：
 
 ```bash
-curl -X POST http://127.0.0.1:8300/v1/upload_audio \
-  -F "full_path=qwen_test.wav" \
-  -F "audio=@qwen_test.wav"
+conda run -n unitale-tts-local python -m unittest discover -s tests -v
 ```
 
-合成音频：
-
-所有 `POST /v2/synthesize` 都是参考音频克隆接口，不接受 `style_prompt`（字段出现即返回 `422`，包括值为 `null` 的情况）。音色/风格应在生成参考音频阶段通过 `/v1/qwen/design` 或 `/v1/mimo/design` 的 `voice_description` 决定；合成阶段只朗读 `text`。`prompt_text` 的含义是参考音频的准确转写，它不是公共基类中的占位字段，而是由确实支持参考转写的模型请求显式声明并传入 worker。
-
-| 服务 | `prompt_text` 能力 |
-| --- | --- |
-| `8300` IndexTTS2 | 不声明该字段；官方 `IndexTTS2.infer` 克隆签名使用 `spk_audio_prompt`，不接参考转写 |
-| `8301` dots.tts-base | 原样传给官方 `DotsTtsRuntime.generate(prompt_text=...)`；官方把“参考音频 + 准确转写”列为推荐克隆方式 |
-| `8302` LongCat-AudioDiT-1B | 原样传入并与目标文本拼接；缺失时按配置使用本地 ASR 自动转写 |
-| `8303` MOSS-TTS Local v1.5 | 有文案时走官方 continuation 克隆（参考转写 + 目标文本 + 前缀音频）；缺失时保留官方 reference 音频克隆 |
-| `8304` OmniVoice | 映射为 `ref_text`；缺失时由官方能力配合本地 Whisper 自动转写 |
-| `8305` Qwen3-TTS Base | 映射为官方 `ref_text`；缺失时退回 `x-vector-only`，质量可能降低 |
-| `8306` VoxCPM2 | 有文案时同时传 `prompt_text`、`prompt_wav_path` 和 `reference_wav_path`（Ultimate Cloning）；缺失时使用 reference-only 克隆 |
-
-上述映射逐项依据模型官方资料核对：[IndexTTS2](https://github.com/index-tts/index-tts)、[dots.tts-base](https://huggingface.co/rednote-hilab/dots.tts-base)、[LongCat-AudioDiT](https://github.com/meituan-longcat/LongCat-AudioDiT)、[MOSS-TTS-Local-Transformer-v1.5](https://huggingface.co/OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5)、[OmniVoice](https://github.com/k2-fsa/OmniVoice)、[Qwen3-TTS Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base) 和 [VoxCPM2](https://huggingface.co/openbmb/VoxCPM2)。
-
-```bash
-curl -X POST http://127.0.0.1:8300/v2/synthesize \
-  -H 'Content-Type: application/json' \
-  -d '{"text":"这是一次本地合成测试。","audio_path":"qwen_test.wav"}' \
-  -o synth.wav
-```
-
-`8301` 的 `dots.tts-base` 复用同一套 WebUI TTS 协议：
-
-```bash
-curl -X POST http://127.0.0.1:8301/v1/upload_audio \
-  -F "full_path=qwen_test.wav" \
-  -F "audio=@qwen_test.wav" \
-  -F "prompt_text=这是参考音频的准确转写，可选但建议提供"
-```
-
-```bash
-curl -X POST http://127.0.0.1:8301/v2/synthesize \
-  -H 'Content-Type: application/json' \
-  -d '{"text":"这是一次 dots.tts 本地合成测试。","audio_path":"qwen_test.wav","prompt_text":"这是参考音频的准确转写，可选但建议提供"}' \
-  -o dots_synth.wav
-```
-
-`prompt_text` 在 HTTP schema 中保持可选以兼容旧客户端，但 WebUI 的“参考文本克隆”协议会在上传参考音频和调用 `/v2/synthesize` 时同时提交角色绑定音色的准确参考文案；这与 dots.tts 官方推荐的 continuation voice cloning 调用一致。
-
-`8301` 默认使用低峰值流式 vocoder，API 契约和最终 WAV 返回方式不变。只有在使用不支持 `generate_stream()` 的旧版 dots.tts 时，才应通过环境变量 `DOTS_USE_STREAMING_VOCODER=0` 或单次请求字段 `"use_streaming_vocoder": false` 回退到整段解码。
-
-dots.tts 官方建议参考音频控制在约 10 秒，并确保 `prompt_text` 与实际语音完全一致。对于过长参考音频或转写偏差导致的 prompt continuation 立即 EOS，worker 会先更换随机种子重试一次；仍失败时自动降级为官方支持的仅参考音频 x-vector 克隆模式，后续文本分段沿用该模式。
-
-`8302` 的 `LongCat-AudioDiT-1B` 复用同一套 WebUI TTS 协议：
-
-```bash
-curl -X POST http://127.0.0.1:8302/v1/upload_audio \
-  -F "full_path=qwen_test.wav" \
-  -F "audio=@qwen_test.wav" \
-  -F "prompt_text=这是参考音频的准确转写，可选但建议提供"
-```
-
-```bash
-curl -X POST http://127.0.0.1:8302/v2/synthesize \
-  -H 'Content-Type: application/json' \
-  -d '{"text":"这是一次 LongCat 本地合成测试。","audio_path":"qwen_test.wav"}' \
-  -o longcat_synth.wav
-```
-
-如果未提供 `prompt_text`，`8302` 会先对参考音频做一次本地离线自动转写，并把结果保存为 sidecar；后续同名音频再次合成时会复用该转写，不再重复跑 ASR。若你手头已有更准确的人工转写，仍然建议在上传时显式传 `prompt_text` 覆盖自动结果。
-
-`8303` 的 `MOSS-TTS-Local-Transformer-v1.5` 复用同一套 WebUI TTS 协议：
-
-```bash
-curl -X POST http://127.0.0.1:8303/v1/upload_audio \
-  -F "full_path=qwen_test.wav" \
-  -F "audio=@qwen_test.wav" \
-  -F "prompt_text=这是参考音频的准确转写"
-```
-
-```bash
-curl -X POST http://127.0.0.1:8303/v2/synthesize \
-  -H 'Content-Type: application/json' \
-  -d '{"text":"这是一次 MOSS 本地合成测试。","audio_path":"qwen_test.wav","prompt_text":"这是参考音频的准确转写"}' \
-  -o moss_synth.wav
-```
-
-`8303` 会优先读取本次请求的 `prompt_text`，再回退到上传参考音频时保存的 sidecar。有参考转写时，worker 按官方 continuation 示例把“参考转写 + 目标文本”交给 user message，并把参考音频作为 assistant 前缀；没有参考转写时，仍按官方 generation 示例通过 `reference=[audio]` 克隆。continuation 偶尔在首个音频帧前直接输出 EOS 时，worker 会先保持当前模式重试一次；仍失败则自动降级为仅参考音频克隆，后续分段沿用该模式。默认会按当前目标文本长度把每个 chunk 的生成预算限制为 `max(256, 字符数 × 10)` 帧（仍不超过 `MOSS_MAX_NEW_TOKENS`），避免模型偶尔未及时输出结束标记时持续扩大 KV cache；显式传入 `max_new_tokens` 可关闭这个自动限制。默认每个 chunk 最多 80 字，并强制 MOSS 的 SDPA 使用稳定的 math kernel；遇到 `CUDA driver error` / `device not ready` 时，API 会以 eager attention 和更小上限自动重试一次。以上行为可通过 `MOSS_AUTO_LIMIT_MAX_NEW_TOKENS`、`MOSS_MIN_NEW_TOKENS`、`MOSS_NEW_TOKENS_PER_CHAR`、`MOSS_MAX_CHARS_PER_CHUNK`、`MOSS_SDPA_BACKEND`、`MOSS_CUDA_RETRY_COUNT` 和 `MOSS_CUDA_RETRY_MAX_NEW_TOKENS` 调整。如果你希望覆盖其他推理参数，也可以在 `v2/synthesize` 请求里附带 `language`、`instruction`、`quality`、`tokens`、`max_new_tokens` 等可选字段。
-
-`8304` 的 `OmniVoice` 复用同一套 WebUI TTS 协议：
-
-```bash
-curl -X POST http://127.0.0.1:8304/v1/upload_audio \
-  -F "full_path=qwen_test.wav" \
-  -F "audio=@qwen_test.wav" \
-  -F "prompt_text=这是参考音频的准确转写，可选但建议提供"
-```
-
-```bash
-curl -X POST http://127.0.0.1:8304/v2/synthesize \
-  -H 'Content-Type: application/json' \
-  -d '{"text":"这是一次 OmniVoice 本地合成测试。","audio_path":"qwen_test.wav"}' \
-  -o omnivoice_synth.wav
-```
-
-如果未提供 `prompt_text`，`8304` 会在 worker 内部从 `OMNIVOICE_ASR_MODEL_DIR` 显式加载本地 Whisper 模型，执行参考音频自动转写后再继续克隆。这仍然满足“真实用到才加载、请求结束即卸载”的约束，只是首轮请求通常比显式提供转写更慢。纯离线部署必须提前准备该目录；若模型不在默认位置，可用 `OMNIVOICE_ASR_MODEL_DIR=/path/to/whisper-large-v3-turbo bash start.sh` 覆盖。
-
-为避免过长参考上下文或长文本使 Qwen3/DAC 的单次 CUDA 压力过高，OmniVoice 默认把超过 10 秒的参考音频在内存中按静音边界截短，并按保留时长比例在标点附近同步截取参考文本；原始 WAV 和 sidecar 不会被修改。目标文本默认每 60 字分段，并使用 SDPA math kernel。遇到 `CUDA driver error` / `device not ready` 时，API 会等待驱动状态恢复并新启 worker，先以 eager attention、最多 48 字分段和 8 秒内部音频块重试；若仍失败，第二次重试会把 DAC 音频 tokenizer 移到 CPU，仅保留主生成模型在 GPU。可通过 `OMNIVOICE_MAX_REFERENCE_SECONDS`、`OMNIVOICE_MAX_CHARS_PER_CHUNK`、`OMNIVOICE_ATTN_IMPLEMENTATION`、`OMNIVOICE_SDPA_BACKEND`、`OMNIVOICE_CUDA_RETRY_COUNT`、`OMNIVOICE_CUDA_RETRY_MAX_CHARS`、`OMNIVOICE_CUDA_RETRY_DELAY`、`OMNIVOICE_CUDA_RETRY_AUDIO_CHUNK_DURATION`、`OMNIVOICE_CUDA_RETRY_AUDIO_CHUNK_THRESHOLD`、`OMNIVOICE_CUDA_RETRY_MAX_REFERENCE_SECONDS` 和 `OMNIVOICE_CUDA_RETRY_CODEC_CPU` 覆盖。对于当前上传的 WAV，OmniVoice 优先使用 SoundFile 解码，因此缺少 ffmpeg 的 pydub 导入警告不影响克隆；MP3/M4A 等格式仍需要系统提供 ffmpeg。
-
-`8305` 的 `Qwen3-TTS-12Hz-1.7B-Base` 也复用同一套 WebUI TTS 协议：
-
-```bash
-curl -X POST http://127.0.0.1:8305/v1/upload_audio \
-  -F "full_path=qwen_test.wav" \
-  -F "audio=@qwen_test.wav" \
-  -F "prompt_text=这是参考音频的准确转写，可选但建议提供"
-```
-
-```bash
-curl -X POST http://127.0.0.1:8305/v2/synthesize \
-  -H 'Content-Type: application/json' \
-  -d '{"text":"这是一次 Qwen3-TTS 本地合成测试。","audio_path":"qwen_test.wav","prompt_text":"这是参考音频的准确转写，可选但建议提供"}' \
-  -o qwen3_tts_synth.wav
-```
-
-如果未提供 `prompt_text`，`8305` 会退回 `x-vector-only` 克隆模式，不需要额外模型做自动转写；通常速度更稳定，但音色一致性一般不如“参考音频 + 准确转写”。默认还会裁掉生成结果前导静音，避免开头先空几秒再出声。
-
-`8306` 的 `VoxCPM2` 也复用同一套 WebUI TTS 协议：
-
-```bash
-curl -X POST http://127.0.0.1:8306/v1/upload_audio \
-  -F "full_path=qwen_test.wav" \
-  -F "audio=@qwen_test.wav" \
-  -F "prompt_text=这是参考音频的准确转写，可选但建议提供"
-```
-
-```bash
-curl -X POST http://127.0.0.1:8306/v2/synthesize \
-  -H 'Content-Type: application/json' \
-  -d '{"text":"这是一次 VoxCPM2 本地合成测试。","audio_path":"qwen_test.wav"}' \
-  -o voxcpm2_synth.wav
-```
-
-如果未提供 `prompt_text`，`8306` 会直接走仅参考音频的克隆模式，不需要额外转写模型；若你需要更稳定的音色一致性，仍然建议在上传时同时提交参考音频的准确转写。你可以在 `v2/synthesize` 请求里附带 `cfg_value`、`inference_timesteps`、`load_denoiser`、`optimize`、`seed`、`device` 等可选字段覆盖默认参数。`8306` 默认使用 `VOXCPM2_CONDA_ENV=voxcpm2` 启动 API 和 worker，默认 `device=cuda`，与 `step_3_tts_local_voxcpm2.py` 的运行环境和核心参数保持一致。
-
-## 运行策略
-
-- `8300` 的 Qwen 和 IndexTTS2 worker 不同时占用显存。
-- `8300 /v1/qwen/design` 请求到来时加载 Qwen，返回音频前卸载 Qwen。
-- `8300 /v1/mimo/design` 走 MiMo 云 API，请求前会先卸载 Qwen，并终止仍在运行的 IndexTTS2 worker。
-- `8300` 内部通过共享 GPU 锁串行执行 Qwen / MiMo / IndexTTS2，避免本地模型并发占显存。
-- `8300 /v2/synthesize` 会先卸载 Qwen，再启动低显存的一次性 IndexTTS2 worker；参考条件模型会在正式生成前移出 GPU，若仍遇到可恢复的 CUDA 驱动异常，会在当前请求内用更小分段自动启动新 worker 重试，最后一个 worker 退出后才返回音频并释放共享 GPU 锁。
-- `8301 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `dots_tts` 环境里的 worker，并默认用官方流式 vocoder 限制 BigVGAN 单次解码窗口；worker 退出即释放模型和显存。
-- `8302 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `longcat_audiodit` 环境里的 worker，worker 退出即释放模型和显存。
-- `8303 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `moss-tts-py310` 环境里的 worker，worker 退出即释放 MOSS 模型、codec 和显存；默认限制单 chunk 的生成帧数，并对可恢复的 CUDA 驱动异常自动重试一次。
-- `8311 /v1/generate` 是 MOSS-SoundEffect v2.0 的轻量 HTTP 包装器；每个请求都会在 `moss-soundEffect` 环境中启动独立 worker，worker 退出才向调用方返回音频，因此模型、CUDA 上下文和显存不会在 8311 常驻。
-- `8304 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `omnivoice` 环境里的 worker，worker 退出即释放 OmniVoice 模型、参考音色 prompt 和显存；默认缩短文本分段，并对可恢复的 CUDA 驱动异常自动重试一次。
-- `8305 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `qwen3-tts` 环境里的 worker，worker 退出即释放 Qwen3-TTS Base 模型、voice clone prompt 和显存。
-- `8306 /v2/synthesize` 是轻量 HTTP 包装器；每个请求都会临时拉起 `voxcpm2` 环境里的 worker，worker 退出即释放 VoxCPM2 模型和显存。
-- `8300`、`8301`、`8302`、`8303`、`8304`、`8305`、`8306`、`8311` 共享同一个 `GPU_LOCK_FILE`，因此 Qwen / MiMo / IndexTTS2 / dots.tts / LongCat / MOSS / MOSS-SoundEffect / OmniVoice / Qwen3-TTS Base / VoxCPM2 不会并发抢占显存。
-- 所有常驻 HTTP API 进程都不在模块级导入 PyTorch，也不会调用 `torch.cuda.empty_cache()`；健康检查改用 `nvidia-smi` 读取整卡状态，不会因为查显存而创建常驻 CUDA 上下文。
-- 所有一次性 worker 都在 `finally` 中检查完整进程组：正常完成、推理异常和请求超时都会等待 worker 退出，必要时先发送 `SIGTERM`、再升级为 `SIGKILL`。只有确认进程退出并等待 `CUDA_RELEASE_DELAY` 后，接口才释放共享 GPU 锁并返回。
-- 默认离线加载模型：`LOCAL_FILES_ONLY=1`。
-- 不再执行云端脚本里的 apt 改源、`/app` 代码同步或清理所有 Python 进程。
-
-
-## MOSS-SoundEffect v2.0 API
-
-启动 `bash start.sh` 后，声效服务默认在 `8311` 监听。它只接受描述非语言声效的 `prompt`，不依赖参考音频：
-
-```bash
-curl -X POST http://127.0.0.1:8311/v1/generate \
-  -H 'Content-Type: application/json' \
-  -d '{"prompt":"深夜的旧木门被缓慢推开，门轴发出低沉、略带生锈的连续吱呀声，安静室内近距离收音。","seconds":6}' \
-  -o door_creak.wav
-```
-
-可选参数：`seconds`（大于 0 且不超过 30，默认 10）、`num_inference_steps`（默认 100）、`cfg_scale`（默认 4.0）、`sigma_shift`（默认 5.0）、`seed`、`device` 与 `torch_dtype`。为兼容本项目既有的合成调用命名，`POST /v2/synthesize` 是同一请求模型的别名；新接入优先使用 `/v1/generate`。
-
-默认使用 `MOSS_SOUNDEFFECT_CONDA_ENV=moss-soundEffect` 和本地权重目录 `$HF_MIRROR_DIR/OpenMOSS-Team/MOSS-SoundEffect-v2.0`。可通过 `MOSS_SOUNDEFFECT_*` 环境变量覆盖模型路径、默认参数、请求超时、设备和精度。模型只存在于每个请求创建的 worker 进程中；worker 退出后才释放共享 GPU 锁，确保显存已释放后其他 TTS/声效任务才会进入。
+当前测试覆盖共享音频处理、GPU worker 生命周期、参考文本接口契约，以及 IndexTTS2、Qwen3-TTS、VoxCPM2 与 SoundEffect 的共享运行时约束。

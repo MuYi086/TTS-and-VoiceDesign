@@ -5,13 +5,11 @@ from pathlib import Path
 import sys
 
 import numpy as np
-import torch
 
 API_DIR = Path(__file__).resolve().parents[1] / "api"
 sys.path.insert(0, str(API_DIR))
 
 from audio_trim import trim_leading_silence
-from moss_tts_worker import trim_generated_audio
 
 
 class LeadingSilenceTrimTests(unittest.TestCase):
@@ -61,17 +59,6 @@ class LeadingSilenceTrimTests(unittest.TestCase):
 
         self.assertEqual(trimmed_samples, 0)
         np.testing.assert_array_equal(trimmed, short_prefix)
-
-    def test_moss_wrapper_keeps_channel_first_layout(self):
-        channel_first = torch.from_numpy(self.mono).unsqueeze(0)
-
-        trimmed, trimmed_samples = trim_generated_audio(
-            channel_first, self.sample_rate, np, torch
-        )
-
-        self.assertGreater(trimmed_samples, 500)
-        self.assertEqual(trimmed.shape, (1, self.mono.size - trimmed_samples))
-
 
 if __name__ == "__main__":
     unittest.main()
