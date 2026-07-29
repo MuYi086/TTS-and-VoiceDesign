@@ -170,9 +170,8 @@ def load_voxcpm2_helpers(script_path: str) -> Any:
 
 def build_helper_args(request: dict[str, Any]) -> SimpleNamespace:
     return SimpleNamespace(
-        # /v2/synthesize is a cloning endpoint.  Never let a style prompt be
-        # prepended to the target text by the shared VoxCPM helper.
-        style_prompt="",
+        # 已由 API 层验证：仅 clone_mode=controllable 时允许带入控制指令。
+        control_instruction=normalize_optional_text(request.get("control_instruction")) or "",
         cfg_value=float(request.get("cfg_value") or 2.0),
         inference_timesteps=int(request.get("inference_timesteps") or 10),
         load_denoiser=bool(request.get("load_denoiser", False)),
@@ -209,7 +208,9 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
         helpers.set_seed(seed, np, torch)
         print(f"[VoxCPM2 worker] 模型目录: {model_path}")
         print(f"[VoxCPM2 worker] 参考音频: {ref_audio_path}")
+        print(f"[VoxCPM2 worker] 克隆模式: {request.get('clone_mode') or 'legacy'}")
         print(f"[VoxCPM2 worker] 参考文本: {'provided' if prompt_text else 'not provided; reference-only cloning mode'}")
+        print(f"[VoxCPM2 worker] 控制指令: {'provided' if helper_args.control_instruction else 'not provided'}")
         print(f"[VoxCPM2 worker] 文本长度: {len(text)} 字, chunks={len(chunks)}")
         print(
             f"[VoxCPM2 worker] cfg_value={helper_args.cfg_value}, "

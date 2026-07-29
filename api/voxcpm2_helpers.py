@@ -52,6 +52,12 @@ def from_pretrained_kwargs(VoxCPM: Any, args: Any) -> dict[str, Any]:
     return {key: value for key, value in options.items() if key in signature.parameters}
 
 
+def apply_control_instruction(text: str, control_instruction: str | None) -> str:
+    """Encode VoxCPM2 controllable-cloning instructions in its documented text form."""
+    instruction = (control_instruction or "").strip()
+    return f"({instruction}){text}" if instruction else text
+
+
 def generate_kwargs(
     model: Any,
     args: Any,
@@ -61,7 +67,8 @@ def generate_kwargs(
 ) -> dict[str, Any]:
     """Build voice-cloning arguments supported by the installed version."""
     options = {
-        "text": chunk,
+        # VoxCPM2 将可控克隆指令写在目标文本前；Ultimate Cloning 则由 prompt_* 参数决定。
+        "text": apply_control_instruction(chunk, getattr(args, "control_instruction", None)),
         "reference_wav_path": str(ref_audio),
         "cfg_value": args.cfg_value,
         "inference_timesteps": args.inference_timesteps,

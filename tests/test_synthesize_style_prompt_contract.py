@@ -122,9 +122,60 @@ class SynthesizeStylePromptContractTests(unittest.TestCase):
 
     def test_voxcpm_worker_never_prepends_a_style_prompt(self):
         helper_args = voxcpm2_worker.build_helper_args(
-            {"style_prompt": "这段文本绝不能混入待朗读文案。"}
+            {"control_instruction": "克制紧张，略慢，关键处停顿，吐字清晰"}
         )
-        self.assertEqual(helper_args.style_prompt, "")
+        self.assertEqual(helper_args.control_instruction, "克制紧张，略慢，关键处停顿，吐字清晰")
+
+    def test_voxcpm2_controllable_clone_requires_exclusive_control_instruction(self):
+        request = voxcpm2_api.VoxCpm2SynthesizeRequest.model_validate(
+            {
+                "text": "门后有人。",
+                "audio_path": "reference.wav",
+                "clone_mode": "controllable",
+                "control_instruction": "克制紧张，略慢，关键处停顿，吐字清晰",
+            }
+        )
+        self.assertEqual(request.clone_mode, "controllable")
+        self.assertIsNone(request.prompt_text)
+
+        invalid_cases = (
+            {"clone_mode": "controllable"},
+            {
+                "clone_mode": "controllable",
+                "control_instruction": "克制紧张",
+                "prompt_text": "参考音频准确转写",
+            },
+            {
+                "clone_mode": "ultimate",
+                "control_instruction": "克制紧张",
+            },
+            {"control_instruction": "克制紧张"},
+        )
+        for override in invalid_cases:
+            with self.subTest(override=override), self.assertRaisesRegex(ValidationError, "VoxCPM2|control_instruction"):
+                voxcpm2_api.VoxCpm2SynthesizeRequest.model_validate(
+                    {"text": "门后有人。", "audio_path": "reference.wav", **override}
+                )
+
+    def test_voxcpm2_controllable_payload_omits_prompt_text_and_sidecar(self):
+        with TemporaryDirectory() as prompts_dir, patch.object(voxcpm2_api, "PROMPTS_DIR", prompts_dir):
+            audio_path = "reference.wav"
+            (Path(prompts_dir) / voxcpm2_api.hash_filename(audio_path)).write_bytes(b"reference-audio")
+            voxcpm2_api.save_prompt_text_sidecar(audio_path, "不应进入可控克隆的转写")
+            request = voxcpm2_api.VoxCpm2SynthesizeRequest.model_validate(
+                {
+                    "text": "门后有人。",
+                    "audio_path": audio_path,
+                    "clone_mode": "controllable",
+                    "control_instruction": "克制紧张，略慢，关键处停顿，吐字清晰",
+                }
+            )
+
+            payload = voxcpm2_api.VoxCpm2WorkerManager().build_worker_payload(request)
+
+        self.assertEqual(payload["clone_mode"], "controllable")
+        self.assertIsNone(payload["prompt_text"])
+        self.assertEqual(payload["control_instruction"], "克制紧张，略慢，关键处停顿，吐字清晰")
 
 
 if __name__ == "__main__":

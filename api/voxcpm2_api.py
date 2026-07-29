@@ -11,7 +11,7 @@ import threading
 import time
 import traceback
 from contextlib import contextmanager
-from typing import Optional
+from typing import Literal, Optional
 
 # Align VoxCPM2 with the standalone step_3 script instead of inheriting
 # global CUDA runtime tweaks that break this model's GPU path.
@@ -21,6 +21,7 @@ os.environ.pop("CUDA_MODULE_LOADING", None)
 import uvicorn
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
+from pydantic import model_validator
 from starlette.middleware.base import BaseHTTPMiddleware
 from synthesis_request import CloneSynthesisRequest
 from gpu_runtime import cuda_status, terminate_process_group
@@ -232,6 +233,9 @@ class VoxCpm2SynthesizeRequest(CloneSynthesisRequest):
     text: str
     audio_path: str
     prompt_text: Optional[str] = None
+    # Ultimate Cloning 使用参考转写；可控克隆使用控制指令，二者按 VoxCPM2 官方接口互斥。
+    clone_mode: Optional[Literal["ultimate", "controllable"]] = None
+    control_instruction: Optional[str] = None
     cfg_value: Optional[float] = None
     inference_timesteps: Optional[int] = None
     load_denoiser: Optional[bool] = None
@@ -240,6 +244,22 @@ class VoxCpm2SynthesizeRequest(CloneSynthesisRequest):
     seed: Optional[int] = None
     max_chars_per_chunk: Optional[int] = None
     pause_ms: Optional[int] = None
+
+    @model_validator(mode="after")
+    def validate_clone_mode_contract(self):
+        has_prompt_text = normalize_optional_text(self.prompt_text) is not None
+        has_control_instruction = normalize_optional_text(self.control_instruction) is not None
+        if self.clone_mode == "controllable":
+            if has_prompt_text:
+                raise ValueError("VoxCPM2 可控克隆不能同时传 prompt_text。")
+            if not has_control_instruction:
+                raise ValueError("VoxCPM2 可控克隆需要 control_instruction。")
+        elif self.clone_mode == "ultimate":
+            if has_control_instruction:
+                raise ValueError("VoxCPM2 极致克隆不能传 control_instruction。")
+        elif has_control_instruction:
+            raise ValueError("control_instruction 需要显式指定 clone_mode=controllable。")
+        return self
 
 
 class VoxCpm2WorkerManager:
@@ -252,8 +272,13 @@ class VoxCpm2WorkerManager:
         if not os.path.isfile(ref_audio_path):
             raise HTTPException(status_code=404, detail="音频不存在")
 
-        prompt_text = request.prompt_text.strip() if request.prompt_text and request.prompt_text.strip() else None
-        if prompt_text is None:
+        clone_mode = request.clone_mode
+        control_instruction = normalize_optional_text(request.control_instruction)
+        prompt_text = normalize_optional_text(request.prompt_text)
+        # 可控克隆严格省略参考转写及其 sidecar，避免进入 Ultimate Cloning 签名。
+        if clone_mode == "controllable":
+            prompt_text = None
+        elif prompt_text is None:
             prompt_text = load_prompt_text_sidecar(request.audio_path)
         device = normalize_device_name(request.device, VOXCPM2_DEVICE)
         if not device.startswith("cuda"):
@@ -262,7 +287,9 @@ class VoxCpm2WorkerManager:
         return {
             "text": normalize_synthesis_text(request.text),
             "ref_audio_path": ref_audio_path,
+            "clone_mode": clone_mode,
             "prompt_text": prompt_text,
+            "control_instruction": control_instruction,
             "model_path": VOXCPM2_MODEL_DIR,
             "voxcpm2_helper_script": VOXCPM2_HELPER_SCRIPT,
             "cfg_value": request.cfg_value if request.cfg_value is not None else VOXCPM2_CFG_VALUE,
@@ -422,7 +449,10 @@ async def health():
             "seed": VOXCPM2_SEED,
             "max_chars_per_chunk": VOXCPM2_MAX_CHARS_PER_CHUNK,
             "pause_ms": VOXCPM2_PAUSE_MS,
-            "prompt_text_fallback": "upload sidecar -> reference-only cloning mode",
+            "clone_modes": {
+                "ultimate": "prompt_text -> upload sidecar -> reference-only compatibility fallback",
+                "controllable": "control_instruction only; prompt_text and sidecar are omitted",
+            },
         },
         "last_errors": {
             "voxcpm2_tts": manager.last_error,

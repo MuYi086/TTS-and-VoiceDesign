@@ -103,8 +103,8 @@ class VoxCpm2BundledHelpersTests(unittest.TestCase):
         )
         self.assertIsNone(manager.last_error)
 
-    def test_clone_arguments_support_reference_only_and_transcript_modes(self):
-        args = SimpleNamespace(cfg_value=2.5, inference_timesteps=12)
+    def test_clone_arguments_support_reference_only_ultimate_and_controllable_modes(self):
+        args = SimpleNamespace(cfg_value=2.5, inference_timesteps=12, control_instruction="")
         ref_audio = Path("reference.wav")
 
         reference_only = voxcpm2_helpers.generate_kwargs(
@@ -120,6 +120,18 @@ class VoxCpm2BundledHelpersTests(unittest.TestCase):
         self.assertEqual(with_transcript["prompt_text"], "参考音频文本")
         self.assertEqual(with_transcript["prompt_wav_path"], "reference.wav")
         self.assertEqual(with_transcript["reference_wav_path"], "reference.wav")
+
+        controllable_args = SimpleNamespace(
+            cfg_value=2.5,
+            inference_timesteps=12,
+            control_instruction="克制紧张，略慢，关键处停顿，吐字清晰",
+        )
+        controllable = voxcpm2_helpers.generate_kwargs(
+            FakeGenerateModel(), controllable_args, "测试文本", ref_audio, None
+        )
+        self.assertEqual(controllable["text"], "(克制紧张，略慢，关键处停顿，吐字清晰)测试文本")
+        self.assertNotIn("prompt_text", controllable)
+        self.assertNotIn("prompt_wav_path", controllable)
 
 
 if __name__ == "__main__":

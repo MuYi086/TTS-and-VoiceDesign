@@ -82,7 +82,9 @@ http://127.0.0.1:8311  MOSS-SoundEffect v2.0
 | --- | --- |
 | `8300` IndexTTS2 | 不使用参考转写，只接收参考音频与情绪向量。 |
 | `8305` Qwen3-TTS Base | 映射为官方 `ref_text`；缺失时回退到仅参考音频的克隆。 |
-| `8306` VoxCPM2 | 有文案时走 Ultimate Cloning；缺失时使用仅参考音频克隆。 |
+| `8306` VoxCPM2 | `clone_mode="ultimate"` 有准确 `prompt_text` 时走 Ultimate Cloning；`clone_mode="controllable"` 只接受 `control_instruction`，不接受 `prompt_text`，并将指令写入目标文本前；未指定模式时保留旧的参考文本 / 仅参考音频兼容路径。 |
+
+VoxCPM2 的 `ultimate` 与 `controllable` 请求路径严格互斥：前者用于最大化复刻参考音频细节，后者用于按短控制指令调整表演节奏和情绪。`control_instruction` 不是响度参数；成片响度应在合成后检测和统一归一化。
 
 ```bash
 curl -X POST http://127.0.0.1:8300/v2/synthesize \
