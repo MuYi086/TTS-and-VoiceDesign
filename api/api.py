@@ -732,6 +732,10 @@ class MiMoHTTPError(RuntimeError):
         super().__init__(f"MiMo HTTP {status_code}: {body}")
 
 
+class MiMoTransportError(RuntimeError):
+    """MiMo API cannot be reached from this backend process."""
+
+
 MIMO_REQUEST_LOCK = threading.Lock()
 
 
@@ -842,20 +846,27 @@ def mimo_post_json(url: str, payload: dict[str, Any], headers: dict[str, str], t
         retry_after = mimo_parse_retry_after(exc.headers.get("Retry-After") if exc.headers else None)
         raise MiMoHTTPError(exc.code, error_body, retry_after) from exc
     except urllib.error.URLError as exc:
-        raise RuntimeError(f"MiMo request failed: {exc.reason}") from exc
+        raise MiMoTransportError(f"MiMo 网络请求失败: {exc.reason}") from exc
+    except TimeoutError as exc:
+        raise MiMoTransportError(f"MiMo 网络请求超时: {exc}") from exc
 
     try:
         return json.loads(response_body)
     except json.JSONDecodeError as exc:
-        raise RuntimeError(f"MiMo returned non-JSON response: {response_body[:500]}") from exc
+        raise MiMoTransportError(f"MiMo 返回了非 JSON 响应: {response_body[:500]}") from exc
 
 
 def mimo_is_retryable_http_error(exc: MiMoHTTPError) -> bool:
     return exc.status_code == 429 or 500 <= exc.status_code <= 599
 
 
-def mimo_retry_delay_seconds(exc: MiMoHTTPError, attempt: int, base: float, maximum: float) -> float:
-    if exc.retry_after is not None:
+def mimo_retry_delay_seconds(
+    exc: MiMoHTTPError | MiMoTransportError,
+    attempt: int,
+    base: float,
+    maximum: float,
+) -> float:
+    if isinstance(exc, MiMoHTTPError) and exc.retry_after is not None:
         return min(maximum, exc.retry_after)
     return min(maximum, max(0.0, base) * (2 ** max(0, attempt - 1)))
 
@@ -875,12 +886,21 @@ def mimo_post_json_with_retry(
         for attempt in range(1, max_retries + 2):
             try:
                 response = mimo_post_json(url, payload, headers, timeout)
-            except MiMoHTTPError as exc:
-                if not mimo_is_retryable_http_error(exc) or attempt > max_retries:
+            except (MiMoHTTPError, MiMoTransportError) as exc:
+                retryable = (
+                    isinstance(exc, MiMoTransportError)
+                    or mimo_is_retryable_http_error(exc)
+                )
+                if not retryable or attempt > max_retries:
                     raise
                 delay = mimo_retry_delay_seconds(exc, attempt, retry_base_seconds, retry_max_seconds)
+                error_label = (
+                    f"MiMo HTTP {exc.status_code}"
+                    if isinstance(exc, MiMoHTTPError)
+                    else "MiMo 网络错误"
+                )
                 print(
-                    f"MiMo HTTP {exc.status_code}，{delay:.1f}s 后重试 {chunk_label}，"
+                    f"{error_label}，{delay:.1f}s 后重试 {chunk_label}，"
                     f"第 {attempt}/{max_retries} 次"
                 )
                 time.sleep(delay)
@@ -1169,15 +1189,29 @@ async def qwen_design(request: QwenDesignRequest):
 
 @app.post("/v1/mimo/design")
 async def mimo_design(request: MimoDesignRequest):
-    with gpu_runtime_lock("mimo/design"):
-        with manager.lock:
-            manager.unload_all()
-            manager._kill_zombies()
-            try:
-                audio_bytes = run_mimo_voice_design(request.model_dump())
-            except Exception as exc:
-                raise HTTPException(status_code=500, detail=str(exc))
-            return Response(content=audio_bytes, media_type="audio/wav")
+    # MiMo is a cloud API. It neither uses CUDA nor needs the local-model lock;
+    # the dedicated request lock above serializes MiMo calls and retries instead.
+    try:
+        audio_bytes = run_mimo_voice_design(request.model_dump())
+    except MiMoHTTPError as exc:
+        if exc.status_code == 429:
+            status_code = 429
+        elif exc.status_code >= 500:
+            status_code = 503
+        else:
+            status_code = 502
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    except MiMoTransportError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"{exc}。后端无法连接 MiMo API，请检查此机器到 "
+                "https://api.xiaomimimo.com 的 DNS、HTTPS 出网或 HTTPS_PROXY 配置。"
+            ),
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return Response(content=audio_bytes, media_type="audio/wav")
 
 @app.post("/v2/synthesize")
 async def synthesize_v2(request: TextToSpeechRequest):

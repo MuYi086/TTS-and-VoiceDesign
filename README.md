@@ -33,6 +33,8 @@ MOSS-SoundEffect 使用独立的 `moss-soundEffect` 环境。MiMo 是云端 API�
 export MIMO_API_KEY=...
 ```
 
+MiMo 是云端服务，运行后端的机器必须能连接 `https://api.xiaomimimo.com:443`。若网络需要代理，请在启动 `start.sh` 前设置标准代理环境变量，例如 `HTTPS_PROXY=http://127.0.0.1:7890`（并按需设置 `NO_PROXY=127.0.0.1,localhost`）。网络不可达时 `/v1/mimo/design` 会返回 `503` 及可操作的错误说明；这不会影响本地 Qwen 音色设计或其他本地 TTS 接口。
+
 ## 模型路径
 
 默认读取以下本地目录；可在启动前用同名环境变量覆盖：
