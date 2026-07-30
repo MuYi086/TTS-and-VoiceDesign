@@ -16,6 +16,7 @@ env/
 
 # Generated/uploaded audio
 prompts/
+tempAudio/
 qwen_test*.wav
 synth*.wav
 *.tmp.wav

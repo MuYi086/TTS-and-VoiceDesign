@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+# 官方文档: https://voxcpm.readthedocs.io/zh-cn/latest/cookbook.html
 from __future__ import annotations
 
 import argparse

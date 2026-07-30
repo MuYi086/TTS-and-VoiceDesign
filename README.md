@@ -9,7 +9,7 @@
 - Qwen3-TTS VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/qwen/design`
 - MiMo TTS VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/mimo/design`
 
-运行时 API、各模型 worker 和共享音频处理模块统一位于 `api/`；上传资源、缓存和供应商代码位于 `api/prompts/`、`api/.cache/` 与 `api/vendor/`。不要把生成音频或模型权重提交到 Git。
+运行时 API、各模型 worker 和共享音频处理模块统一位于 `api/`；上传资源、缓存和供应商代码位于 `api/prompts/`、`api/.cache/` 与 `api/vendor/`。VoxCPM2 的成功合成结果会额外保留在 `api/tempAudio/`，可通过 `VOXCPM2_OUTPUT_DIR` 覆盖。不要把生成音频或模型权重提交到 Git。
 
 ## 本地环境
 
@@ -87,6 +87,8 @@ http://127.0.0.1:8311  MOSS-SoundEffect v2.0
 | `8306` VoxCPM2 | `clone_mode="ultimate"` 有准确 `prompt_text` 时走 Ultimate Cloning；`clone_mode="controllable"` 只接受 `control_instruction`，不接受 `prompt_text`，并将指令写入目标文本前；未指定模式时保留旧的参考文本 / 仅参考音频兼容路径。 |
 
 VoxCPM2 的 `ultimate` 与 `controllable` 请求路径严格互斥：前者用于最大化复刻参考音频细节，后者用于按短控制指令调整表演节奏和情绪。`control_instruction` 不是响度参数；成片响度应在合成后检测和统一归一化。
+
+`8306` 每次合成成功后都会保留一份原始 WAV 到 `api/tempAudio/`，文件名形如 `voxcpm2_20260730_120000_xxxxx.wav`；接口响应内容不变。此目录不会自动清理，完成后请按需要转移或删除文件。
 
 ```bash
 curl -X POST http://127.0.0.1:8300/v2/synthesize \

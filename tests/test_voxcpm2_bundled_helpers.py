@@ -75,11 +75,12 @@ class VoxCpm2BundledHelpersTests(unittest.TestCase):
     def test_worker_starts_with_bundled_helper(self):
         manager = voxcpm2_api.VoxCpm2WorkerManager()
         FakeProcess.payloads = []
-        with tempfile.TemporaryDirectory() as tmp_dir:
+        with tempfile.TemporaryDirectory() as tmp_dir, tempfile.TemporaryDirectory() as output_dir:
             with (
                 mock.patch.object(voxcpm2_api, "VOXCPM2_WORKER_SCRIPT", __file__),
                 mock.patch.object(voxcpm2_api, "VOXCPM2_MODEL_DIR", tmp_dir),
                 mock.patch.object(voxcpm2_api, "VOXCPM2_WORKER_TMP_DIR", tmp_dir),
+                mock.patch.object(voxcpm2_api, "VOXCPM2_OUTPUT_DIR", output_dir),
                 mock.patch.object(
                     voxcpm2_api,
                     "VOXCPM2_HELPER_SCRIPT",
@@ -95,6 +96,12 @@ class VoxCpm2BundledHelpersTests(unittest.TestCase):
                 audio = manager.run_worker(
                     {"voxcpm2_helper_script": voxcpm2_api.VOXCPM2_HELPER_DEFAULT}
                 )
+
+            saved_audio = list(Path(output_dir).glob("voxcpm2_*.wav"))
+            self.assertEqual(len(saved_audio), 1)
+            self.assertEqual(saved_audio[0].read_bytes(), b"RIFF-voxcpm2-wave")
+            self.assertFalse(list(Path(tmp_dir).glob("voxcpm2_req_*.json")))
+            self.assertFalse(list(Path(tmp_dir).glob("voxcpm2_out_*.wav")))
 
         self.assertEqual(audio, b"RIFF-voxcpm2-wave")
         self.assertEqual(

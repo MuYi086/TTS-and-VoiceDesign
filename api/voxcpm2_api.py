@@ -13,6 +13,8 @@ import traceback
 from contextlib import contextmanager
 from typing import Literal, Optional
 
+# 官方文档: https://voxcpm.readthedocs.io/zh-cn/latest/cookbook.html
+
 # Align VoxCPM2 with the standalone step_3 script instead of inheriting
 # global CUDA runtime tweaks that break this model's GPU path.
 os.environ.pop("PYTORCH_CUDA_ALLOC_CONF", None)
@@ -102,6 +104,9 @@ VOXCPM2_REQUEST_TIMEOUT = float(os.getenv("VOXCPM2_REQUEST_TIMEOUT", "600"))
 
 VOXCPM2_WORKER_SCRIPT = os.path.join(API_DIR, "voxcpm2_worker.py")
 VOXCPM2_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "voxcpm2_worker")
+VOXCPM2_OUTPUT_DIR = expand_path(
+    os.getenv("VOXCPM2_OUTPUT_DIR", os.path.join(API_DIR, "tempAudio"))
+)
 
 os.environ.setdefault("HF_HOME", HF_MIRROR_DIR)
 os.environ.setdefault("HF_MODULES_CACHE", os.path.join(RUNTIME_CACHE_DIR, "hf_modules"))
@@ -118,6 +123,7 @@ os.makedirs(os.environ["NUMBA_CACHE_DIR"], exist_ok=True)
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 os.makedirs(os.environ["XDG_CACHE_HOME"], exist_ok=True)
 os.makedirs(VOXCPM2_WORKER_TMP_DIR, exist_ok=True)
+os.makedirs(VOXCPM2_OUTPUT_DIR, exist_ok=True)
 gpu_lock_dir = os.path.dirname(GPU_LOCK_FILE)
 if gpu_lock_dir:
     os.makedirs(gpu_lock_dir, exist_ok=True)
@@ -177,6 +183,31 @@ def save_prompt_text_sidecar(filename: str, prompt_text: Optional[str]) -> None:
 
 def module_available(module_name: str) -> bool:
     return importlib.util.find_spec(module_name) is not None
+
+
+def persist_generated_audio(source_path: str) -> str:
+    """Copy a validated worker WAV to the user-accessible output directory."""
+    os.makedirs(VOXCPM2_OUTPUT_DIR, exist_ok=True)
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    output_fd, output_path = tempfile.mkstemp(
+        dir=VOXCPM2_OUTPUT_DIR,
+        prefix=f"voxcpm2_{timestamp}_",
+        suffix=".wav",
+    )
+    try:
+        with open(source_path, "rb") as source, os.fdopen(output_fd, "wb") as destination:
+            shutil.copyfileobj(source, destination)
+        return output_path
+    except Exception:
+        try:
+            os.close(output_fd)
+        except OSError:
+            pass
+        try:
+            os.remove(output_path)
+        except OSError:
+            pass
+        raise
 
 
 def resolve_conda_executable() -> Optional[str]:
@@ -389,7 +420,9 @@ class VoxCpm2WorkerManager:
             if not os.path.isfile(output_path) or os.path.getsize(output_path) == 0:
                 raise RuntimeError("VoxCPM2 worker 未生成音频文件。")
 
-            with open(output_path, "rb") as f:
+            saved_output_path = persist_generated_audio(output_path)
+            print(f"[VoxCPM2] 已保存生成音频: {saved_output_path}")
+            with open(saved_output_path, "rb") as f:
                 return f.read()
         finally:
             terminate_process_group(proc, "VoxCPM2")
@@ -426,6 +459,7 @@ async def health():
             "gpu_lock_file": GPU_LOCK_FILE,
             "worker_script": VOXCPM2_WORKER_SCRIPT,
             "worker_tmp_dir": VOXCPM2_WORKER_TMP_DIR,
+            "output_dir": VOXCPM2_OUTPUT_DIR,
         },
         "available": {
             "conda": bool(resolve_conda_executable()),
