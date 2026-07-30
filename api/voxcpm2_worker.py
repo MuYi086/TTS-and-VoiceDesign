@@ -173,8 +173,12 @@ def build_helper_args(request: dict[str, Any]) -> SimpleNamespace:
     return SimpleNamespace(
         # 已由 API 层验证：仅 clone_mode=controllable 时允许带入控制指令。
         control_instruction=normalize_optional_text(request.get("control_instruction")) or "",
-        cfg_value=float(request.get("cfg_value") or 2.0),
-        inference_timesteps=int(request.get("inference_timesteps") or 10),
+        nonverbal_tags=list(request.get("nonverbal_tags") or []),
+        cfg_value=float(request.get("cfg_value")),
+        inference_timesteps=int(request.get("inference_timesteps")),
+        normalize=bool(request.get("normalize", False)),
+        denoise=bool(request.get("denoise", False)),
+        retry_badcase=bool(request.get("retry_badcase", True)),
         load_denoiser=bool(request.get("load_denoiser", False)),
         local_files_only=bool(request.get("local_files_only", True)),
         optimize=bool(request.get("optimize", False)),
@@ -212,13 +216,15 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
         print(f"[VoxCPM2 worker] 克隆模式: {request.get('clone_mode') or 'legacy'}")
         print(f"[VoxCPM2 worker] 参考文本: {'provided' if prompt_text else 'not provided; reference-only cloning mode'}")
         print(f"[VoxCPM2 worker] 控制指令: {'provided' if helper_args.control_instruction else 'not provided'}")
+        print(f"[VoxCPM2 worker] 非语言标签: {helper_args.nonverbal_tags or 'none'}")
         print(f"[VoxCPM2 worker] 文本长度: {len(text)} 字, chunks={len(chunks)}")
         print(
             f"[VoxCPM2 worker] cfg_value={helper_args.cfg_value}, "
             f"inference_timesteps={helper_args.inference_timesteps}"
         )
         print(
-            f"[VoxCPM2 worker] seed={seed}, load_denoiser={helper_args.load_denoiser}, "
+            f"[VoxCPM2 worker] seed={seed}, normalize={helper_args.normalize}, denoise={helper_args.denoise}, "
+            f"retry_badcase={helper_args.retry_badcase}, load_denoiser={helper_args.load_denoiser}, "
             f"optimize={helper_args.optimize}, local_files_only={helper_args.local_files_only}, "
             f"device={requested_device}"
         )
@@ -233,17 +239,20 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
         waveforms = []
         with torch.inference_mode():
             for index, chunk in enumerate(chunks, start=1):
-                print(f"[VoxCPM2 worker] 合成 chunk {index}/{len(chunks)} ({len(chunk)} chars)")
+                generate_options = helpers.generate_kwargs(
+                    model,
+                    helper_args,
+                    chunk,
+                    ref_audio_path,
+                    prompt_text,
+                )
+                # 必须打印真实传给模型的最终文本，含控制指令与 [tag]；不输出参考音频转写内容。
+                print(
+                    f"[VoxCPM2 worker] 最终模型文本 chunk {index}/{len(chunks)} "
+                    f"clone_mode={request.get('clone_mode') or 'legacy'}: {generate_options['text']}"
+                )
                 waveforms.append(
-                    model.generate(
-                        **helpers.generate_kwargs(
-                            model,
-                            helper_args,
-                            chunk,
-                            ref_audio_path,
-                            prompt_text,
-                        )
-                    )
+                    model.generate(**generate_options)
                 )
 
         waveform = helpers.join_waveforms(waveforms, sample_rate, pause_ms, np)

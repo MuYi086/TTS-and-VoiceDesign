@@ -1,5 +1,7 @@
 """Regression coverage for the shared voice-cloning synthesis contract."""
 
+import contextlib
+import io
 import unittest
 from pathlib import Path
 import sys
@@ -176,6 +178,144 @@ class SynthesizeStylePromptContractTests(unittest.TestCase):
         self.assertEqual(payload["clone_mode"], "controllable")
         self.assertIsNone(payload["prompt_text"])
         self.assertEqual(payload["control_instruction"], "克制紧张，略慢，关键处停顿，吐字清晰")
+
+    def test_voxcpm2_nonverbal_tag_is_validated_and_reaches_worker_payload(self):
+        with TemporaryDirectory() as prompts_dir, patch.object(voxcpm2_api, "PROMPTS_DIR", prompts_dir):
+            audio_path = "reference.wav"
+            (Path(prompts_dir) / voxcpm2_api.hash_filename(audio_path)).write_bytes(b"reference-audio")
+            request = voxcpm2_api.VoxCpm2SynthesizeRequest.model_validate(
+                {
+                    "text": "唉，还是晚了一步。",
+                    "audio_path": audio_path,
+                    "clone_mode": "controllable",
+                    "control_instruction": "自然、清晰地表达，保留必要的非语言反应，吐字清晰",
+                    "nonverbal_tags": ["sigh"],
+                }
+            )
+            payload = voxcpm2_api.VoxCpm2WorkerManager().build_worker_payload(request)
+
+        self.assertEqual(payload["nonverbal_tags"], ["sigh"])
+        self.assertIsNone(payload["prompt_text"])
+
+        invalid_cases = (
+            {"nonverbal_tags": ["unknown"]},
+            {"nonverbal_tags": ["sigh", "laughing"]},
+            {"clone_mode": "ultimate", "control_instruction": None, "nonverbal_tags": ["sigh"]},
+            {"text": "[sigh]测试。"},
+            {"prompt_text": "[sigh]参考转写"},
+        )
+        for override in invalid_cases:
+            with self.subTest(override=override), self.assertRaisesRegex(ValidationError, "nonverbal_tags|非语言标签"):
+                voxcpm2_api.VoxCpm2SynthesizeRequest.model_validate(
+                    {
+                        "text": "测试。",
+                        "audio_path": "reference.wav",
+                        "clone_mode": "controllable",
+                        "control_instruction": "自然表达",
+                        **override,
+                    }
+                )
+
+    def test_voxcpm2_denoise_automatically_loads_denoiser_and_preserves_generate_parameters(self):
+        with TemporaryDirectory() as prompts_dir, patch.object(voxcpm2_api, "PROMPTS_DIR", prompts_dir):
+            audio_path = "reference.wav"
+            (Path(prompts_dir) / voxcpm2_api.hash_filename(audio_path)).write_bytes(b"reference-audio")
+            request = voxcpm2_api.VoxCpm2SynthesizeRequest.model_validate(
+                {
+                    "text": "测试。",
+                    "audio_path": audio_path,
+                    "normalize": True,
+                    "denoise": True,
+                    "retry_badcase": False,
+                    "load_denoiser": False,
+                }
+            )
+            payload = voxcpm2_api.VoxCpm2WorkerManager().build_worker_payload(request)
+
+        self.assertTrue(payload["normalize"])
+        self.assertTrue(payload["denoise"])
+        self.assertFalse(payload["retry_badcase"])
+        self.assertTrue(payload["load_denoiser"])
+
+    def test_voxcpm_worker_logs_final_model_text_with_control_and_tag(self):
+        class FakeModel:
+            tts_model = type("TtsModel", (), {"sample_rate": 24000})()
+
+            def generate(self, **kwargs):
+                return [0.0]
+
+        class FakeVoxCPM:
+            @classmethod
+            def from_pretrained(cls, *args, **kwargs):
+                return FakeModel()
+
+        class FakeCuda:
+            @staticmethod
+            def is_available():
+                return True
+
+            @staticmethod
+            def synchronize():
+                return None
+
+            @staticmethod
+            def empty_cache():
+                return None
+
+            @staticmethod
+            def ipc_collect():
+                return None
+
+        class FakeTorch:
+            cuda = FakeCuda()
+
+            @staticmethod
+            def inference_mode():
+                return contextlib.nullcontext()
+
+        class FakeSoundFile:
+            @staticmethod
+            def write(path, waveform, sample_rate):
+                Path(path).write_bytes(b"RIFF")
+
+        with TemporaryDirectory() as tmp_dir:
+            temp_path = Path(tmp_dir)
+            ref_audio = temp_path / "reference.wav"
+            output_wav = temp_path / "output.wav"
+            ref_audio.write_bytes(b"reference-audio")
+            request = {
+                "text": "门后有人。",
+                "ref_audio_path": str(ref_audio),
+                "model_path": tmp_dir,
+                "voxcpm2_helper_script": "unused-by-mock.py",
+                "device": "cuda",
+                "clone_mode": "controllable",
+                "control_instruction": "克制紧张",
+                "nonverbal_tags": ["sigh"],
+                "cfg_value": 2.0,
+                "inference_timesteps": 10,
+                "normalize": False,
+                "denoise": False,
+                "retry_badcase": True,
+                "load_denoiser": False,
+                "optimize": False,
+                "local_files_only": True,
+            }
+            output = io.StringIO()
+            with (
+                patch.object(voxcpm2_worker, "load_voxcpm2_helpers", return_value=__import__("voxcpm2_helpers")),
+                patch("voxcpm2_helpers.import_runtime", return_value=(FakeVoxCPM, object(), FakeSoundFile, FakeTorch)),
+                patch("voxcpm2_helpers.set_seed"),
+                patch("voxcpm2_helpers.join_waveforms", return_value=[0.0]),
+                patch.object(voxcpm2_worker, "trim_leading_silence", return_value=([0.0], 0)),
+                contextlib.redirect_stdout(output),
+            ):
+                voxcpm2_worker.synthesize(request, output_wav)
+
+        self.assertIn(
+            "最终模型文本 chunk 1/1 clone_mode=controllable: (克制紧张)[sigh]门后有人。",
+            output.getvalue(),
+        )
 
 
 if __name__ == "__main__":

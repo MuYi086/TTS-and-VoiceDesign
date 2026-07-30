@@ -23,7 +23,7 @@ os.environ.pop("CUDA_MODULE_LOADING", None)
 import uvicorn
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from starlette.middleware.base import BaseHTTPMiddleware
 from synthesis_request import CloneSynthesisRequest
 from gpu_runtime import cuda_status, terminate_process_group
@@ -91,15 +91,32 @@ def resolve_voxcpm2_helper_script(configured_path: Optional[str]) -> str:
     return helper_path
 
 
+# VoxCPM2 辅助脚本路径：未通过环境变量指定时使用仓库内受版本控制的实现。
 VOXCPM2_HELPER_SCRIPT = resolve_voxcpm2_helper_script(os.getenv("VOXCPM2_HELPER_SCRIPT"))
-VOXCPM2_CFG_VALUE = float(os.getenv("VOXCPM2_CFG_VALUE", "2.0"))
-VOXCPM2_INFERENCE_TIMESTEPS = int(os.getenv("VOXCPM2_INFERENCE_TIMESTEPS", "10"))
+# 引导强度：通常在 1~3 调整；提高可强化条件约束，但可能降低自然度或稳定性。
+VOXCPM2_CFG_VALUE = float(os.getenv("VOXCPM2_CFG_VALUE", "3.0"))
+# 推理步数：越高通常越稳定但越慢；常用范围 4~30，当前以 10 平衡速度与质量。
+VOXCPM2_INFERENCE_TIMESTEPS = int(os.getenv("VOXCPM2_INFERENCE_TIMESTEPS", "30"))
+# 输出归一化：统一响度，可能改变参考音频原始的动态范围。
+VOXCPM2_NORMALIZE = env_bool("VOXCPM2_NORMALIZE", False)
+# 降噪：可减弱参考或生成中的噪声，但可能损失细节；启用时自动加载降噪器。
+VOXCPM2_DENOISE = env_bool("VOXCPM2_DENOISE", False)
+# 坏例重试：模型判定结果异常时重试，提高成功率但会增加耗时。
+VOXCPM2_RETRY_BADCASE = env_bool("VOXCPM2_RETRY_BADCASE", True)
+# 加载降噪器：仅在启用降噪或需预热降噪器时设为 true，会增加显存和加载时间。
 VOXCPM2_LOAD_DENOISER = env_bool("VOXCPM2_LOAD_DENOISER", False)
+# 推理优化：启用后可能提升速度，但应先在当前 CUDA/torch 组合验证兼容性。
+# 不兼容，改成True，会报错
 VOXCPM2_OPTIMIZE = env_bool("VOXCPM2_OPTIMIZE", False)
+# 运行设备：VoxCPM2 当前仅支持 CUDA 设备，例如 cuda 或 cuda:0。
 VOXCPM2_DEVICE = normalize_device_name(os.getenv("VOXCPM2_DEVICE"), "cuda")
+# 随机种子：固定值便于复现实验；设为负数可关闭 worker 内的固定随机种子。
 VOXCPM2_SEED = int(os.getenv("VOXCPM2_SEED", "20260614"))
+# 分片字符数：0 表示不切分；长文本切分可降低单次显存压力，但会在片段间插入停顿。
 VOXCPM2_MAX_CHARS_PER_CHUNK = int(os.getenv("VOXCPM2_MAX_CHARS_PER_CHUNK", "0"))
+# 分片停顿毫秒数：只在发生文本切分时生效，过大会让语流显得断裂。
 VOXCPM2_PAUSE_MS = int(os.getenv("VOXCPM2_PAUSE_MS", "250"))
+# 单次请求超时秒数：覆盖 worker 启动和完整生成；过短会中断长文本或冷启动。
 VOXCPM2_REQUEST_TIMEOUT = float(os.getenv("VOXCPM2_REQUEST_TIMEOUT", "600"))
 
 VOXCPM2_WORKER_SCRIPT = os.path.join(API_DIR, "voxcpm2_worker.py")
@@ -259,6 +276,37 @@ def worker_error_excerpt(output: str) -> str:
     return " | ".join(lines[-8:])
 
 
+VOXCPM2_NONVERBAL_TAGS = frozenset({
+    "laughing",
+    "sigh",
+    "Uhm",
+    "Shh",
+    "Question-ah",
+    "Question-ei",
+    "Question-en",
+    "Question-oh",
+    "Surprise-wa",
+    "Surprise-yo",
+    "Dissatisfaction-hnn",
+})
+
+
+def normalize_nonverbal_tags(tags: Optional[list[str]]) -> list[str]:
+    """只接受 VoxCPM2 官方白名单中的至多一个非语言标签。"""
+    normalized = [str(tag).strip() for tag in (tags or [])]
+    if len(normalized) > 1:
+        raise ValueError("VoxCPM2 nonverbal_tags 最多只能包含一个标签。")
+    if normalized and normalized[0] not in VOXCPM2_NONVERBAL_TAGS:
+        raise ValueError("VoxCPM2 nonverbal_tags 包含不支持的标签。")
+    return normalized
+
+
+def contains_nonverbal_tag_marker(text: Optional[str]) -> bool:
+    """禁止把受支持标签伪装成正文或参考转写的一部分。"""
+    value = text or ""
+    return any(f"[{tag}]" in value for tag in VOXCPM2_NONVERBAL_TAGS)
+
+
 class VoxCpm2SynthesizeRequest(CloneSynthesisRequest):
 
     text: str
@@ -267,8 +315,13 @@ class VoxCpm2SynthesizeRequest(CloneSynthesisRequest):
     # Ultimate Cloning 使用参考转写；可控克隆使用控制指令，二者按 VoxCPM2 官方接口互斥。
     clone_mode: Optional[Literal["ultimate", "controllable"]] = None
     control_instruction: Optional[str] = None
+    # 仅保存官方标签名；worker 会将其拼成 [tag] 并且只写入模型目标文本。
+    nonverbal_tags: list[str] = Field(default_factory=list, max_length=1)
     cfg_value: Optional[float] = None
     inference_timesteps: Optional[int] = None
+    normalize: Optional[bool] = None
+    denoise: Optional[bool] = None
+    retry_badcase: Optional[bool] = None
     load_denoiser: Optional[bool] = None
     optimize: Optional[bool] = None
     device: Optional[str] = None
@@ -278,6 +331,9 @@ class VoxCpm2SynthesizeRequest(CloneSynthesisRequest):
 
     @model_validator(mode="after")
     def validate_clone_mode_contract(self):
+        self.nonverbal_tags = normalize_nonverbal_tags(self.nonverbal_tags)
+        if contains_nonverbal_tag_marker(self.text) or contains_nonverbal_tag_marker(self.prompt_text):
+            raise ValueError("VoxCPM2 非语言标签必须使用 nonverbal_tags，不能写入 text 或 prompt_text。")
         has_prompt_text = normalize_optional_text(self.prompt_text) is not None
         has_control_instruction = normalize_optional_text(self.control_instruction) is not None
         if self.clone_mode == "controllable":
@@ -290,6 +346,8 @@ class VoxCpm2SynthesizeRequest(CloneSynthesisRequest):
                 raise ValueError("VoxCPM2 极致克隆不能传 control_instruction。")
         elif has_control_instruction:
             raise ValueError("control_instruction 需要显式指定 clone_mode=controllable。")
+        if self.nonverbal_tags and self.clone_mode != "controllable":
+            raise ValueError("VoxCPM2 非语言标签只能用于 clone_mode=controllable。")
         return self
 
 
@@ -314,6 +372,10 @@ class VoxCpm2WorkerManager:
         device = normalize_device_name(request.device, VOXCPM2_DEVICE)
         if not device.startswith("cuda"):
             raise HTTPException(status_code=400, detail=f"VoxCPM2 仅支持 GPU 设备，当前 device={device}")
+        denoise = request.denoise if request.denoise is not None else VOXCPM2_DENOISE
+        configured_load_denoiser = (
+            request.load_denoiser if request.load_denoiser is not None else VOXCPM2_LOAD_DENOISER
+        )
 
         return {
             "text": normalize_synthesis_text(request.text),
@@ -321,6 +383,7 @@ class VoxCpm2WorkerManager:
             "clone_mode": clone_mode,
             "prompt_text": prompt_text,
             "control_instruction": control_instruction,
+            "nonverbal_tags": request.nonverbal_tags,
             "model_path": VOXCPM2_MODEL_DIR,
             "voxcpm2_helper_script": VOXCPM2_HELPER_SCRIPT,
             "cfg_value": request.cfg_value if request.cfg_value is not None else VOXCPM2_CFG_VALUE,
@@ -329,9 +392,13 @@ class VoxCpm2WorkerManager:
                 if request.inference_timesteps is not None
                 else VOXCPM2_INFERENCE_TIMESTEPS
             ),
-            "load_denoiser": (
-                request.load_denoiser if request.load_denoiser is not None else VOXCPM2_LOAD_DENOISER
+            "normalize": request.normalize if request.normalize is not None else VOXCPM2_NORMALIZE,
+            "denoise": denoise,
+            "retry_badcase": (
+                request.retry_badcase if request.retry_badcase is not None else VOXCPM2_RETRY_BADCASE
             ),
+            # 启用 denoise 时自动补齐模型加载前置条件，避免请求参数互相矛盾。
+            "load_denoiser": bool(configured_load_denoiser or denoise),
             "optimize": request.optimize if request.optimize is not None else VOXCPM2_OPTIMIZE,
             "device": device,
             "seed": request.seed if request.seed is not None else VOXCPM2_SEED,
@@ -477,6 +544,9 @@ async def health():
             "request_timeout": VOXCPM2_REQUEST_TIMEOUT,
             "cfg_value": VOXCPM2_CFG_VALUE,
             "inference_timesteps": VOXCPM2_INFERENCE_TIMESTEPS,
+            "normalize": VOXCPM2_NORMALIZE,
+            "denoise": VOXCPM2_DENOISE,
+            "retry_badcase": VOXCPM2_RETRY_BADCASE,
             "load_denoiser": VOXCPM2_LOAD_DENOISER,
             "optimize": VOXCPM2_OPTIMIZE,
             "device": VOXCPM2_DEVICE,
@@ -487,6 +557,7 @@ async def health():
                 "ultimate": "prompt_text -> upload sidecar -> reference-only compatibility fallback",
                 "controllable": "control_instruction only; prompt_text and sidecar are omitted",
             },
+            "nonverbal_tags": sorted(VOXCPM2_NONVERBAL_TAGS),
         },
         "last_errors": {
             "voxcpm2_tts": manager.last_error,
@@ -567,7 +638,8 @@ if __name__ == "__main__":
         f"seed={VOXCPM2_SEED}"
     )
     print(
-        f"[配置] load_denoiser={VOXCPM2_LOAD_DENOISER}, optimize={VOXCPM2_OPTIMIZE}, "
+        f"[配置] normalize={VOXCPM2_NORMALIZE}, denoise={VOXCPM2_DENOISE}, "
+        f"retry_badcase={VOXCPM2_RETRY_BADCASE}, load_denoiser={VOXCPM2_LOAD_DENOISER}, optimize={VOXCPM2_OPTIMIZE}, "
         f"max_chars_per_chunk={VOXCPM2_MAX_CHARS_PER_CHUNK}, pause_ms={VOXCPM2_PAUSE_MS}"
     )
     print(

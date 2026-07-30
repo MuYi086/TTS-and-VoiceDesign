@@ -43,6 +43,9 @@ class FakeGenerateModel:
         reference_wav_path=None,
         cfg_value=2.0,
         inference_timesteps=10,
+        normalize=False,
+        denoise=False,
+        retry_badcase=True,
     ):
         raise AssertionError("测试不应执行推理")
 
@@ -111,7 +114,15 @@ class VoxCpm2BundledHelpersTests(unittest.TestCase):
         self.assertIsNone(manager.last_error)
 
     def test_clone_arguments_support_reference_only_ultimate_and_controllable_modes(self):
-        args = SimpleNamespace(cfg_value=2.5, inference_timesteps=12, control_instruction="")
+        args = SimpleNamespace(
+            cfg_value=2.5,
+            inference_timesteps=12,
+            control_instruction="",
+            nonverbal_tags=[],
+            normalize=True,
+            denoise=True,
+            retry_badcase=False,
+        )
         ref_audio = Path("reference.wav")
 
         reference_only = voxcpm2_helpers.generate_kwargs(
@@ -120,6 +131,9 @@ class VoxCpm2BundledHelpersTests(unittest.TestCase):
         self.assertEqual(reference_only["reference_wav_path"], "reference.wav")
         self.assertNotIn("prompt_text", reference_only)
         self.assertNotIn("prompt_wav_path", reference_only)
+        self.assertTrue(reference_only["normalize"])
+        self.assertTrue(reference_only["denoise"])
+        self.assertFalse(reference_only["retry_badcase"])
 
         with_transcript = voxcpm2_helpers.generate_kwargs(
             FakeGenerateModel(), args, "测试文本", ref_audio, "参考音频文本"
@@ -132,13 +146,27 @@ class VoxCpm2BundledHelpersTests(unittest.TestCase):
             cfg_value=2.5,
             inference_timesteps=12,
             control_instruction="克制紧张，略慢，关键处停顿，吐字清晰",
+            nonverbal_tags=["sigh"],
+            normalize=False,
+            denoise=False,
+            retry_badcase=True,
         )
         controllable = voxcpm2_helpers.generate_kwargs(
             FakeGenerateModel(), controllable_args, "测试文本", ref_audio, None
         )
-        self.assertEqual(controllable["text"], "(克制紧张，略慢，关键处停顿，吐字清晰)测试文本")
+        self.assertEqual(controllable["text"], "(克制紧张，略慢，关键处停顿，吐字清晰)[sigh]测试文本")
         self.assertNotIn("prompt_text", controllable)
         self.assertNotIn("prompt_wav_path", controllable)
+
+    def test_nonverbal_tag_is_only_added_to_model_text(self):
+        self.assertEqual(
+            voxcpm2_helpers.build_model_text("正文", "", ["laughing"]),
+            "[laughing]正文",
+        )
+        self.assertEqual(
+            voxcpm2_helpers.build_model_text("正文", "自然表达", ["sigh"]),
+            "(自然表达)[sigh]正文",
+        )
 
 
 if __name__ == "__main__":

@@ -58,6 +58,20 @@ def apply_control_instruction(text: str, control_instruction: str | None) -> str
     return f"({instruction}){text}" if instruction else text
 
 
+def apply_nonverbal_tags(text: str, nonverbal_tags: list[str] | None) -> str:
+    """将 API 已校验的官方标签仅拼接到 VoxCPM2 的模型目标文本前。"""
+    tags = nonverbal_tags or []
+    return "".join(f"[{tag}]" for tag in tags) + text
+
+
+def build_model_text(chunk: str, control_instruction: str | None, nonverbal_tags: list[str] | None) -> str:
+    """按官方可控克隆格式组装最终文本：(instruction)[tag]正文。"""
+    return apply_control_instruction(
+        apply_nonverbal_tags(chunk, nonverbal_tags),
+        control_instruction,
+    )
+
+
 def generate_kwargs(
     model: Any,
     args: Any,
@@ -68,10 +82,17 @@ def generate_kwargs(
     """Build voice-cloning arguments supported by the installed version."""
     options = {
         # VoxCPM2 将可控克隆指令写在目标文本前；Ultimate Cloning 则由 prompt_* 参数决定。
-        "text": apply_control_instruction(chunk, getattr(args, "control_instruction", None)),
+        "text": build_model_text(
+            chunk,
+            getattr(args, "control_instruction", None),
+            getattr(args, "nonverbal_tags", None),
+        ),
         "reference_wav_path": str(ref_audio),
         "cfg_value": args.cfg_value,
         "inference_timesteps": args.inference_timesteps,
+        "normalize": getattr(args, "normalize", False),
+        "denoise": getattr(args, "denoise", False),
+        "retry_badcase": getattr(args, "retry_badcase", True),
     }
     if prompt_text is not None:
         options["prompt_text"] = prompt_text
