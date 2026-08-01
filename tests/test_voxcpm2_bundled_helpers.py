@@ -13,6 +13,8 @@ if str(API_DIR) not in sys.path:
 
 import voxcpm2_api
 import voxcpm2_helpers
+import voxcpm2_worker
+import voxcpm2_voice_design_worker
 
 
 class FakeProcess:
@@ -47,6 +49,19 @@ class FakeGenerateModel:
         denoise=False,
         retry_badcase=True,
     ):
+        raise AssertionError("测试不应执行推理")
+
+
+class FakeVoiceDesignModel:
+    def generate(self, text, cfg_value=2.0, inference_timesteps=10, seed=0):
+        raise AssertionError("测试不应执行推理")
+
+
+class LegacyVoiceDesignModel:
+    def generate(self, *args, **kwargs):
+        raise AssertionError("测试不应执行推理")
+
+    def _generate(self, text, cfg_value=2.0, inference_timesteps=10):
         raise AssertionError("测试不应执行推理")
 
 
@@ -167,6 +182,67 @@ class VoxCpm2BundledHelpersTests(unittest.TestCase):
             voxcpm2_helpers.build_model_text("正文", "自然表达", ["sigh"]),
             "(自然表达)[sigh]正文",
         )
+
+    def test_voice_design_arguments_use_official_text_and_seed(self):
+        args = SimpleNamespace(
+            cfg_value=2.0,
+            inference_timesteps=10,
+            normalize=False,
+            denoise=False,
+            retry_badcase=True,
+        )
+        options = voxcpm2_voice_design_worker.build_voice_design_generate_kwargs(
+            FakeVoiceDesignModel(),
+            args,
+            "(年轻女性，声音温柔甜美)你好。",
+            20260614,
+        )
+
+        self.assertEqual(options["text"], "(年轻女性，声音温柔甜美)你好。")
+        self.assertEqual(options["cfg_value"], 2.0)
+        self.assertEqual(options["inference_timesteps"], 10)
+        self.assertEqual(options["seed"], 20260614)
+
+    def test_voice_design_does_not_pass_seed_to_legacy_wrapper(self):
+        args = SimpleNamespace(
+            cfg_value=2.0,
+            inference_timesteps=10,
+            normalize=False,
+            denoise=False,
+            retry_badcase=True,
+        )
+
+        options = voxcpm2_voice_design_worker.build_voice_design_generate_kwargs(
+            LegacyVoiceDesignModel(),
+            args,
+            "(年轻女性)你好。",
+            20260614,
+        )
+
+        self.assertNotIn("seed", options)
+
+    def test_negative_voice_design_seed_disables_the_explicit_model_seed(self):
+        args = SimpleNamespace(
+            cfg_value=2.0,
+            inference_timesteps=10,
+            normalize=False,
+            denoise=False,
+            retry_badcase=True,
+        )
+
+        options = voxcpm2_voice_design_worker.build_voice_design_generate_kwargs(
+            FakeVoiceDesignModel(),
+            args,
+            "(年轻女性)你好。",
+            -1,
+        )
+
+        self.assertNotIn("seed", options)
+
+    def test_clone_worker_rejects_voice_design_operation(self):
+        with self.assertRaisesRegex(RuntimeError, "只接受 operation=clone"):
+            # 在检查参考音频之前失败，证明两种 worker 的职责已隔离。
+            voxcpm2_worker.synthesize({"operation": "voice_design"}, Path("out.wav"))
 
 
 if __name__ == "__main__":

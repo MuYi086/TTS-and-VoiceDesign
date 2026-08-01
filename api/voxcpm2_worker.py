@@ -174,8 +174,12 @@ def build_helper_args(request: dict[str, Any]) -> SimpleNamespace:
         # 已由 API 层验证：仅 clone_mode=controllable 时允许带入控制指令。
         control_instruction=normalize_optional_text(request.get("control_instruction")) or "",
         nonverbal_tags=list(request.get("nonverbal_tags") or []),
-        cfg_value=float(request.get("cfg_value")),
-        inference_timesteps=int(request.get("inference_timesteps")),
+        cfg_value=float(request.get("cfg_value") if request.get("cfg_value") is not None else 2.0),
+        inference_timesteps=int(
+            request.get("inference_timesteps")
+            if request.get("inference_timesteps") is not None
+            else 10
+        ),
         normalize=bool(request.get("normalize", False)),
         denoise=bool(request.get("denoise", False)),
         retry_badcase=bool(request.get("retry_badcase", True)),
@@ -186,6 +190,10 @@ def build_helper_args(request: dict[str, Any]) -> SimpleNamespace:
 
 
 def synthesize(request: dict[str, Any], output_wav: Path) -> None:
+    operation = str(request.get("operation") or "clone")
+    if operation != "clone":
+        raise RuntimeError("VoxCPM2 克隆 worker 只接受 operation=clone。")
+
     prepare_environment(request)
 
     helper_script = str(request.get("voxcpm2_helper_script") or "")
@@ -198,26 +206,21 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
         raise RuntimeError("VoxCPM2 合成需要 CUDA GPU。")
 
     model_path = require_path(str(request.get("model_path") or ""), "模型路径")
-    ref_audio_path = require_path(str(request.get("ref_audio_path") or ""), "参考音频")
     text = normalize_text(str(request.get("text") or ""))
-    prompt_text = normalize_optional_text(request.get("prompt_text"))
-    seed = int(request.get("seed") or 20260614)
+    seed_value = request.get("seed")
+    seed = int(seed_value if seed_value is not None else 20260614)
     max_chars_per_chunk = int(request.get("max_chars_per_chunk") or 0)
     pause_ms = int(request.get("pause_ms") or 250)
     helper_args = build_helper_args(request)
-    chunks = split_text(text, max_chars_per_chunk)
+    ref_audio_path = require_path(str(request.get("ref_audio_path") or ""), "参考音频")
+    prompt_text = normalize_optional_text(request.get("prompt_text"))
 
     model = None
     started = time.perf_counter()
     try:
         helpers.set_seed(seed, np, torch)
         print(f"[VoxCPM2 worker] 模型目录: {model_path}")
-        print(f"[VoxCPM2 worker] 参考音频: {ref_audio_path}")
-        print(f"[VoxCPM2 worker] 克隆模式: {request.get('clone_mode') or 'legacy'}")
-        print(f"[VoxCPM2 worker] 参考文本: {'provided' if prompt_text else 'not provided; reference-only cloning mode'}")
-        print(f"[VoxCPM2 worker] 控制指令: {'provided' if helper_args.control_instruction else 'not provided'}")
-        print(f"[VoxCPM2 worker] 非语言标签: {helper_args.nonverbal_tags or 'none'}")
-        print(f"[VoxCPM2 worker] 文本长度: {len(text)} 字, chunks={len(chunks)}")
+        print(f"[VoxCPM2 worker] operation={operation}")
         print(
             f"[VoxCPM2 worker] cfg_value={helper_args.cfg_value}, "
             f"inference_timesteps={helper_args.inference_timesteps}"
@@ -238,6 +241,13 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
 
         waveforms = []
         with torch.inference_mode():
+            chunks = split_text(text, max_chars_per_chunk)
+            print(f"[VoxCPM2 worker] 参考音频: {ref_audio_path}")
+            print(f"[VoxCPM2 worker] 克隆模式: {request.get('clone_mode') or 'legacy'}")
+            print(f"[VoxCPM2 worker] 参考文本: {'provided' if prompt_text else 'not provided; reference-only cloning mode'}")
+            print(f"[VoxCPM2 worker] 控制指令: {'provided' if helper_args.control_instruction else 'not provided'}")
+            print(f"[VoxCPM2 worker] 非语言标签: {helper_args.nonverbal_tags or 'none'}")
+            print(f"[VoxCPM2 worker] 文本长度: {len(text)} 字, chunks={len(chunks)}")
             for index, chunk in enumerate(chunks, start=1):
                 generate_options = helpers.generate_kwargs(
                     model,
@@ -251,9 +261,7 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
                     f"[VoxCPM2 worker] 最终模型文本 chunk {index}/{len(chunks)} "
                     f"clone_mode={request.get('clone_mode') or 'legacy'}: {generate_options['text']}"
                 )
-                waveforms.append(
-                    model.generate(**generate_options)
-                )
+                waveforms.append(model.generate(**generate_options))
 
         waveform = helpers.join_waveforms(waveforms, sample_rate, pause_ms, np)
         waveform, trimmed_samples = trim_leading_silence(waveform, sample_rate, np)

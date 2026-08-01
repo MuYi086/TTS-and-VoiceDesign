@@ -33,6 +33,13 @@ from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 from synthesis_request import CloneSynthesisRequest
 from gpu_runtime import cuda_status, terminate_process_group
+from voxcpm2_voice_design import (
+    VOXCPM2_MODEL_DIR,
+    VOXCPM2_VOICE_DESIGN_WORKER_SCRIPT,
+    VoxCpm2VoiceDesignRequest,
+    run_voxcpm2_voice_design,
+    voice_design_is_ready,
+)
 
 # ==========================================
 # 0. 系统配置
@@ -1051,6 +1058,8 @@ async def health():
         "paths": {
             "hf_mirror_dir": HF_MIRROR_DIR,
             "qwen_model_dir": QWEN_MODEL,
+            "voxcpm2_model_dir": VOXCPM2_MODEL_DIR,
+            "voxcpm2_voice_design_worker_script": VOXCPM2_VOICE_DESIGN_WORKER_SCRIPT,
             "indextts_model_dir": INDEXTTS_MODEL_DIR,
             "indextts_cfg_path": INDEXTTS_CFG_PATH,
             "indextts_aux_dir": INDEXTTS_AUX_DIR,
@@ -1063,6 +1072,8 @@ async def health():
         "available": {
             "qwen_model_dir": os.path.isdir(QWEN_MODEL),
             "qwen_package": qwen_pkg,
+            "voxcpm2_model_dir": os.path.isdir(VOXCPM2_MODEL_DIR),
+            "voxcpm2_voice_design": voice_design_is_ready(),
             "mimo_api_key": bool(os.getenv("MIMO_API_KEY")),
             "indextts_model_dir": os.path.isdir(INDEXTTS_MODEL_DIR),
             "indextts_config": os.path.isfile(INDEXTTS_CFG_PATH),
@@ -1093,7 +1104,7 @@ async def health():
             "transformers_offline": os.getenv("TRANSFORMERS_OFFLINE"),
         },
         "runtime": {
-            "voice_design_providers": ["qwen", "mimo"],
+            "voice_design_providers": ["qwen", "mimo", "voxcpm2"],
             "qwen_request_timeout": QWEN_REQUEST_TIMEOUT,
             "qwen_model_lifecycle": "one request -> one child process -> process exit releases VRAM",
             "indextts_request_timeout": INDEXTTS_REQUEST_TIMEOUT,
@@ -1130,6 +1141,13 @@ async def voice_design_providers():
                 "route": "/v1/qwen/design",
                 "type": "local_model",
                 "ready": os.path.isdir(QWEN_MODEL) and module_available("qwen_tts", QWEN_LIBS),
+            },
+            {
+                "id": "voxcpm2",
+                "name": "VoxCPM2 VoiceDesign",
+                "route": "/v1/voxcpm2/design",
+                "type": "local_model",
+                "ready": voice_design_is_ready(),
             },
             {
                 "id": "mimo",
@@ -1185,6 +1203,22 @@ async def qwen_design(request: QwenDesignRequest):
                 raise HTTPException(status_code=500, detail=str(exc))
             finally:
                 manager.unload_qwen()
+
+
+@app.post("/v1/voxcpm2/design")
+async def voxcpm2_design(request: VoxCpm2VoiceDesignRequest):
+    """独立的 VoxCPM2 音色设计接口，不与 Qwen 音色设计路由混用。"""
+    with gpu_runtime_lock("voxcpm2/design"):
+        try:
+            audio_bytes = run_voxcpm2_voice_design(request)
+            return Response(content=audio_bytes, media_type="audio/wav")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        finally:
+            wait_after_cuda_release("after VoxCPM2 voice design")
 
 
 @app.post("/v1/mimo/design")
@@ -1256,9 +1290,10 @@ async def synthesize_v2(request: TextToSpeechRequest):
 if __name__ == "__main__":
     multiprocessing.set_start_method('spawn', force=True)
     print("==================================================")
-    print("   Unitale AI 本地后端服务 IndexTTS2 + Qwen3/MiMo VoiceDesign")
+    print("   Unitale AI 本地后端服务 IndexTTS2 + Qwen3/MiMo/VoxCPM2 VoiceDesign")
     print("==================================================")
     print(f"[配置] Qwen 模型目录: {QWEN_MODEL}")
+    print(f"[配置] VoxCPM2 VoiceDesign 模型目录: {VOXCPM2_MODEL_DIR}")
     print(f"[配置] MiMo base URL: {MIMO_BASE_URL}")
     print(f"[配置] MiMo 模型: {MIMO_MODEL}")
     print(f"[配置] MiMo API key: {'已配置' if os.getenv('MIMO_API_KEY') else '未配置'}")

@@ -8,6 +8,7 @@
 - MOSS-SoundEffect v2.0：根据中英文提示词生成 48 kHz 声效，端口 `8311`
 - Qwen3-TTS VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/qwen/design`
 - MiMo TTS VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/mimo/design`
+- VoxCPM2 VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/voxcpm2/design`
 
 运行时 API、各模型 worker 和共享音频处理模块统一位于 `api/`；上传资源、缓存和供应商代码位于 `api/prompts/`、`api/.cache/` 与 `api/vendor/`。VoxCPM2 的成功合成结果会额外保留在 `api/tempAudio/`，可通过 `VOXCPM2_OUTPUT_DIR` 覆盖。不要把生成音频或模型权重提交到 Git。
 
@@ -109,6 +110,11 @@ curl -X POST http://127.0.0.1:8300/v1/qwen/design \
   -d '{"voice_description":"成年女性，声音清晰自然，语速中等。","text":"你好。"}' \
   -o qwen_reference.wav
 
+curl -X POST http://127.0.0.1:8300/v1/voxcpm2/design \
+  -H 'Content-Type: application/json' \
+  -d '{"voice_description":"成年女性，声音清晰自然，语速中等。","text":"你好。"}' \
+  -o voxcpm2_reference.wav
+
 curl -X POST http://127.0.0.1:8300/v1/mimo/design \
   -H 'Content-Type: application/json' \
   -d '{"voice_description":"成年女性，声音清晰自然，语速中等。","text":"你好。"}' \
@@ -116,6 +122,8 @@ curl -X POST http://127.0.0.1:8300/v1/mimo/design \
 ```
 
 `8311` 是独立的声效接口，不属于 WebUI 当前自动调用的 TTS 流程；生成的音频可手动导入前端 SFX 素材库。
+
+VoxCPM2 音色设计由独立的 `api/voxcpm2_voice_design.py` 和 `api/voxcpm2_voice_design_worker.py` 处理，不与克隆 worker 或 Qwen / MiMo 逻辑混用。它按照官方文档将音色描述编码为 `(音色描述)正文` 后调用 `model.generate()`。官方示例中的 `seed=42` 是可复现示例值，不是质量专用值；本项目克隆与音色设计默认都保持 `20260614`，需要复现实例时可通过请求显式传入 `seed=42`。
 
 ## 本地回归测试
 

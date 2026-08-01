@@ -15,11 +15,6 @@ from typing import Literal, Optional
 
 # 官方文档: https://voxcpm.readthedocs.io/zh-cn/latest/cookbook.html
 
-# Align VoxCPM2 with the standalone step_3 script instead of inheriting
-# global CUDA runtime tweaks that break this model's GPU path.
-os.environ.pop("PYTORCH_CUDA_ALLOC_CONF", None)
-os.environ.pop("CUDA_MODULE_LOADING", None)
-
 import uvicorn
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
@@ -94,12 +89,13 @@ def resolve_voxcpm2_helper_script(configured_path: Optional[str]) -> str:
 # VoxCPM2 辅助脚本路径：未通过环境变量指定时使用仓库内受版本控制的实现。
 VOXCPM2_HELPER_SCRIPT = resolve_voxcpm2_helper_script(os.getenv("VOXCPM2_HELPER_SCRIPT"))
 # 引导强度：通常在 1~3 调整；提高可强化条件约束，但可能降低自然度或稳定性。
-VOXCPM2_CFG_VALUE = float(os.getenv("VOXCPM2_CFG_VALUE", "3.0"))
+VOXCPM2_CFG_VALUE = float(os.getenv("VOXCPM2_CFG_VALUE", "2.0"))
 # 推理步数：越高通常越稳定但越慢；常用范围 4~30，当前以 10 平衡速度与质量。
-VOXCPM2_INFERENCE_TIMESTEPS = int(os.getenv("VOXCPM2_INFERENCE_TIMESTEPS", "30"))
+VOXCPM2_INFERENCE_TIMESTEPS = int(os.getenv("VOXCPM2_INFERENCE_TIMESTEPS", "10"))
 # 输出归一化：统一响度，可能改变参考音频原始的动态范围。
 VOXCPM2_NORMALIZE = env_bool("VOXCPM2_NORMALIZE", False)
 # 降噪：可减弱参考或生成中的噪声，但可能损失细节；启用时自动加载降噪器。
+# 不兼容，改成True，会报错
 VOXCPM2_DENOISE = env_bool("VOXCPM2_DENOISE", False)
 # 坏例重试：模型判定结果异常时重试，提高成功率但会增加耗时。
 VOXCPM2_RETRY_BADCASE = env_bool("VOXCPM2_RETRY_BADCASE", True)
@@ -369,6 +365,21 @@ class VoxCpm2WorkerManager:
             prompt_text = None
         elif prompt_text is None:
             prompt_text = load_prompt_text_sidecar(request.audio_path)
+        settings = self.build_generation_settings(request)
+
+        return {
+            "operation": "clone",
+            "text": normalize_synthesis_text(request.text),
+            "ref_audio_path": ref_audio_path,
+            "clone_mode": clone_mode,
+            "prompt_text": prompt_text,
+            "control_instruction": control_instruction,
+            "nonverbal_tags": request.nonverbal_tags,
+            **settings,
+        }
+
+    def build_generation_settings(self, request) -> dict:
+        """统一整理同一 VoxCPM2 运行时使用的生成参数。"""
         device = normalize_device_name(request.device, VOXCPM2_DEVICE)
         if not device.startswith("cuda"):
             raise HTTPException(status_code=400, detail=f"VoxCPM2 仅支持 GPU 设备，当前 device={device}")
@@ -376,14 +387,9 @@ class VoxCpm2WorkerManager:
         configured_load_denoiser = (
             request.load_denoiser if request.load_denoiser is not None else VOXCPM2_LOAD_DENOISER
         )
-
+        max_chars_per_chunk = getattr(request, "max_chars_per_chunk", None)
+        pause_ms = getattr(request, "pause_ms", None)
         return {
-            "text": normalize_synthesis_text(request.text),
-            "ref_audio_path": ref_audio_path,
-            "clone_mode": clone_mode,
-            "prompt_text": prompt_text,
-            "control_instruction": control_instruction,
-            "nonverbal_tags": request.nonverbal_tags,
             "model_path": VOXCPM2_MODEL_DIR,
             "voxcpm2_helper_script": VOXCPM2_HELPER_SCRIPT,
             "cfg_value": request.cfg_value if request.cfg_value is not None else VOXCPM2_CFG_VALUE,
@@ -403,22 +409,27 @@ class VoxCpm2WorkerManager:
             "device": device,
             "seed": request.seed if request.seed is not None else VOXCPM2_SEED,
             "max_chars_per_chunk": (
-                request.max_chars_per_chunk
-                if request.max_chars_per_chunk is not None
+                max_chars_per_chunk
+                if max_chars_per_chunk is not None
                 else VOXCPM2_MAX_CHARS_PER_CHUNK
             ),
-            "pause_ms": request.pause_ms if request.pause_ms is not None else VOXCPM2_PAUSE_MS,
+            "pause_ms": (
+                pause_ms
+                if pause_ms is not None
+                else VOXCPM2_PAUSE_MS
+            ),
             "local_files_only": LOCAL_FILES_ONLY,
             "runtime_cache_dir": RUNTIME_CACHE_DIR,
             "hf_mirror_dir": HF_MIRROR_DIR,
         }
 
-    def _run_worker_once(self, payload: dict) -> bytes:
+    def _run_worker_once(self, payload: dict, worker_script: Optional[str] = None) -> bytes:
         conda_exe = resolve_conda_executable()
         if not conda_exe:
             raise RuntimeError("未找到 conda 命令，无法调用 VoxCPM2 worker。")
-        if not os.path.isfile(VOXCPM2_WORKER_SCRIPT):
-            raise RuntimeError(f"VoxCPM2 worker 脚本不存在: {VOXCPM2_WORKER_SCRIPT}")
+        selected_worker_script = worker_script or VOXCPM2_WORKER_SCRIPT
+        if not os.path.isfile(selected_worker_script):
+            raise RuntimeError(f"VoxCPM2 worker 脚本不存在: {selected_worker_script}")
         if not os.path.isdir(VOXCPM2_MODEL_DIR):
             raise RuntimeError(f"VoxCPM2 模型目录不存在: {VOXCPM2_MODEL_DIR}")
         if not os.path.isfile(VOXCPM2_HELPER_SCRIPT):
@@ -449,7 +460,7 @@ class VoxCpm2WorkerManager:
                 "-n",
                 VOXCPM2_CONDA_ENV,
                 "python",
-                VOXCPM2_WORKER_SCRIPT,
+                selected_worker_script,
                 "--input-json",
                 request_path,
                 "--output-wav",
@@ -500,9 +511,9 @@ class VoxCpm2WorkerManager:
                 except Exception:
                     pass
 
-    def run_worker(self, payload: dict) -> bytes:
+    def run_worker(self, payload: dict, worker_script: Optional[str] = None) -> bytes:
         try:
-            audio_bytes = self._run_worker_once(payload)
+            audio_bytes = self._run_worker_once(payload, worker_script=worker_script)
             self.last_error = None
             return audio_bytes
         except Exception as exc:
