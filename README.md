@@ -5,8 +5,11 @@
 - IndexTTS2：参考音频 + 文本合成，端口 `8300`
 - Qwen3-TTS-12Hz-1.7B-Base：参考音频 + 文本合成，端口 `8305`
 - VoxCPM2：参考音频 + 文本合成，端口 `8306`
+- Ming-omni-tts-0.5B：参考音频 + 文本合成，复用端口 `8306`，通过 `backend` / `model` 选择
 - MOSS-SoundEffect v2.0：根据中英文提示词生成 48 kHz 声效，端口 `8311`
 - Qwen3-TTS VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/qwen/design`
+- MOSS VoiceGenerator：根据音色描述生成参考音频，走主 API 的 `/v1/moss/design`
+- Ming-omni-tts VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/Ming/design`
 - MiMo TTS VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/mimo/design`
 - VoxCPM2 VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/voxcpm2/design`
 
@@ -14,18 +17,21 @@
 
 ## 本地环境
 
-主 API 与 IndexTTS2 worker 使用：
+主 API 与 IndexTTS2 worker 默认使用 `qwen3-tts` 环境；如果部署环境另有依赖，可通过 `CONDA_ENV` 覆盖：
 
 ```bash
-conda activate unitale-tts-local
+conda activate qwen3-tts
 ```
 
-Qwen3-TTS 和 VoxCPM2 各自在请求期间由对应 Conda 环境拉起一次性 worker。模型在请求结束后由 worker 退出释放显存；主 API、各包装器和 worker 共享 `GPU_LOCK_FILE`，避免并发抢占 GPU。
+Qwen3-TTS、MOSS VoiceGenerator、Ming-omni-tts 和 VoxCPM2 在请求期间分别由对应 Conda 环境拉起一次性 worker。模型在请求结束后由 worker 退出释放显存；主 API、各包装器和 worker 共享 `GPU_LOCK_FILE`，避免并发抢占 GPU。
 
 ```bash
-conda run -n unitale-tts-local python api/indextts_worker.py ...
+conda run -n qwen3-tts python api/indextts_worker.py ...
 conda run -n qwen3-tts python api/qwen3_tts_worker.py ...
 conda run -n voxcpm2 python api/voxcpm2_worker.py ...
+conda run -n qwen3-voiceDesign python api/qwen_voice_design_worker.py ...
+conda run -n moss-voiceGenerator python api/moss_voice_design_worker.py ...
+conda run -n Ming-omni-tts-0.5B python api/ming_omni_tts_worker.py ...
 ```
 
 MOSS-SoundEffect 使用独立的 `moss-soundEffect` 环境。MiMo 是云端 API，须通过环境变量提供密钥：
@@ -42,6 +48,10 @@ MiMo 是云端服务，运行后端的机器必须能连接 `https://api.xiaomim
 
 ```text
 /home/muyi086/hf-mirror/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
+/home/muyi086/hf-mirror/OpenMOSS-Team/MOSS-VoiceGenerator
+/home/muyi086/hf-mirror/OpenMOSS-Team/MOSS-Audio-Tokenizer
+/home/muyi086/hf-mirror/inclusionAI/Ming-omni-tts-0.5B
+/home/muyi086/tts-depency/Ming-omni-tts
 /home/muyi086/hf-mirror/IndexTeam/IndexTTS-2
 /home/muyi086/hf-mirror/IndexTeam/IndexTTS-2/hf_cache
 /home/muyi086/hf-mirror/OpenMOSS-Team/MOSS-SoundEffect-v2.0
@@ -67,7 +77,7 @@ curl http://127.0.0.1:8311/v1/health
 ```text
 http://127.0.0.1:8300  IndexTTS2 与音色设计
 http://127.0.0.1:8305  Qwen3-TTS-12Hz-1.7B-Base
-http://127.0.0.1:8306  VoxCPM2
+http://127.0.0.1:8306  VoxCPM2 / Ming-omni-tts（由请求中的 backend 或 model 选择）
 http://127.0.0.1:8311  MOSS-SoundEffect v2.0
 ```
 
@@ -86,6 +96,7 @@ http://127.0.0.1:8311  MOSS-SoundEffect v2.0
 | `8300` IndexTTS2 | 不使用参考转写，只接收参考音频与情绪向量。 |
 | `8305` Qwen3-TTS Base | 映射为官方 `ref_text`；缺失时回退到仅参考音频的克隆。 |
 | `8306` VoxCPM2 | `clone_mode="ultimate"` 有准确 `prompt_text` 时走 Ultimate Cloning；`clone_mode="controllable"` 只接受 `control_instruction`，不接受 `prompt_text`，并将指令写入目标文本前；未指定模式时保留旧的参考文本 / 仅参考音频兼容路径。 |
+| `8306` Ming-omni-tts | 发送 `backend: "ming"` 或 `model: "ming-omni-tts"` 时进入 Ming worker；`prompt_text` / `ref_text` 作为参考音频转写。 |
 
 VoxCPM2 的 `ultimate` 与 `controllable` 请求路径严格互斥：前者用于最大化复刻参考音频细节，后者用于按短控制指令调整表演节奏和情绪。`control_instruction` 不是响度参数；成片响度应在合成后检测和统一归一化。
 
@@ -100,6 +111,11 @@ curl -X POST http://127.0.0.1:8306/v2/synthesize \
   -H 'Content-Type: application/json' \
   -d '{"text":"唉，还是晚了一步。","audio_path":"reference.wav","clone_mode":"controllable","control_instruction":"自然、清晰地表达，保留必要的非语言反应，吐字清晰","nonverbal_tags":["sigh"]}' \
   -o synth.wav
+
+curl -X POST http://127.0.0.1:8306/v2/synthesize \
+  -H 'Content-Type: application/json' \
+  -d '{"backend":"ming","text":"你好，欢迎来到 Unitale。","audio_path":"reference.wav","prompt_text":"你好。"}' \
+  -o ming_synth.wav
 ```
 
 音色设计端点：
@@ -109,6 +125,16 @@ curl -X POST http://127.0.0.1:8300/v1/qwen/design \
   -H 'Content-Type: application/json' \
   -d '{"voice_description":"成年女性，声音清晰自然，语速中等。","text":"你好。"}' \
   -o qwen_reference.wav
+
+curl -X POST http://127.0.0.1:8300/v1/moss/design \
+  -H 'Content-Type: application/json' \
+  -d '{"voice_description":"成年女性，温柔、清晰，语速中等。","text":"你好。"}' \
+  -o moss_reference.wav
+
+curl -X POST http://127.0.0.1:8300/v1/Ming/design \
+  -H 'Content-Type: application/json' \
+  -d '{"voice_description":"成年女性，温柔、清晰，语速中等。","text":"你好。"}' \
+  -o ming_reference.wav
 
 curl -X POST http://127.0.0.1:8300/v1/voxcpm2/design \
   -H 'Content-Type: application/json' \
@@ -123,6 +149,18 @@ curl -X POST http://127.0.0.1:8300/v1/mimo/design \
 
 `8311` 是独立的声效接口，不属于 WebUI 当前自动调用的 TTS 流程；生成的音频可手动导入前端 SFX 素材库。
 
+MOSS VoiceGenerator 必须搭配官方的 **MOSS-Audio-Tokenizer（v1，24 kHz、单声道）**；`MOSS-Audio-Tokenizer-v2` 是 48 kHz 双声道 codec，不能用于当前 1.7B VoiceGenerator，否则会产生非语音噪声。可通过 `MOSS_AUDIO_TOKENIZER_PATH` 覆盖默认路径。
+
+如果 `/home/muyi086/hf-mirror/OpenMOSS-Team/MOSS-Audio-Tokenizer` 只是空目录、只有部分文件，或目录中没有 `config.json` 与模型权重，MOSS 请求会在加载阶段失败。使用 hf-mirror 下载完整的 v1 codec（不要下载 `MOSS-Audio-Tokenizer-v2`）：
+
+```bash
+MOSS_CODEC_DIR="${MOSS_CODEC_DIR:-$HOME/hf-mirror/OpenMOSS-Team/MOSS-Audio-Tokenizer}"
+HF_ENDPOINT=https://hf-mirror.com hf download OpenMOSS-Team/MOSS-Audio-Tokenizer \
+  --local-dir "$MOSS_CODEC_DIR"
+```
+
+下载完成后，`GET /v1/health` 中的 `available.moss_audio_tokenizer` 应为 `true`，再重启 `bash start.sh`。worker 现在会在加载 Transformers 前检查 codec 的 `model_type`、24 kHz 单声道配置和权重完整性，并对不完整目录给出明确错误。
+
 VoxCPM2 音色设计由独立的 `api/voxcpm2_voice_design.py` 和 `api/voxcpm2_voice_design_worker.py` 处理，不与克隆 worker 或 Qwen / MiMo 逻辑混用。它按照官方文档将音色描述编码为 `(音色描述)正文` 后调用 `model.generate()`。官方示例中的 `seed=42` 是可复现示例值，不是质量专用值；本项目克隆与音色设计默认都保持 `20260614`，需要复现实例时可通过请求显式传入 `seed=42`。
 
 ## 本地回归测试
@@ -130,7 +168,7 @@ VoxCPM2 音色设计由独立的 `api/voxcpm2_voice_design.py` 和 `api/voxcpm2_
 测试不会下载权重、调用外部服务或加载 TTS 模型：
 
 ```bash
-conda run -n unitale-tts-local python -m unittest discover -s tests -v
+conda run -n qwen3-tts python -m unittest discover -s tests -v
 ```
 
-当前测试覆盖共享音频处理、GPU worker 生命周期、参考文本接口契约，以及 IndexTTS2、Qwen3-TTS、VoxCPM2 与 SoundEffect 的共享运行时约束。
+当前测试覆盖共享音频处理、GPU worker 生命周期、参考文本接口契约，以及 IndexTTS2、Qwen3-TTS、VoxCPM2、Ming 路由与 SoundEffect 的共享运行时约束。

@@ -40,6 +40,8 @@ from voxcpm2_voice_design import (
     run_voxcpm2_voice_design,
     voice_design_is_ready,
 )
+from local_worker import LocalWorkerConfig, run_local_worker
+from moss_voice_design_compat import is_moss_codec_path_ready
 
 # ==========================================
 # 0. 系统配置
@@ -110,7 +112,35 @@ CUDA_RELEASE_DELAY = float(os.getenv("CUDA_RELEASE_DELAY", "2.0"))
 QWEN_DEVICE = os.getenv("QWEN_DEVICE") or None
 QWEN_DTYPE = os.getenv("QWEN_DTYPE") or None
 QWEN_ATTN_IMPLEMENTATION = os.getenv("QWEN_ATTN_IMPLEMENTATION") or None
-QWEN_REQUEST_TIMEOUT = float(os.getenv("QWEN_REQUEST_TIMEOUT", "120"))
+QWEN_REQUEST_TIMEOUT = float(
+    os.getenv("QWEN_REQUEST_TIMEOUT", os.getenv("QWEN_VOICEDESIGN_WORKER_TIMEOUT", "900"))
+)
+QWEN_VOICEDESIGN_CONDA_ENV = os.getenv("QWEN_VOICEDESIGN_CONDA_ENV", "qwen3-voiceDesign")
+QWEN_VOICEDESIGN_WORKER_SCRIPT = os.path.join(API_DIR, "qwen_voice_design_worker.py")
+QWEN_VOICEDESIGN_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "qwen_voice_design_worker")
+MOSS_VOICEGENERATOR_CONDA_ENV = os.getenv("MOSS_VOICEGENERATOR_CONDA_ENV", "moss-voiceGenerator")
+MOSS_VOICEGENERATOR_MODEL_DIR = expand_path(
+    os.getenv("MOSS_VOICEGENERATOR_MODEL_DIR", os.path.join(HF_MIRROR_DIR, "OpenMOSS-Team/MOSS-VoiceGenerator"))
+)
+MOSS_AUDIO_TOKENIZER_PATH = expand_path(
+    os.getenv(
+        "MOSS_AUDIO_TOKENIZER_PATH",
+        os.path.join(HF_MIRROR_DIR, "OpenMOSS-Team/MOSS-Audio-Tokenizer"),
+    )
+)
+MOSS_VOICEGENERATOR_WORKER_SCRIPT = os.path.join(API_DIR, "moss_voice_design_worker.py")
+MOSS_VOICEGENERATOR_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "moss_voice_design_worker")
+MOSS_VOICEGENERATOR_REQUEST_TIMEOUT = float(os.getenv("MOSS_VOICEGENERATOR_REQUEST_TIMEOUT", "900"))
+MING_OMNI_TTS_CONDA_ENV = os.getenv("MING_OMNI_TTS_CONDA_ENV", "Ming-omni-tts-0.5B")
+MING_OMNI_TTS_MODEL_DIR = expand_path(
+    os.getenv("MING_OMNI_TTS_MODEL_DIR", os.path.join(HF_MIRROR_DIR, "inclusionAI/Ming-omni-tts-0.5B"))
+)
+MING_OMNI_TTS_CODE_PATH = expand_path(
+    os.getenv("MING_OMNI_TTS_CODE_PATH", "~/tts-depency/Ming-omni-tts")
+)
+MING_OMNI_TTS_WORKER_SCRIPT = os.path.join(API_DIR, "ming_omni_tts_worker.py")
+MING_OMNI_TTS_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "ming_omni_tts_worker")
+MING_OMNI_TTS_REQUEST_TIMEOUT = float(os.getenv("MING_OMNI_TTS_REQUEST_TIMEOUT", "900"))
 MIMO_BASE_URL = os.getenv("MIMO_BASE_URL", "https://api.xiaomimimo.com/v1")
 MIMO_MODEL = os.getenv("MIMO_MODEL", "mimo-v2.5-tts-voicedesign")
 MIMO_AUTH_HEADER = os.getenv("MIMO_AUTH_HEADER", "api-key")
@@ -711,6 +741,15 @@ class QwenDesignRequest(BaseModel):
     voice_description: str
     text: str = "这是生成的参考音频预览。"
     save_as: Optional[str] = "designed_voice.wav" 
+    language: Optional[str] = "Chinese"
+    max_chars_per_chunk: Optional[int] = 0
+    pause_ms: Optional[int] = 250
+    max_new_tokens: Optional[int] = 2048
+    top_p: Optional[float] = None
+    temperature: Optional[float] = None
+    dtype: Optional[str] = "auto"
+    attn_implementation: Optional[str] = "auto"
+    device_map: Optional[str] = "cuda:0"
 
 
 class MimoDesignRequest(BaseModel):
@@ -729,6 +768,94 @@ class MimoDesignRequest(BaseModel):
     max_retries: Optional[int] = None
     retry_base_seconds: Optional[float] = None
     retry_max_seconds: Optional[float] = None
+
+
+class MossDesignRequest(BaseModel):
+    voice_description: str
+    text: str = "这是生成的参考音频预览。"
+    save_as: Optional[str] = "designed_voice.wav"
+    max_chars_per_chunk: Optional[int] = 0
+    pause_ms: Optional[int] = 250
+    max_new_tokens: Optional[int] = 4096
+    audio_temperature: Optional[float] = 1.5
+    audio_top_p: Optional[float] = 0.6
+    audio_top_k: Optional[int] = 50
+    audio_repetition_penalty: Optional[float] = 1.1
+    dtype: Optional[str] = "auto"
+    attn_implementation: Optional[str] = "auto"
+
+
+class MingDesignRequest(BaseModel):
+    voice_description: str
+    text: str = "这是生成的参考音频预览。"
+    save_as: Optional[str] = "designed_voice.wav"
+    prompt: Optional[str] = "Please generate speech based on the following description.\n"
+    max_decode_steps: Optional[int] = 200
+    cfg: Optional[float] = 2.0
+    sigma: Optional[float] = 0.25
+    temperature: Optional[float] = 0.0
+
+
+QWEN_VOICEDESIGN_WORKER = LocalWorkerConfig(
+    conda_env=QWEN_VOICEDESIGN_CONDA_ENV,
+    worker_script=QWEN_VOICEDESIGN_WORKER_SCRIPT,
+    model_dir=QWEN_MODEL,
+    temp_dir=QWEN_VOICEDESIGN_WORKER_TMP_DIR,
+    timeout=QWEN_REQUEST_TIMEOUT,
+    label="Qwen3-TTS VoiceDesign",
+    file_prefix="qwen_voice_design",
+)
+MOSS_VOICEGENERATOR_WORKER = LocalWorkerConfig(
+    conda_env=MOSS_VOICEGENERATOR_CONDA_ENV,
+    worker_script=MOSS_VOICEGENERATOR_WORKER_SCRIPT,
+    model_dir=MOSS_VOICEGENERATOR_MODEL_DIR,
+    temp_dir=MOSS_VOICEGENERATOR_WORKER_TMP_DIR,
+    timeout=MOSS_VOICEGENERATOR_REQUEST_TIMEOUT,
+    label="MOSS-VoiceGenerator",
+    file_prefix="moss_voice_design",
+)
+MING_OMNI_TTS_WORKER = LocalWorkerConfig(
+    conda_env=MING_OMNI_TTS_CONDA_ENV,
+    worker_script=MING_OMNI_TTS_WORKER_SCRIPT,
+    model_dir=MING_OMNI_TTS_MODEL_DIR,
+    temp_dir=MING_OMNI_TTS_WORKER_TMP_DIR,
+    timeout=MING_OMNI_TTS_REQUEST_TIMEOUT,
+    label="Ming-omni-tts",
+    file_prefix="ming_voice_design",
+)
+
+
+def run_qwen_voice_design(request: QwenDesignRequest) -> bytes:
+    """Run Qwen VoiceDesign inside qwen3-voiceDesign, never in the API env."""
+    payload = {
+        **request.model_dump(),
+        "model_path": QWEN_MODEL,
+        "local_files_only": LOCAL_FILES_ONLY,
+    }
+    return run_local_worker(payload, QWEN_VOICEDESIGN_WORKER)
+
+
+def run_moss_voice_design(request: MossDesignRequest) -> bytes:
+    """Run MOSS VoiceGenerator inside its dedicated Conda environment."""
+    payload = {
+        **request.model_dump(),
+        "model_path": MOSS_VOICEGENERATOR_MODEL_DIR,
+        "codec_path": MOSS_AUDIO_TOKENIZER_PATH,
+        "local_files_only": LOCAL_FILES_ONLY,
+    }
+    return run_local_worker(payload, MOSS_VOICEGENERATOR_WORKER)
+
+
+def run_ming_voice_design(request: MingDesignRequest) -> bytes:
+    """Run Ming text-described voice generation inside its dedicated environment."""
+    payload = {
+        **request.model_dump(),
+        "operation": "voice_design",
+        "model_path": MING_OMNI_TTS_MODEL_DIR,
+        "code_path": MING_OMNI_TTS_CODE_PATH,
+        "local_files_only": LOCAL_FILES_ONLY,
+    }
+    return run_local_worker(payload, MING_OMNI_TTS_WORKER)
 
 
 class MiMoHTTPError(RuntimeError):
@@ -1058,6 +1185,13 @@ async def health():
         "paths": {
             "hf_mirror_dir": HF_MIRROR_DIR,
             "qwen_model_dir": QWEN_MODEL,
+            "qwen_voice_design_worker_script": QWEN_VOICEDESIGN_WORKER_SCRIPT,
+            "moss_voicegenerator_model_dir": MOSS_VOICEGENERATOR_MODEL_DIR,
+            "moss_audio_tokenizer_path": MOSS_AUDIO_TOKENIZER_PATH,
+            "moss_voice_design_worker_script": MOSS_VOICEGENERATOR_WORKER_SCRIPT,
+            "ming_omni_tts_model_dir": MING_OMNI_TTS_MODEL_DIR,
+            "ming_omni_tts_code_path": MING_OMNI_TTS_CODE_PATH,
+            "ming_voice_design_worker_script": MING_OMNI_TTS_WORKER_SCRIPT,
             "voxcpm2_model_dir": VOXCPM2_MODEL_DIR,
             "voxcpm2_voice_design_worker_script": VOXCPM2_VOICE_DESIGN_WORKER_SCRIPT,
             "indextts_model_dir": INDEXTTS_MODEL_DIR,
@@ -1071,6 +1205,15 @@ async def health():
         },
         "available": {
             "qwen_model_dir": os.path.isdir(QWEN_MODEL),
+            "qwen_voice_design_worker": os.path.isfile(QWEN_VOICEDESIGN_WORKER_SCRIPT),
+            "moss_voicegenerator_model_dir": os.path.isdir(MOSS_VOICEGENERATOR_MODEL_DIR),
+            "moss_audio_tokenizer": is_moss_codec_path_ready(MOSS_AUDIO_TOKENIZER_PATH),
+            "moss_voice_design_worker": os.path.isfile(MOSS_VOICEGENERATOR_WORKER_SCRIPT),
+            "ming_omni_tts_model_dir": os.path.isdir(MING_OMNI_TTS_MODEL_DIR),
+            "ming_omni_tts_code_path": os.path.isdir(MING_OMNI_TTS_CODE_PATH),
+            "ming_voice_design_worker": os.path.isfile(MING_OMNI_TTS_WORKER_SCRIPT),
+            # Kept for compatibility with older health consumers; package
+            # discovery in the API environment is not a readiness signal.
             "qwen_package": qwen_pkg,
             "voxcpm2_model_dir": os.path.isdir(VOXCPM2_MODEL_DIR),
             "voxcpm2_voice_design": voice_design_is_ready(),
@@ -1104,7 +1247,10 @@ async def health():
             "transformers_offline": os.getenv("TRANSFORMERS_OFFLINE"),
         },
         "runtime": {
-            "voice_design_providers": ["qwen", "mimo", "voxcpm2"],
+            "voice_design_providers": ["qwen", "moss", "ming", "mimo", "voxcpm2"],
+            "qwen_voice_design_worker_env": QWEN_VOICEDESIGN_CONDA_ENV,
+            "moss_voice_design_worker_env": MOSS_VOICEGENERATOR_CONDA_ENV,
+            "ming_voice_design_worker_env": MING_OMNI_TTS_CONDA_ENV,
             "qwen_request_timeout": QWEN_REQUEST_TIMEOUT,
             "qwen_model_lifecycle": "one request -> one child process -> process exit releases VRAM",
             "indextts_request_timeout": INDEXTTS_REQUEST_TIMEOUT,
@@ -1140,7 +1286,32 @@ async def voice_design_providers():
                 "name": "Qwen3-TTS VoiceDesign",
                 "route": "/v1/qwen/design",
                 "type": "local_model",
-                "ready": os.path.isdir(QWEN_MODEL) and module_available("qwen_tts", QWEN_LIBS),
+                "environment": QWEN_VOICEDESIGN_CONDA_ENV,
+                "ready": os.path.isdir(QWEN_MODEL) and os.path.isfile(QWEN_VOICEDESIGN_WORKER_SCRIPT),
+            },
+            {
+                "id": "moss",
+                "name": "MOSS-VoiceGenerator",
+                "route": "/v1/moss/design",
+                "type": "local_model",
+                "environment": MOSS_VOICEGENERATOR_CONDA_ENV,
+                "ready": (
+                    os.path.isdir(MOSS_VOICEGENERATOR_MODEL_DIR)
+                    and is_moss_codec_path_ready(MOSS_AUDIO_TOKENIZER_PATH)
+                    and os.path.isfile(MOSS_VOICEGENERATOR_WORKER_SCRIPT)
+                ),
+            },
+            {
+                "id": "ming",
+                "name": "Ming-omni-tts-0.5B",
+                "route": "/v1/Ming/design",
+                "type": "local_model",
+                "environment": MING_OMNI_TTS_CONDA_ENV,
+                "ready": (
+                    os.path.isdir(MING_OMNI_TTS_MODEL_DIR)
+                    and os.path.isdir(MING_OMNI_TTS_CODE_PATH)
+                    and os.path.isfile(MING_OMNI_TTS_WORKER_SCRIPT)
+                ),
             },
             {
                 "id": "voxcpm2",
@@ -1183,26 +1354,44 @@ async def check_audio_exists(file_name: str):
 @app.post("/v1/qwen/design")
 async def qwen_design(request: QwenDesignRequest):
     with gpu_runtime_lock("qwen/design"):
-        with manager.lock:
-            try:
-                manager.ensure_qwen_loaded()
-                if manager.qwen_in_q is None or manager.qwen_out_q is None:
-                    raise RuntimeError("Qwen 队列未初始化。")
-                manager.qwen_in_q.put({"command": "DESIGN", "data": request.model_dump()})
-                res = manager.qwen_out_q.get(timeout=QWEN_REQUEST_TIMEOUT)
-                if res.get("success"):
-                    return Response(content=res["audio_bytes"], media_type="audio/wav")
+        try:
+            return Response(content=run_qwen_voice_design(request), media_type="audio/wav")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        finally:
+            wait_after_cuda_release("after Qwen VoiceDesign worker")
 
-                error = res.get("error") or "Qwen 推理失败"
-                raise HTTPException(status_code=500, detail=error)
-            except queue.Empty:
-                raise HTTPException(status_code=500, detail="Qwen 推理超时")
-            except HTTPException:
-                raise
-            except Exception as exc:
-                raise HTTPException(status_code=500, detail=str(exc))
-            finally:
-                manager.unload_qwen()
+
+@app.post("/v1/moss/design")
+async def moss_design(request: MossDesignRequest):
+    with gpu_runtime_lock("moss/design"):
+        try:
+            return Response(content=run_moss_voice_design(request), media_type="audio/wav")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        finally:
+            wait_after_cuda_release("after MOSS VoiceGenerator worker")
+
+
+@app.post("/v1/Ming/design")
+@app.post("/v1/ming/design")
+async def ming_design(request: MingDesignRequest):
+    with gpu_runtime_lock("ming/design"):
+        try:
+            return Response(content=run_ming_voice_design(request), media_type="audio/wav")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        finally:
+            wait_after_cuda_release("after Ming VoiceDesign worker")
 
 
 @app.post("/v1/voxcpm2/design")
@@ -1290,9 +1479,12 @@ async def synthesize_v2(request: TextToSpeechRequest):
 if __name__ == "__main__":
     multiprocessing.set_start_method('spawn', force=True)
     print("==================================================")
-    print("   Unitale AI 本地后端服务 IndexTTS2 + Qwen3/MiMo/VoxCPM2 VoiceDesign")
+    print("   Unitale AI 本地后端服务 IndexTTS2 + Qwen/MOSS/Ming/MiMo/VoxCPM2 VoiceDesign")
     print("==================================================")
     print(f"[配置] Qwen 模型目录: {QWEN_MODEL}")
+    print(f"[配置] Qwen VoiceDesign worker env: {QWEN_VOICEDESIGN_CONDA_ENV}")
+    print(f"[配置] MOSS VoiceGenerator worker env: {MOSS_VOICEGENERATOR_CONDA_ENV}")
+    print(f"[配置] Ming-omni-tts worker env: {MING_OMNI_TTS_CONDA_ENV}")
     print(f"[配置] VoxCPM2 VoiceDesign 模型目录: {VOXCPM2_MODEL_DIR}")
     print(f"[配置] MiMo base URL: {MIMO_BASE_URL}")
     print(f"[配置] MiMo 模型: {MIMO_MODEL}")

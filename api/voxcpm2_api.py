@@ -22,6 +22,7 @@ from pydantic import Field, model_validator
 from starlette.middleware.base import BaseHTTPMiddleware
 from synthesis_request import CloneSynthesisRequest
 from gpu_runtime import cuda_status, terminate_process_group
+from local_worker import LocalWorkerConfig, run_local_worker
 
 API_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(API_DIR)
@@ -115,6 +116,20 @@ VOXCPM2_PAUSE_MS = int(os.getenv("VOXCPM2_PAUSE_MS", "250"))
 # 单次请求超时秒数：覆盖 worker 启动和完整生成；过短会中断长文本或冷启动。
 VOXCPM2_REQUEST_TIMEOUT = float(os.getenv("VOXCPM2_REQUEST_TIMEOUT", "600"))
 
+# Ming-omni-tts shares this HTTP service/port with VoxCPM2.  The request's
+# ``backend``/``model`` field selects the worker environment, so the two
+# heavyweight runtimes never need to coexist in one process.
+MING_OMNI_TTS_CONDA_ENV = os.getenv("MING_OMNI_TTS_CONDA_ENV", "Ming-omni-tts-0.5B")
+MING_OMNI_TTS_MODEL_DIR = expand_path(
+    os.getenv("MING_OMNI_TTS_MODEL_DIR", os.path.join(HF_MIRROR_DIR, "inclusionAI/Ming-omni-tts-0.5B"))
+)
+MING_OMNI_TTS_CODE_PATH = expand_path(
+    os.getenv("MING_OMNI_TTS_CODE_PATH", "~/tts-depency/Ming-omni-tts")
+)
+MING_OMNI_TTS_WORKER_SCRIPT = os.path.join(API_DIR, "ming_omni_tts_worker.py")
+MING_OMNI_TTS_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "ming_omni_tts_worker")
+MING_OMNI_TTS_REQUEST_TIMEOUT = float(os.getenv("MING_OMNI_TTS_REQUEST_TIMEOUT", "900"))
+
 VOXCPM2_WORKER_SCRIPT = os.path.join(API_DIR, "voxcpm2_worker.py")
 VOXCPM2_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "voxcpm2_worker")
 VOXCPM2_OUTPUT_DIR = expand_path(
@@ -137,6 +152,7 @@ os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 os.makedirs(os.environ["XDG_CACHE_HOME"], exist_ok=True)
 os.makedirs(VOXCPM2_WORKER_TMP_DIR, exist_ok=True)
 os.makedirs(VOXCPM2_OUTPUT_DIR, exist_ok=True)
+os.makedirs(MING_OMNI_TTS_WORKER_TMP_DIR, exist_ok=True)
 gpu_lock_dir = os.path.dirname(GPU_LOCK_FILE)
 if gpu_lock_dir:
     os.makedirs(gpu_lock_dir, exist_ok=True)
@@ -347,6 +363,77 @@ class VoxCpm2SynthesizeRequest(CloneSynthesisRequest):
         return self
 
 
+class MingSynthesizeRequest(CloneSynthesisRequest):
+    """Request fields accepted by the Ming-omni-tts worker on port 8306."""
+
+    text: str
+    audio_path: str
+    prompt_text: Optional[str] = None
+    ref_text: Optional[str] = None
+    prompt: Optional[str] = None
+    style: Optional[str] = None
+    emotion: Optional[str] = None
+    dialect: Optional[str] = None
+    speed: Optional[str] = None
+    pitch: Optional[str] = None
+    volume: Optional[str] = None
+    instruction_json: Optional[str] = None
+    max_decode_steps: Optional[int] = None
+    cfg: Optional[float] = None
+    sigma: Optional[float] = None
+    temperature: Optional[float] = None
+
+
+MING_WORKER = LocalWorkerConfig(
+    conda_env=MING_OMNI_TTS_CONDA_ENV,
+    worker_script=MING_OMNI_TTS_WORKER_SCRIPT,
+    model_dir=MING_OMNI_TTS_MODEL_DIR,
+    temp_dir=MING_OMNI_TTS_WORKER_TMP_DIR,
+    timeout=MING_OMNI_TTS_REQUEST_TIMEOUT,
+    label="Ming-omni-tts",
+    file_prefix="ming_tts",
+)
+
+
+class MingWorkerManager:
+    """Build and execute Ming clone requests without importing its runtime."""
+
+    def __init__(self):
+        self.lock = threading.RLock()
+        self.last_error: Optional[str] = None
+
+    def build_worker_payload(self, request: MingSynthesizeRequest) -> dict:
+        ref_audio_path = os.path.join(PROMPTS_DIR, hash_filename(request.audio_path))
+        if not os.path.isfile(ref_audio_path):
+            raise HTTPException(status_code=404, detail="音频不存在")
+        prompt_text = normalize_optional_text(request.prompt_text)
+        if prompt_text is None:
+            prompt_text = normalize_optional_text(request.ref_text) or load_prompt_text_sidecar(request.audio_path)
+        payload = {
+            **request.model_dump(),
+            "operation": "clone",
+            "text": normalize_synthesis_text(request.text),
+            "ref_audio_path": ref_audio_path,
+            "prompt_text": prompt_text,
+            "model_path": MING_OMNI_TTS_MODEL_DIR,
+            "code_path": MING_OMNI_TTS_CODE_PATH,
+            "local_files_only": LOCAL_FILES_ONLY,
+        }
+        # The model script uses ref_text as the semantic name; keep the API's
+        # prompt_text compatibility field while exposing one canonical value.
+        payload["ref_text"] = prompt_text
+        return payload
+
+    def run_worker(self, payload: dict) -> bytes:
+        try:
+            audio = run_local_worker(payload, MING_WORKER)
+            self.last_error = None
+            return audio
+        except Exception as exc:
+            self.last_error = str(exc)
+            raise
+
+
 class VoxCpm2WorkerManager:
     def __init__(self):
         self.lock = threading.RLock()
@@ -522,6 +609,7 @@ class VoxCpm2WorkerManager:
 
 
 manager = VoxCpm2WorkerManager()
+ming_manager = MingWorkerManager()
 
 
 @app.get("/v1/health")
@@ -538,6 +626,10 @@ async def health():
             "worker_script": VOXCPM2_WORKER_SCRIPT,
             "worker_tmp_dir": VOXCPM2_WORKER_TMP_DIR,
             "output_dir": VOXCPM2_OUTPUT_DIR,
+            "ming_omni_tts_model_dir": MING_OMNI_TTS_MODEL_DIR,
+            "ming_omni_tts_code_path": MING_OMNI_TTS_CODE_PATH,
+            "ming_worker_script": MING_OMNI_TTS_WORKER_SCRIPT,
+            "ming_worker_tmp_dir": MING_OMNI_TTS_WORKER_TMP_DIR,
         },
         "available": {
             "conda": bool(resolve_conda_executable()),
@@ -546,10 +638,18 @@ async def health():
             "voxcpm2_helper_script": os.path.isfile(VOXCPM2_HELPER_SCRIPT),
             "torch": module_available("torch"),
             "cuda": cuda["available"],
+            "ming_model_dir": os.path.isdir(MING_OMNI_TTS_MODEL_DIR),
+            "ming_code_path": os.path.isdir(MING_OMNI_TTS_CODE_PATH),
+            "ming_worker_script": os.path.isfile(MING_OMNI_TTS_WORKER_SCRIPT),
         },
         "cuda": cuda,
         "runtime": {
             "worker_env": VOXCPM2_CONDA_ENV,
+            "ming_worker_env": MING_OMNI_TTS_CONDA_ENV,
+            "backends": {
+                "voxcpm2": "voxcpm2",
+                "ming": "Ming-omni-tts-0.5B",
+            },
             "model_lifecycle": "one request -> one worker -> process exit releases VRAM",
             "local_files_only": LOCAL_FILES_ONLY,
             "request_timeout": VOXCPM2_REQUEST_TIMEOUT,
@@ -572,6 +672,7 @@ async def health():
         },
         "last_errors": {
             "voxcpm2_tts": manager.last_error,
+            "ming_tts": ming_manager.last_error,
         },
     }
 
@@ -617,21 +718,37 @@ async def check_audio_exists(file_name: str):
     }
 
 
+def resolve_synthesis_backend(data: dict) -> str:
+    """Resolve the model selector used by the shared 8306 synthesis route."""
+    raw = data.get("backend") or data.get("provider") or data.get("model") or "voxcpm2"
+    value = str(raw).strip().lower().replace("_", "-")
+    if "ming" in value or "omni" in value:
+        return "ming"
+    return "voxcpm2"
+
+
 @app.post("/v2/synthesize")
-async def synthesize_v2(request: VoxCpm2SynthesizeRequest):
+async def synthesize_v2(request: Request):
     with gpu_runtime_lock("voxcpm2/synthesize"):
-        with manager.lock:
-            try:
-                payload = manager.build_worker_payload(request)
-                audio_bytes = manager.run_worker(payload)
-                return Response(content=audio_bytes, media_type="audio/wav")
-            except HTTPException:
-                raise
-            except Exception as exc:
-                traceback.print_exc()
-                raise HTTPException(status_code=500, detail=str(exc))
-            finally:
-                wait_after_cuda_release("after voxcpm2 worker")
+        try:
+            data = await request.json()
+            backend = resolve_synthesis_backend(data)
+            if backend == "ming":
+                with ming_manager.lock:
+                    payload = ming_manager.build_worker_payload(MingSynthesizeRequest.model_validate(data))
+                    audio_bytes = ming_manager.run_worker(payload)
+            else:
+                with manager.lock:
+                    payload = manager.build_worker_payload(VoxCpm2SynthesizeRequest.model_validate(data))
+                    audio_bytes = manager.run_worker(payload)
+            return Response(content=audio_bytes, media_type="audio/wav")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        finally:
+            wait_after_cuda_release("after 8306 worker")
 
 
 if __name__ == "__main__":
@@ -639,6 +756,7 @@ if __name__ == "__main__":
     print("   Unitale AI 本地后端 VoxCPM2 Voice Clone")
     print("==================================================")
     print(f"[配置] VoxCPM2 worker env: {VOXCPM2_CONDA_ENV}")
+    print(f"[配置] Ming-omni-tts worker env: {MING_OMNI_TTS_CONDA_ENV}")
     print(f"[配置] VoxCPM2 模型目录: {VOXCPM2_MODEL_DIR}")
     print(f"[配置] VoxCPM2 helper: {VOXCPM2_HELPER_SCRIPT}")
     print(f"[配置] prompts 目录: {PROMPTS_DIR}")
