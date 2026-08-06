@@ -12,6 +12,7 @@
 - Ming-omni-tts VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/Ming/design`
 - MiMo TTS VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/mimo/design`
 - VoxCPM2 VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/voxcpm2/design`
+- Step-Audio-EditX：对已上传的音频按情绪、说话风格、非语言表现等进行迭代编辑，走主 API 的 `/v1/step-audio-editx/edit`
 
 运行时 API、各模型 worker 和共享音频处理模块统一位于 `api/`；上传资源、缓存和供应商代码位于 `api/prompts/`、`api/.cache/` 与 `api/vendor/`。VoxCPM2 的成功合成结果会额外保留在 `api/tempAudio/`，可通过 `VOXCPM2_OUTPUT_DIR` 覆盖。不要把生成音频或模型权重提交到 Git。
 
@@ -23,7 +24,7 @@
 conda activate qwen3-tts
 ```
 
-Qwen3-TTS、MOSS VoiceGenerator、Ming-omni-tts 和 VoxCPM2 在请求期间分别由对应 Conda 环境拉起一次性 worker。模型在请求结束后由 worker 退出释放显存；主 API、各包装器和 worker 共享 `GPU_LOCK_FILE`，避免并发抢占 GPU。
+Qwen3-TTS、MOSS VoiceGenerator、Ming-omni-tts、VoxCPM2 和 Step-Audio-EditX 在请求期间分别由对应 Conda 环境拉起一次性 worker。模型在请求结束后由 worker 退出释放显存；主 API、各包装器和 worker 共享 `GPU_LOCK_FILE`，避免并发抢占 GPU。
 
 ```bash
 conda run -n qwen3-tts python api/indextts_worker.py ...
@@ -32,6 +33,7 @@ conda run -n voxcpm2 python api/voxcpm2_worker.py ...
 conda run -n qwen3-voiceDesign python api/qwen_voice_design_worker.py ...
 conda run -n moss-voiceGenerator python api/moss_voice_design_worker.py ...
 conda run -n Ming-omni-tts-0.5B python api/ming_omni_tts_worker.py ...
+conda run -n Step-Audio-EditX python api/step_audio_editx_worker.py ...
 ```
 
 MOSS-SoundEffect 使用独立的 `moss-soundEffect` 环境。MiMo 是云端 API，须通过环境变量提供密钥：
@@ -58,6 +60,9 @@ MiMo 是云端服务，运行后端的机器必须能连接 `https://api.xiaomim
 /home/muyi086/hf-mirror/Qwen/Qwen3-TTS-12Hz-1.7B-Base
 /home/muyi086/hf-mirror/openbmb/VoxCPM2
 /home/muyi086/github/TTS-and-VoiceDesign/api/voxcpm2_helpers.py
+/home/muyi086/hf-mirror/stepfun-ai/Step-Audio-EditX
+/home/muyi086/hf-mirror/stepfun-ai/Step-Audio-Tokenizer
+/home/muyi086/tts-depency/Step-Audio-EditX
 ```
 
 `hf_cache` 内包含 IndexTTS2 辅助模型：`w2v-bert-2.0`、`semantic_codec`、`campplus` 和 `bigvgan`。
@@ -75,7 +80,7 @@ curl http://127.0.0.1:8311/v1/health
 默认服务地址：
 
 ```text
-http://127.0.0.1:8300  IndexTTS2 与音色设计
+http://127.0.0.1:8300  IndexTTS2、音色设计与 Step-Audio-EditX 编辑
 http://127.0.0.1:8305  Qwen3-TTS-12Hz-1.7B-Base
 http://127.0.0.1:8306  VoxCPM2 / Ming-omni-tts（由请求中的 backend 或 model 选择）
 http://127.0.0.1:8311  MOSS-SoundEffect v2.0
@@ -105,6 +110,19 @@ VoxCPM2 的 `ultimate` 与 `controllable` 请求路径严格互斥：前者用�
 VoxCPM2 可直接在 [`api/voxcpm2_api.py`](api/voxcpm2_api.py) 顶部修改集中默认值：`cfg_value`、`inference_timesteps`、`normalize`、`denoise`、`retry_badcase`、`load_denoiser`、`optimize`、`device`、`seed`、分片长度、分片停顿和超时。`start.sh` 不再写入这些默认值；如启动前显式设置同名 `VOXCPM2_*` 环境变量，环境变量仍会覆盖代码默认值。`denoise=true` 时会自动启用 `load_denoiser`。
 
 `8306` 每次合成成功后都会保留一份原始 WAV 到 `api/tempAudio/`，文件名形如 `voxcpm2_20260730_120000_xxxxx.wav`；接口响应内容不变。此目录不会自动清理，完成后请按需要转移或删除文件。
+
+## Step-Audio-EditX 编辑接口
+
+Step-Audio-EditX 使用上传到 `8300` 的音频作为 prompt。先通过 `POST /v1/upload_audio` 上传音频，再调用：
+
+```bash
+curl -X POST http://127.0.0.1:8300/v1/step-audio-editx/edit \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt_audio":"step-audio-editx/line-1.wav","prompt_text":"这是一条台词。","generated_text":"这是一条台词。","edit_type":"emotion","edit_info":"coldness"}' \
+  -o edited.wav
+```
+
+请求字段 `edit_type`、`edit_info` 分别映射官方命令行的 `--edit-type`、`--edit-info`。`emotion`、`style` 与 `speed` 需要非空 `edit_info`；`paralinguistic` 使用目标文本中的官方标签；`denoise` 与 `vad` 不要求文本。服务用 `STEP_AUDIO_EDITX_CONDA_ENV`（默认 `Step-Audio-EditX`）启动一次性 worker；模型、tokenizer、官方源码和推理参数可分别通过 `STEP_AUDIO_EDITX_MODEL_DIR`、`STEP_AUDIO_TOKENIZER_PATH`、`STEP_AUDIO_EDITX_CODE_PATH`、`STEP_AUDIO_EDITX_*` 覆盖。单次音频建议不超过 30 秒。
 
 ```bash
 curl -X POST http://127.0.0.1:8306/v2/synthesize \

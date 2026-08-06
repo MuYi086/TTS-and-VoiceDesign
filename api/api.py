@@ -20,6 +20,7 @@ import urllib.error
 import urllib.request
 import wave
 from contextlib import contextmanager
+from pathlib import Path
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:128")
 os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
@@ -39,6 +40,16 @@ from voxcpm2_voice_design import (
     VoxCpm2VoiceDesignRequest,
     run_voxcpm2_voice_design,
     voice_design_is_ready,
+)
+from step_audio_editx import (
+    STEP_AUDIO_EDITX_CODE_PATH,
+    STEP_AUDIO_EDITX_CONDA_ENV,
+    STEP_AUDIO_EDITX_MODEL_DIR,
+    STEP_AUDIO_EDITX_REQUEST_TIMEOUT,
+    STEP_AUDIO_TOKENIZER_PATH,
+    StepAudioEditXEditRequest,
+    manager as step_audio_editx_manager,
+    step_audio_editx_is_ready,
 )
 from local_worker import LocalWorkerConfig, run_local_worker
 from moss_voice_design_compat import is_moss_codec_path_ready
@@ -1194,6 +1205,9 @@ async def health():
             "ming_voice_design_worker_script": MING_OMNI_TTS_WORKER_SCRIPT,
             "voxcpm2_model_dir": VOXCPM2_MODEL_DIR,
             "voxcpm2_voice_design_worker_script": VOXCPM2_VOICE_DESIGN_WORKER_SCRIPT,
+            "step_audio_editx_model_dir": str(STEP_AUDIO_EDITX_MODEL_DIR),
+            "step_audio_tokenizer_path": str(STEP_AUDIO_TOKENIZER_PATH),
+            "step_audio_editx_code_path": str(STEP_AUDIO_EDITX_CODE_PATH),
             "indextts_model_dir": INDEXTTS_MODEL_DIR,
             "indextts_cfg_path": INDEXTTS_CFG_PATH,
             "indextts_aux_dir": INDEXTTS_AUX_DIR,
@@ -1217,6 +1231,7 @@ async def health():
             "qwen_package": qwen_pkg,
             "voxcpm2_model_dir": os.path.isdir(VOXCPM2_MODEL_DIR),
             "voxcpm2_voice_design": voice_design_is_ready(),
+            "step_audio_editx": step_audio_editx_is_ready(),
             "mimo_api_key": bool(os.getenv("MIMO_API_KEY")),
             "indextts_model_dir": os.path.isdir(INDEXTTS_MODEL_DIR),
             "indextts_config": os.path.isfile(INDEXTTS_CFG_PATH),
@@ -1240,6 +1255,7 @@ async def health():
         },
         "last_errors": {
             "indextts": manager.indextts_error,
+            "step_audio_editx": step_audio_editx_manager.last_error,
         },
         "offline": {
             "local_files_only": LOCAL_FILES_ONLY,
@@ -1251,6 +1267,8 @@ async def health():
             "qwen_voice_design_worker_env": QWEN_VOICEDESIGN_CONDA_ENV,
             "moss_voice_design_worker_env": MOSS_VOICEGENERATOR_CONDA_ENV,
             "ming_voice_design_worker_env": MING_OMNI_TTS_CONDA_ENV,
+            "step_audio_editx_worker_env": STEP_AUDIO_EDITX_CONDA_ENV,
+            "step_audio_editx_request_timeout": STEP_AUDIO_EDITX_REQUEST_TIMEOUT,
             "qwen_request_timeout": QWEN_REQUEST_TIMEOUT,
             "qwen_model_lifecycle": "one request -> one child process -> process exit releases VRAM",
             "indextts_request_timeout": INDEXTTS_REQUEST_TIMEOUT,
@@ -1345,6 +1363,31 @@ async def upload_audio(audio: UploadFile = File(...), full_path: str = Form(...)
     save_path = os.path.join(PROMPTS_DIR, hash_filename(full_path))
     with open(save_path, "wb") as f: f.write(content)
     return {"code": 200, "msg": "上传成功", "filename": full_path}
+
+
+@app.post("/v1/step-audio-editx/edit")
+async def step_audio_editx_edit(request: StepAudioEditXEditRequest):
+    """使用已上传的当前台词音频执行一次 Step-Audio-EditX 编辑。"""
+    prompt_audio_path = os.path.join(PROMPTS_DIR, hash_filename(request.prompt_audio))
+    with gpu_runtime_lock("step-audio-editx/edit"):
+        try:
+            with step_audio_editx_manager.lock:
+                payload = step_audio_editx_manager.build_worker_payload(
+                    request,
+                    Path(prompt_audio_path),
+                    local_files_only=LOCAL_FILES_ONLY,
+                )
+                audio_bytes = step_audio_editx_manager.run_worker(payload)
+            return Response(content=audio_bytes, media_type="audio/wav")
+        except HTTPException:
+            raise
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except Exception as exc:
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        finally:
+            wait_after_cuda_release("after Step-Audio-EditX worker")
 
 @app.get("/v1/check/audio")
 async def check_audio_exists(file_name: str):
@@ -1479,13 +1522,17 @@ async def synthesize_v2(request: TextToSpeechRequest):
 if __name__ == "__main__":
     multiprocessing.set_start_method('spawn', force=True)
     print("==================================================")
-    print("   Unitale AI 本地后端服务 IndexTTS2 + Qwen/MOSS/Ming/MiMo/VoxCPM2 VoiceDesign")
+    print("   Unitale AI 本地后端服务 IndexTTS2 + EditX + Qwen/MOSS/Ming/MiMo/VoxCPM2")
     print("==================================================")
     print(f"[配置] Qwen 模型目录: {QWEN_MODEL}")
     print(f"[配置] Qwen VoiceDesign worker env: {QWEN_VOICEDESIGN_CONDA_ENV}")
     print(f"[配置] MOSS VoiceGenerator worker env: {MOSS_VOICEGENERATOR_CONDA_ENV}")
     print(f"[配置] Ming-omni-tts worker env: {MING_OMNI_TTS_CONDA_ENV}")
     print(f"[配置] VoxCPM2 VoiceDesign 模型目录: {VOXCPM2_MODEL_DIR}")
+    print(f"[配置] Step-Audio-EditX worker env: {STEP_AUDIO_EDITX_CONDA_ENV}")
+    print(f"[配置] Step-Audio-EditX 模型目录: {STEP_AUDIO_EDITX_MODEL_DIR}")
+    print(f"[配置] Step-Audio-Tokenizer 目录: {STEP_AUDIO_TOKENIZER_PATH}")
+    print(f"[配置] Step-Audio-EditX 源码目录: {STEP_AUDIO_EDITX_CODE_PATH}")
     print(f"[配置] MiMo base URL: {MIMO_BASE_URL}")
     print(f"[配置] MiMo 模型: {MIMO_MODEL}")
     print(f"[配置] MiMo API key: {'已配置' if os.getenv('MIMO_API_KEY') else '未配置'}")
