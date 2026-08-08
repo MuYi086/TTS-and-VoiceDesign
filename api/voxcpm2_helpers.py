@@ -27,6 +27,7 @@ def import_runtime():
 
 
 def set_seed(seed: int, np: Any, torch: Any) -> None:
+    """Seed all runtimes only when the caller explicitly requests reproducibility."""
     if seed < 0:
         return
     random.seed(seed)

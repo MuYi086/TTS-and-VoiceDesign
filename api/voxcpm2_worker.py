@@ -170,11 +170,17 @@ def load_voxcpm2_helpers(script_path: str) -> Any:
 
 
 def build_helper_args(request: dict[str, Any]) -> SimpleNamespace:
+    cfg_value = request.get("cfg_value")
+    if cfg_value is None:
+        raise RuntimeError(
+            "VoxCPM2 worker payload 缺少 cfg_value；请由 API 使用 VOXCPM2_CFG_VALUE 统一传入。"
+        )
+
     return SimpleNamespace(
         # 已由 API 层验证：仅 clone_mode=controllable 时允许带入控制指令。
         control_instruction=normalize_optional_text(request.get("control_instruction")) or "",
         nonverbal_tags=list(request.get("nonverbal_tags") or []),
-        cfg_value=float(request.get("cfg_value") if request.get("cfg_value") is not None else 2.0),
+        cfg_value=float(cfg_value),
         inference_timesteps=int(
             request.get("inference_timesteps")
             if request.get("inference_timesteps") is not None
@@ -208,7 +214,8 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
     model_path = require_path(str(request.get("model_path") or ""), "模型路径")
     text = normalize_text(str(request.get("text") or ""))
     seed_value = request.get("seed")
-    seed = int(seed_value if seed_value is not None else 20260614)
+    seed = int(seed_value if seed_value is not None else -1)
+    seed_label = str(seed) if seed >= 0 else "random"
     max_chars_per_chunk = int(request.get("max_chars_per_chunk") or 0)
     pause_ms = int(request.get("pause_ms") or 250)
     helper_args = build_helper_args(request)
@@ -226,7 +233,7 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
             f"inference_timesteps={helper_args.inference_timesteps}"
         )
         print(
-            f"[VoxCPM2 worker] seed={seed}, normalize={helper_args.normalize}, denoise={helper_args.denoise}, "
+            f"[VoxCPM2 worker] seed={seed_label}, normalize={helper_args.normalize}, denoise={helper_args.denoise}, "
             f"retry_badcase={helper_args.retry_badcase}, load_denoiser={helper_args.load_denoiser}, "
             f"optimize={helper_args.optimize}, local_files_only={helper_args.local_files_only}, "
             f"device={requested_device}"

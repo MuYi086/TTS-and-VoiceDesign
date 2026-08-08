@@ -82,7 +82,8 @@ def synthesize_voice_design(request: dict[str, Any], output_wav: Path) -> None:
     if not voice_description:
         raise RuntimeError("VoxCPM2 音色设计需要 voice_description。")
     seed_value = request.get("seed")
-    seed = int(seed_value if seed_value is not None else 20260614)
+    seed = int(seed_value if seed_value is not None else -1)
+    seed_label = str(seed) if seed >= 0 else "random"
     helper_args = build_helper_args(request)
     model_text = f"({voice_description}){text}"
 
@@ -93,7 +94,7 @@ def synthesize_voice_design(request: dict[str, Any], output_wav: Path) -> None:
         print(f"[VoxCPM2 VoiceDesign worker] 模型目录: {model_path}")
         print(
             f"[VoxCPM2 VoiceDesign worker] cfg_value={helper_args.cfg_value}, "
-            f"inference_timesteps={helper_args.inference_timesteps}, seed={seed}"
+            f"inference_timesteps={helper_args.inference_timesteps}, seed={seed_label}"
         )
         print(f"[VoxCPM2 VoiceDesign worker] 最终模型文本: {model_text}")
 

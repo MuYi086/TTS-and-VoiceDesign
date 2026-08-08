@@ -90,7 +90,10 @@ def resolve_voxcpm2_helper_script(configured_path: Optional[str]) -> str:
 # VoxCPM2 辅助脚本路径：未通过环境变量指定时使用仓库内受版本控制的实现。
 VOXCPM2_HELPER_SCRIPT = resolve_voxcpm2_helper_script(os.getenv("VOXCPM2_HELPER_SCRIPT"))
 # 引导强度：通常在 1~3 调整；提高可强化条件约束，但可能降低自然度或稳定性。
-VOXCPM2_CFG_VALUE = float(os.getenv("VOXCPM2_CFG_VALUE", "2.0"))
+# 项目默认使用官方 Demo 的 2.0；
+# 所有 VoxCPM2 克隆和音色设计请求未显式覆盖时都读取这个全局值。
+VOXCPM2_CFG_DEFAULT = 2.0
+VOXCPM2_CFG_VALUE = float(os.getenv("VOXCPM2_CFG_VALUE", str(VOXCPM2_CFG_DEFAULT)))
 # 推理步数：越高通常越稳定但越慢；常用范围 4~30，当前以 10 平衡速度与质量。
 VOXCPM2_INFERENCE_TIMESTEPS = int(os.getenv("VOXCPM2_INFERENCE_TIMESTEPS", "10"))
 # 输出归一化：统一响度，可能改变参考音频原始的动态范围。
@@ -107,8 +110,10 @@ VOXCPM2_LOAD_DENOISER = env_bool("VOXCPM2_LOAD_DENOISER", False)
 VOXCPM2_OPTIMIZE = env_bool("VOXCPM2_OPTIMIZE", False)
 # 运行设备：VoxCPM2 当前仅支持 CUDA 设备，例如 cuda 或 cuda:0。
 VOXCPM2_DEVICE = normalize_device_name(os.getenv("VOXCPM2_DEVICE"), "cuda")
-# 随机种子：固定值便于复现实验；设为负数可关闭 worker 内的固定随机种子。
-VOXCPM2_SEED = int(os.getenv("VOXCPM2_SEED", "20260614"))
+# 随机种子：官方在线推理默认不固定种子；负数表示沿用运行时随机状态。
+# 只有复现实验时才通过请求或 VOXCPM2_SEED 显式指定非负整数。
+VOXCPM2_SEED_DEFAULT = -1
+VOXCPM2_SEED = int(os.getenv("VOXCPM2_SEED", str(VOXCPM2_SEED_DEFAULT)))
 # 分片字符数：0 表示不切分；长文本切分可降低单次显存压力，但会在片段间插入停顿。
 VOXCPM2_MAX_CHARS_PER_CHUNK = int(os.getenv("VOXCPM2_MAX_CHARS_PER_CHUNK", "0"))
 # 分片停顿毫秒数：只在发生文本切分时生效，过大会让语流显得断裂。
@@ -237,6 +242,15 @@ def persist_generated_audio(source_path: str) -> str:
         except OSError:
             pass
         raise
+
+
+def sha256_file(path: str) -> str:
+    """Return the content hash used to detect stale same-name uploads."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as file_obj:
+        for chunk in iter(lambda: file_obj.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def resolve_conda_executable() -> Optional[str]:
@@ -699,21 +713,27 @@ async def upload_audio(
 
     normalized_prompt_text = prompt_text.strip() if prompt_text and prompt_text.strip() else None
     save_prompt_text_sidecar(full_path, normalized_prompt_text)
+    content_sha256 = hashlib.sha256(content).hexdigest()
 
     return {
         "code": 200,
         "msg": "上传成功",
         "filename": full_path,
+        "size_bytes": len(content),
+        "sha256": content_sha256,
         "has_prompt_text": bool(normalized_prompt_text),
     }
 
 
 @app.get("/v1/check/audio")
 async def check_audio_exists(file_name: str):
-    exists = os.path.isfile(os.path.join(PROMPTS_DIR, hash_filename(file_name)))
+    audio_path = os.path.join(PROMPTS_DIR, hash_filename(file_name))
+    exists = os.path.isfile(audio_path)
     return {
         "code": 200 if exists else 404,
         "exists": exists,
+        "size_bytes": os.path.getsize(audio_path) if exists else None,
+        "sha256": sha256_file(audio_path) if exists else None,
         "has_prompt_text": bool(load_prompt_text_sidecar(file_name)),
     }
 

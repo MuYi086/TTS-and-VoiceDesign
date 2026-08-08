@@ -66,6 +66,18 @@ class LegacyVoiceDesignModel:
 
 
 class VoxCpm2BundledHelpersTests(unittest.TestCase):
+    def test_negative_seed_preserves_runtime_random_state(self):
+        fake_numpy = mock.Mock()
+        fake_torch = mock.Mock()
+
+        with mock.patch("voxcpm2_helpers.random.seed") as random_seed:
+            voxcpm2_helpers.set_seed(-1, fake_numpy, fake_torch)
+
+        random_seed.assert_not_called()
+        fake_numpy.random.seed.assert_not_called()
+        fake_torch.manual_seed.assert_not_called()
+        fake_torch.cuda.is_available.assert_not_called()
+
     def test_default_helper_is_bundled_in_repository(self):
         self.assertEqual(
             Path(voxcpm2_api.VOXCPM2_HELPER_DEFAULT),

@@ -12,6 +12,7 @@ if str(API_DIR) not in sys.path:
     sys.path.insert(0, str(API_DIR))
 
 import api
+import voxcpm2_api
 import voxcpm2_voice_design
 
 
@@ -49,9 +50,9 @@ class VoxCpm2VoiceDesignDispatchTests(unittest.TestCase):
         self.assertEqual(payload["voice_description"], "年轻女性，声音温柔甜美。")
         self.assertEqual(payload["text"], "你好。")
         self.assertNotIn("ref_audio_path", payload)
-        self.assertEqual(payload["cfg_value"], 2.0)
+        self.assertEqual(payload["cfg_value"], voxcpm2_api.VOXCPM2_CFG_VALUE)
         self.assertEqual(payload["inference_timesteps"], 10)
-        self.assertEqual(payload["seed"], 20260614)
+        self.assertEqual(payload["seed"], voxcpm2_api.VOXCPM2_SEED_DEFAULT)
 
     def test_voice_design_uses_its_dedicated_worker_script(self):
         request = voxcpm2_voice_design.VoxCpm2VoiceDesignRequest(

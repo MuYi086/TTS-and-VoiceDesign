@@ -1,6 +1,8 @@
 """Regression coverage for the shared voice-cloning synthesis contract."""
 
+import asyncio
 import contextlib
+import hashlib
 import io
 import unittest
 from pathlib import Path
@@ -124,7 +126,10 @@ class SynthesizeStylePromptContractTests(unittest.TestCase):
 
     def test_voxcpm_worker_never_prepends_a_style_prompt(self):
         helper_args = voxcpm2_worker.build_helper_args(
-            {"control_instruction": "克制紧张，略慢，关键处停顿，吐字清晰"}
+            {
+                "cfg_value": voxcpm2_api.VOXCPM2_CFG_VALUE,
+                "control_instruction": "克制紧张，略慢，关键处停顿，吐字清晰",
+            }
         )
         self.assertEqual(helper_args.control_instruction, "克制紧张，略慢，关键处停顿，吐字清晰")
 
@@ -178,6 +183,53 @@ class SynthesizeStylePromptContractTests(unittest.TestCase):
         self.assertEqual(payload["clone_mode"], "controllable")
         self.assertIsNone(payload["prompt_text"])
         self.assertEqual(payload["control_instruction"], "克制紧张，略慢，关键处停顿，吐字清晰")
+
+    def test_voxcpm2_clone_payloads_use_global_cfg_value(self):
+        with TemporaryDirectory() as prompts_dir, patch.object(voxcpm2_api, "PROMPTS_DIR", prompts_dir):
+            audio_path = "reference.wav"
+            (Path(prompts_dir) / voxcpm2_api.hash_filename(audio_path)).write_bytes(b"reference-audio")
+            manager = voxcpm2_api.VoxCpm2WorkerManager()
+            with patch.object(voxcpm2_api, "VOXCPM2_CFG_VALUE", 1.75):
+                controllable_request = voxcpm2_api.VoxCpm2SynthesizeRequest.model_validate(
+                    {
+                        "text": "门后有人。",
+                        "audio_path": audio_path,
+                        "clone_mode": "controllable",
+                        "control_instruction": "克制紧张",
+                    }
+                )
+                ultimate_request = voxcpm2_api.VoxCpm2SynthesizeRequest.model_validate(
+                    {
+                        "text": "门后有人。",
+                        "audio_path": audio_path,
+                        "clone_mode": "ultimate",
+                        "prompt_text": "门后有人。",
+                    }
+                )
+
+                controllable_payload = manager.build_worker_payload(controllable_request)
+                ultimate_payload = manager.build_worker_payload(ultimate_request)
+
+        self.assertEqual(controllable_payload["cfg_value"], 1.75)
+        self.assertEqual(ultimate_payload["cfg_value"], 1.75)
+        self.assertEqual(controllable_payload["seed"], -1)
+        self.assertEqual(ultimate_payload["seed"], -1)
+
+    def test_voxcpm2_project_defaults_match_official_demo_behavior(self):
+        self.assertEqual(voxcpm2_api.VOXCPM2_CFG_DEFAULT, 2.0)
+        self.assertEqual(voxcpm2_api.VOXCPM2_SEED_DEFAULT, -1)
+
+    def test_voxcpm2_audio_check_reports_content_hash(self):
+        with TemporaryDirectory() as prompts_dir, patch.object(voxcpm2_api, "PROMPTS_DIR", prompts_dir):
+            audio_path = "same-name.wav"
+            content = b"current-reference-audio"
+            (Path(prompts_dir) / voxcpm2_api.hash_filename(audio_path)).write_bytes(content)
+
+            response = asyncio.run(voxcpm2_api.check_audio_exists(audio_path))
+
+        self.assertTrue(response["exists"])
+        self.assertEqual(response["size_bytes"], len(content))
+        self.assertEqual(response["sha256"], hashlib.sha256(content).hexdigest())
 
     def test_voxcpm2_nonverbal_tag_is_validated_and_reaches_worker_payload(self):
         with TemporaryDirectory() as prompts_dir, patch.object(voxcpm2_api, "PROMPTS_DIR", prompts_dir):

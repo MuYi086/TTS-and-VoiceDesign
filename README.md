@@ -103,9 +103,11 @@ http://127.0.0.1:8311  MOSS-SoundEffect v2.0
 | `8306` VoxCPM2 | `clone_mode="ultimate"` 有准确 `prompt_text` 时走 Ultimate Cloning；`clone_mode="controllable"` 只接受 `control_instruction`，不接受 `prompt_text`，并将指令写入目标文本前；未指定模式时保留旧的参考文本 / 仅参考音频兼容路径。 |
 | `8306` Ming-omni-tts | 发送 `backend: "ming"` 或 `model: "ming-omni-tts"` 时进入 Ming worker；`prompt_text` / `ref_text` 作为参考音频转写。 |
 
-VoxCPM2 的 `ultimate` 与 `controllable` 请求路径严格互斥：前者用于最大化复刻参考音频细节，后者用于按短控制指令调整表演节奏和情绪。`control_instruction` 不是响度参数；成片响度应在合成后检测和统一归一化。
+VoxCPM2 的 `ultimate` 与 `controllable` 请求路径严格互斥：前者用于最大化复刻参考音频细节，后者用于按短控制指令调整表演节奏和情绪。所有 VoxCPM2 克隆与音色设计请求未显式传 `cfg_value` 时统一使用顶部全局配置 `VOXCPM2_CFG_VALUE`（官方 Demo 默认 `2.0`）；需要单次覆盖时仍可在请求中显式传 `cfg_value`。默认 `seed=-1`，与官方在线推理一样不固定随机种子，重新生成会得到不同候选；需要精确复现时才显式传非负 `seed`。`control_instruction` 不是响度参数；成片响度应在合成后检测和统一归一化。
 
 `8306` 还支持 `nonverbal_tags`（数组，最多一个）。仅接受官方标签 `laughing`、`sigh`、`Uhm`、`Shh`、`Question-ah`、`Question-ei`、`Question-en`、`Question-oh`、`Surprise-wa`、`Surprise-yo`、`Dissatisfaction-hnn`，且只能配合 `clone_mode="controllable"` 使用。worker 会把最终目标文本拼为 `(control_instruction)[tag]正文`（无控制或标签时省略相应前缀），并在每个文本分片调用模型前向终端打印该最终文本、分片序号和克隆模式；不会打印参考音频转写。
+
+参考音频上传按内容 `sha256` 校验，不再只按文件名判断是否存在；同名音频更新后会自动覆盖服务端旧缓存。`GET /v1/check/audio` 返回 `sha256` 和 `size_bytes`，供 WebUI 判断是否需要重新上传。
 
 VoxCPM2 可直接在 [`api/voxcpm2_api.py`](api/voxcpm2_api.py) 顶部修改集中默认值：`cfg_value`、`inference_timesteps`、`normalize`、`denoise`、`retry_badcase`、`load_denoiser`、`optimize`、`device`、`seed`、分片长度、分片停顿和超时。`start.sh` 不再写入这些默认值；如启动前显式设置同名 `VOXCPM2_*` 环境变量，环境变量仍会覆盖代码默认值。`denoise=true` 时会自动启用 `load_denoiser`。
 
@@ -179,7 +181,7 @@ HF_ENDPOINT=https://hf-mirror.com hf download OpenMOSS-Team/MOSS-Audio-Tokenizer
 
 下载完成后，`GET /v1/health` 中的 `available.moss_audio_tokenizer` 应为 `true`，再重启 `bash start.sh`。worker 现在会在加载 Transformers 前检查 codec 的 `model_type`、24 kHz 单声道配置和权重完整性，并对不完整目录给出明确错误。
 
-VoxCPM2 音色设计由独立的 `api/voxcpm2_voice_design.py` 和 `api/voxcpm2_voice_design_worker.py` 处理，不与克隆 worker 或 Qwen / MiMo 逻辑混用。它按照官方文档将音色描述编码为 `(音色描述)正文` 后调用 `model.generate()`。官方示例中的 `seed=42` 是可复现示例值，不是质量专用值；本项目克隆与音色设计默认都保持 `20260614`，需要复现实例时可通过请求显式传入 `seed=42`。
+VoxCPM2 音色设计由独立的 `api/voxcpm2_voice_design.py` 和 `api/voxcpm2_voice_design_worker.py` 处理，不与克隆 worker 或 Qwen / MiMo 逻辑混用。它按照官方文档将音色描述编码为 `(音色描述)正文` 后调用 `model.generate()`。官方示例中的 `seed=42` 是可复现示例值，不是质量专用值；本项目克隆与音色设计默认不固定随机种子，需要复现实例时可通过请求显式传入 `seed=42`。
 
 ## 本地回归测试
 
