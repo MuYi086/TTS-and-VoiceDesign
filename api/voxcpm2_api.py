@@ -112,7 +112,7 @@ VOXCPM2_OPTIMIZE = env_bool("VOXCPM2_OPTIMIZE", False)
 VOXCPM2_DEVICE = normalize_device_name(os.getenv("VOXCPM2_DEVICE"), "cuda")
 # 随机种子：官方在线推理默认不固定种子；负数表示沿用运行时随机状态。
 # 只有复现实验时才通过请求或 VOXCPM2_SEED 显式指定非负整数。
-VOXCPM2_SEED_DEFAULT = -1
+VOXCPM2_SEED_DEFAULT = 20260614
 VOXCPM2_SEED = int(os.getenv("VOXCPM2_SEED", str(VOXCPM2_SEED_DEFAULT)))
 # 分片字符数：0 表示不切分；长文本切分可降低单次显存压力，但会在片段间插入停顿。
 VOXCPM2_MAX_CHARS_PER_CHUNK = int(os.getenv("VOXCPM2_MAX_CHARS_PER_CHUNK", "0"))
