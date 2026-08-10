@@ -68,6 +68,19 @@ export INDEXTTS_CUDA_RETRY_MAX_MEL_TOKENS="${INDEXTTS_CUDA_RETRY_MAX_MEL_TOKENS:
 # 该变量决定启动 8306 服务所使用的 Conda 环境，必须在脚本内解析；其余
 # VoxCPM2 配置由 voxcpm2_api.py 在服务进程内统一处理。
 export VOXCPM2_CONDA_ENV="${VOXCPM2_CONDA_ENV:-voxcpm2}"
+export LONGCAT_AUDIODIT_CONDA_ENV="${LONGCAT_AUDIODIT_CONDA_ENV:-LongCat-AudioDiT-3.5B-bf16}"
+export LONGCAT_AUDIODIT_MODEL_DIR="${LONGCAT_AUDIODIT_MODEL_DIR:-$HF_MIRROR_DIR/drbaph/LongCat-AudioDiT-3.5B-bf16}"
+export LONGCAT_AUDIODIT_REPO_PATH="${LONGCAT_AUDIODIT_REPO_PATH:-$HOME/tts-depency/LongCat-AudioDiT}"
+export LONGCAT_AUDIODIT_TOKENIZER_PATH="${LONGCAT_AUDIODIT_TOKENIZER_PATH:-$HF_MIRROR_DIR/google/umt5-base}"
+export LONGCAT_AUDIODIT_MAX_CHARS_PER_CHUNK="${LONGCAT_AUDIODIT_MAX_CHARS_PER_CHUNK:-180}"
+export LONGCAT_AUDIODIT_PAUSE_MS="${LONGCAT_AUDIODIT_PAUSE_MS:-250}"
+export LONGCAT_AUDIODIT_NFE="${LONGCAT_AUDIODIT_NFE:-16}"
+export LONGCAT_AUDIODIT_GUIDANCE_STRENGTH="${LONGCAT_AUDIODIT_GUIDANCE_STRENGTH:-4.0}"
+export LONGCAT_AUDIODIT_GUIDANCE_METHOD="${LONGCAT_AUDIODIT_GUIDANCE_METHOD:-apg}"
+export LONGCAT_AUDIODIT_SEED="${LONGCAT_AUDIODIT_SEED:-20260614}"
+export LONGCAT_AUDIODIT_DURATION_SCALE="${LONGCAT_AUDIODIT_DURATION_SCALE:-1.0}"
+export LONGCAT_AUDIODIT_VAE_DTYPE="${LONGCAT_AUDIODIT_VAE_DTYPE:-float16}"
+export LONGCAT_AUDIODIT_REQUEST_TIMEOUT="${LONGCAT_AUDIODIT_REQUEST_TIMEOUT:-900}"
 export QWEN3_TTS_CONDA_ENV="${QWEN3_TTS_CONDA_ENV:-qwen3-tts}"
 export QWEN3_TTS_DEVICE_MAP="${QWEN3_TTS_DEVICE_MAP:-cuda:0}"
 export QWEN3_TTS_DTYPE="${QWEN3_TTS_DTYPE:-auto}"
@@ -109,6 +122,8 @@ export QWEN3_TTS_HOST="${QWEN3_TTS_HOST:-$HOST}"
 export QWEN3_TTS_PORT="${QWEN3_TTS_PORT:-8305}"
 export VOXCPM2_HOST="${VOXCPM2_HOST:-$HOST}"
 export VOXCPM2_PORT="${VOXCPM2_PORT:-8306}"
+export LONGCAT_AUDIODIT_HOST="${LONGCAT_AUDIODIT_HOST:-$HOST}"
+export LONGCAT_AUDIODIT_PORT="${LONGCAT_AUDIODIT_PORT:-8307}"
 
 export HF_MODULES_CACHE="${HF_MODULES_CACHE:-$RUNTIME_CACHE_DIR/hf_modules}"
 export NUMBA_CACHE_DIR="${NUMBA_CACHE_DIR:-$RUNTIME_CACHE_DIR/numba}"
@@ -139,6 +154,11 @@ echo "Qwen3-TTS worker env: $QWEN3_TTS_CONDA_ENV"
 echo "Qwen3-TTS model:     $QWEN3_TTS_MODEL_DIR"
 echo "VoxCPM2 worker env:  $VOXCPM2_CONDA_ENV"
 echo "VoxCPM2 model:       $VOXCPM2_MODEL_DIR"
+echo "LongCat worker env:  $LONGCAT_AUDIODIT_CONDA_ENV"
+echo "LongCat model:       $LONGCAT_AUDIODIT_MODEL_DIR"
+echo "LongCat repo:        $LONGCAT_AUDIODIT_REPO_PATH"
+echo "LongCat tokenizer:   $LONGCAT_AUDIODIT_TOKENIZER_PATH"
+echo "LongCat guidance:    $LONGCAT_AUDIODIT_GUIDANCE_METHOD ($LONGCAT_AUDIODIT_GUIDANCE_STRENGTH)"
 echo "VoxCPM2 config:      managed by api/voxcpm2_api.py"
 echo "Qwen3-TTS trim lead: $QWEN3_TTS_TRIM_LEADING_SILENCE"
 echo "Qwen3-TTS trim thres:$QWEN3_TTS_TRIM_LEADING_SILENCE_THRESHOLD_DB dB"
@@ -166,6 +186,7 @@ echo "Qwen3-TTS API:       http://$QWEN3_TTS_HOST:$QWEN3_TTS_PORT"
 echo "Qwen3-TTS health:    http://127.0.0.1:$QWEN3_TTS_PORT/v1/health"
 echo "VoxCPM2 API:         http://$VOXCPM2_HOST:$VOXCPM2_PORT"
 echo "VoxCPM2 health:      http://127.0.0.1:$VOXCPM2_PORT/v1/health"
+echo "LongCat health:      http://127.0.0.1:$LONGCAT_AUDIODIT_PORT/v1/health"
 echo "Qwen design route:   http://127.0.0.1:$PORT/v1/qwen/design"
 echo "MOSS design route:   http://127.0.0.1:$PORT/v1/moss/design"
 echo "Ming design route:   http://127.0.0.1:$PORT/v1/Ming/design"
@@ -175,6 +196,7 @@ echo "Step-Audio-EditX route: http://127.0.0.1:$PORT/v1/step-audio-editx/edit"
 echo "SoundEffect route:   http://127.0.0.1:$SOUNDEFFECT_PORT/v1/generate"
 echo "Qwen3-TTS synth:     http://127.0.0.1:$QWEN3_TTS_PORT/v2/synthesize"
 echo "VoxCPM2/Ming synth:  http://127.0.0.1:$VOXCPM2_PORT/v2/synthesize (backend/model selects worker)"
+echo "LongCat synth:       http://127.0.0.1:$LONGCAT_AUDIODIT_PORT/v2/synthesize"
 echo "=================================================="
 
 cd "$PROJECT_DIR"
@@ -183,12 +205,13 @@ main_pid=""
 soundeffect_pid=""
 qwen3_tts_pid=""
 voxcpm2_pid=""
+longcat_audiodit_pid=""
 
 cleanup() {
   local status=$?
   trap - INT TERM EXIT
 
-  for pid in "$main_pid" "$soundeffect_pid" "$qwen3_tts_pid" "$voxcpm2_pid"; do
+  for pid in "$main_pid" "$soundeffect_pid" "$qwen3_tts_pid" "$voxcpm2_pid" "$longcat_audiodit_pid"; do
     if [[ -n "$pid" ]] && kill -0 -- "-$pid" 2>/dev/null; then
       kill -TERM -- "-$pid" 2>/dev/null || true
     fi
@@ -196,7 +219,7 @@ cleanup() {
 
   sleep 1
 
-  for pid in "$main_pid" "$soundeffect_pid" "$qwen3_tts_pid" "$voxcpm2_pid"; do
+  for pid in "$main_pid" "$soundeffect_pid" "$qwen3_tts_pid" "$voxcpm2_pid" "$longcat_audiodit_pid"; do
     if [[ -n "$pid" ]] && kill -0 -- "-$pid" 2>/dev/null; then
       kill -KILL -- "-$pid" 2>/dev/null || true
     fi
@@ -206,6 +229,7 @@ cleanup() {
   wait "$soundeffect_pid" 2>/dev/null || true
   wait "$qwen3_tts_pid" 2>/dev/null || true
   wait "$voxcpm2_pid" 2>/dev/null || true
+  wait "$longcat_audiodit_pid" 2>/dev/null || true
   exit "$status"
 }
 
@@ -219,5 +243,7 @@ HOST="$QWEN3_TTS_HOST" PORT="$QWEN3_TTS_PORT" setsid conda run --no-capture-outp
 qwen3_tts_pid=$!
 HOST="$VOXCPM2_HOST" PORT="$VOXCPM2_PORT" setsid conda run --no-capture-output -n "$VOXCPM2_CONDA_ENV" python "$API_DIR/voxcpm2_api.py" &
 voxcpm2_pid=$!
+HOST="$LONGCAT_AUDIODIT_HOST" PORT="$LONGCAT_AUDIODIT_PORT" setsid conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/longcat_audiodit_api.py" &
+longcat_audiodit_pid=$!
 
-wait -n "$main_pid" "$soundeffect_pid" "$qwen3_tts_pid" "$voxcpm2_pid"
+wait -n "$main_pid" "$soundeffect_pid" "$qwen3_tts_pid" "$voxcpm2_pid" "$longcat_audiodit_pid"

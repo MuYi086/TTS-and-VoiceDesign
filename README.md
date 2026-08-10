@@ -6,6 +6,7 @@
 - Qwen3-TTS-12Hz-1.7B-Base：参考音频 + 文本合成，端口 `8305`
 - VoxCPM2：参考音频 + 文本合成，端口 `8306`
 - Ming-omni-tts-0.5B：参考音频 + 文本合成，复用端口 `8306`，通过 `backend` / `model` 选择
+- LongCat-AudioDiT-3.5B-bf16：24 kHz 参考音频声音克隆，端口 `8307`
 - MOSS-SoundEffect v2.0：根据中英文提示词生成 48 kHz 声效，端口 `8311`
 - Qwen3-TTS VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/qwen/design`
 - MOSS VoiceGenerator：根据音色描述生成参考音频，走主 API 的 `/v1/moss/design`
@@ -34,6 +35,7 @@ conda run -n qwen3-voiceDesign python api/qwen_voice_design_worker.py ...
 conda run -n moss-voiceGenerator python api/moss_voice_design_worker.py ...
 conda run -n Ming-omni-tts-0.5B python api/ming_omni_tts_worker.py ...
 conda run -n Step-Audio-EditX python api/step_audio_editx_worker.py ...
+conda run -n LongCat-AudioDiT-3.5B-bf16 python api/longcat_audiodit_worker.py ...
 ```
 
 MOSS-SoundEffect 使用独立的 `moss-soundEffect` 环境。MiMo 是云端 API，须通过环境变量提供密钥：
@@ -59,6 +61,9 @@ MiMo 是云端服务，运行后端的机器必须能连接 `https://api.xiaomim
 /home/muyi086/hf-mirror/OpenMOSS-Team/MOSS-SoundEffect-v2.0
 /home/muyi086/hf-mirror/Qwen/Qwen3-TTS-12Hz-1.7B-Base
 /home/muyi086/hf-mirror/openbmb/VoxCPM2
+/home/muyi086/hf-mirror/drbaph/LongCat-AudioDiT-3.5B-bf16
+/home/muyi086/hf-mirror/google/umt5-base
+/home/muyi086/tts-depency/LongCat-AudioDiT
 /home/muyi086/github/TTS-and-VoiceDesign/api/voxcpm2_helpers.py
 /home/muyi086/hf-mirror/stepfun-ai/Step-Audio-EditX
 /home/muyi086/hf-mirror/stepfun-ai/Step-Audio-Tokenizer
@@ -74,6 +79,7 @@ bash start.sh
 curl http://127.0.0.1:8300/v1/health
 curl http://127.0.0.1:8305/v1/health
 curl http://127.0.0.1:8306/v1/health
+curl http://127.0.0.1:8307/v1/health
 curl http://127.0.0.1:8311/v1/health
 ```
 
@@ -83,12 +89,13 @@ curl http://127.0.0.1:8311/v1/health
 http://127.0.0.1:8300  IndexTTS2、音色设计与 Step-Audio-EditX 编辑
 http://127.0.0.1:8305  Qwen3-TTS-12Hz-1.7B-Base
 http://127.0.0.1:8306  VoxCPM2 / Ming-omni-tts（由请求中的 backend 或 model 选择）
+http://127.0.0.1:8307  LongCat-AudioDiT-3.5B-bf16
 http://127.0.0.1:8311  MOSS-SoundEffect v2.0
 ```
 
 ## 语音合成接口
 
-三个语音合成服务均支持以下流程：
+四个语音合成服务均支持以下流程：
 
 1. `POST /v1/upload_audio` 上传参考音频。
 2. `GET /v1/check/audio?file_name=...` 确认后端已保存。
@@ -102,6 +109,11 @@ http://127.0.0.1:8311  MOSS-SoundEffect v2.0
 | `8305` Qwen3-TTS Base | 映射为官方 `ref_text`；缺失时回退到仅参考音频的克隆。 |
 | `8306` VoxCPM2 | `clone_mode="ultimate"` 有准确 `prompt_text` 时走 Ultimate Cloning；`clone_mode="controllable"` 只接受 `control_instruction`，不接受 `prompt_text`，并将指令写入目标文本前；未指定模式时保留旧的参考文本 / 仅参考音频兼容路径。 |
 | `8306` Ming-omni-tts | 发送 `backend: "ming"` 或 `model: "ming-omni-tts"` 时进入 Ming worker；`prompt_text` / `ref_text` 作为参考音频转写。 |
+| `8307` LongCat-AudioDiT-3.5B-bf16 | 必须提供参考音频准确逐字的 `prompt_text`；worker 按官方接口拼接 `prompt_text + text`，把参考音频重采样为 24 kHz 单声道，并使用模型配置的 `max_wav_duration` 限制总时长。 |
+
+LongCat-AudioDiT 的默认参数与官方声音克隆示例一致：16 步 ODE、`guidance_strength=4.0`、`guidance_method="apg"`、VAE 使用 float16。它只支持 CUDA；参考音频必须是获得授权的单说话人语音，`prompt_text` 必须与实际朗读内容准确一致。长文本按中文/英文标点分块，每块会重新带入参考音频并在片段间插入停顿；单段总时长不能超过模型配置的上限（本机 3.5B 权重为 60 秒）。这些限制来自 [LongCat-AudioDiT 官方仓库](https://github.com/meituan-longcat/LongCat-AudioDiT) 的 Python/CLI 推理示例。
+
+LongCat 服务采用“一次请求一个 worker”生命周期；worker 完成或报错时显式执行 CUDA 同步、`empty_cache`、`ipc_collect`，随后进程退出，以释放模型显存。可通过以下环境变量覆盖默认配置：`LONGCAT_AUDIODIT_CONDA_ENV`、`LONGCAT_AUDIODIT_MODEL_DIR`、`LONGCAT_AUDIODIT_REPO_PATH`、`LONGCAT_AUDIODIT_TOKENIZER_PATH`、`LONGCAT_AUDIODIT_NFE`、`LONGCAT_AUDIODIT_GUIDANCE_STRENGTH`、`LONGCAT_AUDIODIT_GUIDANCE_METHOD`、`LONGCAT_AUDIODIT_MAX_CHARS_PER_CHUNK`、`LONGCAT_AUDIODIT_PAUSE_MS`、`LONGCAT_AUDIODIT_VAE_DTYPE` 和 `LONGCAT_AUDIODIT_REQUEST_TIMEOUT`。
 
 VoxCPM2 的 `ultimate` 与 `controllable` 请求路径严格互斥：前者用于最大化复刻参考音频细节，后者用于按短控制指令调整表演节奏和情绪。所有 VoxCPM2 克隆与音色设计请求未显式传 `cfg_value` 时统一使用顶部全局配置 `VOXCPM2_CFG_VALUE`（官方 Demo 默认 `2.0`）；需要单次覆盖时仍可在请求中显式传 `cfg_value`。默认 `seed=-1`，与官方在线推理一样不固定随机种子，重新生成会得到不同候选；需要精确复现时才显式传非负 `seed`。`control_instruction` 不是响度参数；成片响度应在合成后检测和统一归一化。
 
@@ -136,6 +148,11 @@ curl -X POST http://127.0.0.1:8306/v2/synthesize \
   -H 'Content-Type: application/json' \
   -d '{"backend":"ming","text":"你好，欢迎来到 Unitale。","audio_path":"reference.wav","prompt_text":"你好。"}' \
   -o ming_synth.wav
+
+curl -X POST http://127.0.0.1:8307/v2/synthesize \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"今天晴暖转阴雨。","audio_path":"reference.wav","prompt_text":"这是一句参考音频转写。"}' \
+  -o longcat_synth.wav
 ```
 
 音色设计端点：

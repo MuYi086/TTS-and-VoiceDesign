@@ -16,6 +16,7 @@ API_DIR = Path(__file__).resolve().parents[1] / "api"
 sys.path.insert(0, str(API_DIR))
 
 import api
+import longcat_audiodit_api
 import qwen3_tts_api
 import voxcpm2_api
 import voxcpm2_worker
@@ -25,11 +26,13 @@ SYNTHESIS_REQUEST_MODELS = {
     "8300 IndexTTS2": api.TextToSpeechRequest,
     "8305 Qwen3-TTS": qwen3_tts_api.Qwen3TtsSynthesizeRequest,
     "8306 VoxCPM2": voxcpm2_api.VoxCpm2SynthesizeRequest,
+    "8307 LongCat-AudioDiT": longcat_audiodit_api.LongCatAudioDitSynthesizeRequest,
 }
 
 REFERENCE_TEXT_REQUEST_MODELS = {
     "8305 Qwen3-TTS": qwen3_tts_api.Qwen3TtsSynthesizeRequest,
     "8306 VoxCPM2": voxcpm2_api.VoxCpm2SynthesizeRequest,
+    "8307 LongCat-AudioDiT": longcat_audiodit_api.LongCatAudioDitSynthesizeRequest,
 }
 
 REFERENCE_TEXT_MANAGER_CASES = (
@@ -45,6 +48,13 @@ REFERENCE_TEXT_MANAGER_CASES = (
         voxcpm2_api,
         voxcpm2_api.VoxCpm2SynthesizeRequest,
         voxcpm2_api.VoxCpm2WorkerManager,
+        "prompt_text",
+    ),
+    (
+        "8307 LongCat-AudioDiT",
+        longcat_audiodit_api,
+        longcat_audiodit_api.LongCatAudioDitSynthesizeRequest,
+        longcat_audiodit_api.LongCatAudioDitWorkerManager,
         "prompt_text",
     ),
 )

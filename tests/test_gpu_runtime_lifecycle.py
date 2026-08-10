@@ -15,6 +15,7 @@ if str(API_DIR) not in sys.path:
 
 import api
 import gpu_runtime
+import longcat_audiodit_api
 import qwen3_tts_api
 import soundeffect_api
 import voxcpm2_api
@@ -22,6 +23,7 @@ import voxcpm2_api
 
 API_MODULES = (
     api,
+    longcat_audiodit_api,
     qwen3_tts_api,
     soundeffect_api,
     voxcpm2_api,
