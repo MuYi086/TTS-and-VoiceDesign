@@ -81,6 +81,19 @@ export LONGCAT_AUDIODIT_SEED="${LONGCAT_AUDIODIT_SEED:-20260614}"
 export LONGCAT_AUDIODIT_DURATION_SCALE="${LONGCAT_AUDIODIT_DURATION_SCALE:-1.0}"
 export LONGCAT_AUDIODIT_VAE_DTYPE="${LONGCAT_AUDIODIT_VAE_DTYPE:-float16}"
 export LONGCAT_AUDIODIT_REQUEST_TIMEOUT="${LONGCAT_AUDIODIT_REQUEST_TIMEOUT:-900}"
+export DOTS_TTS_SOAR_CONDA_ENV="${DOTS_TTS_SOAR_CONDA_ENV:-dots_tts_soar}"
+export DOTS_TTS_SOAR_MODEL_DIR="${DOTS_TTS_SOAR_MODEL_DIR:-$HF_MIRROR_DIR/rednote-hilab/dots.tts-soar}"
+export DOTS_TTS_SOAR_PRECISION="${DOTS_TTS_SOAR_PRECISION:-bfloat16}"
+export DOTS_TTS_SOAR_LANGUAGE="${DOTS_TTS_SOAR_LANGUAGE:-chinese}"
+export DOTS_TTS_SOAR_ODE_METHOD="${DOTS_TTS_SOAR_ODE_METHOD:-euler}"
+export DOTS_TTS_SOAR_NUM_STEPS="${DOTS_TTS_SOAR_NUM_STEPS:-10}"
+export DOTS_TTS_SOAR_GUIDANCE_SCALE="${DOTS_TTS_SOAR_GUIDANCE_SCALE:-1.2}"
+export DOTS_TTS_SOAR_SPEAKER_SCALE="${DOTS_TTS_SOAR_SPEAKER_SCALE:-1.5}"
+export DOTS_TTS_SOAR_MAX_GENERATE_LENGTH="${DOTS_TTS_SOAR_MAX_GENERATE_LENGTH:-500}"
+export DOTS_TTS_SOAR_MAX_CHARS_PER_CHUNK="${DOTS_TTS_SOAR_MAX_CHARS_PER_CHUNK:-120}"
+export DOTS_TTS_SOAR_PAUSE_MS="${DOTS_TTS_SOAR_PAUSE_MS:-250}"
+export DOTS_TTS_SOAR_SEED="${DOTS_TTS_SOAR_SEED:-42}"
+export DOTS_TTS_SOAR_REQUEST_TIMEOUT="${DOTS_TTS_SOAR_REQUEST_TIMEOUT:-900}"
 export QWEN3_TTS_CONDA_ENV="${QWEN3_TTS_CONDA_ENV:-qwen3-tts}"
 export QWEN3_TTS_DEVICE_MAP="${QWEN3_TTS_DEVICE_MAP:-cuda:0}"
 export QWEN3_TTS_DTYPE="${QWEN3_TTS_DTYPE:-auto}"
@@ -124,6 +137,8 @@ export VOXCPM2_HOST="${VOXCPM2_HOST:-$HOST}"
 export VOXCPM2_PORT="${VOXCPM2_PORT:-8306}"
 export LONGCAT_AUDIODIT_HOST="${LONGCAT_AUDIODIT_HOST:-$HOST}"
 export LONGCAT_AUDIODIT_PORT="${LONGCAT_AUDIODIT_PORT:-8307}"
+export DOTS_TTS_SOAR_HOST="${DOTS_TTS_SOAR_HOST:-$HOST}"
+export DOTS_TTS_SOAR_PORT="${DOTS_TTS_SOAR_PORT:-8308}"
 
 export HF_MODULES_CACHE="${HF_MODULES_CACHE:-$RUNTIME_CACHE_DIR/hf_modules}"
 export NUMBA_CACHE_DIR="${NUMBA_CACHE_DIR:-$RUNTIME_CACHE_DIR/numba}"
@@ -159,6 +174,9 @@ echo "LongCat model:       $LONGCAT_AUDIODIT_MODEL_DIR"
 echo "LongCat repo:        $LONGCAT_AUDIODIT_REPO_PATH"
 echo "LongCat tokenizer:   $LONGCAT_AUDIODIT_TOKENIZER_PATH"
 echo "LongCat guidance:    $LONGCAT_AUDIODIT_GUIDANCE_METHOD ($LONGCAT_AUDIODIT_GUIDANCE_STRENGTH)"
+echo "dots.tts-soar env:   $DOTS_TTS_SOAR_CONDA_ENV"
+echo "dots.tts-soar model: $DOTS_TTS_SOAR_MODEL_DIR"
+echo "dots.tts-soar steps: $DOTS_TTS_SOAR_NUM_STEPS"
 echo "VoxCPM2 config:      managed by api/voxcpm2_api.py"
 echo "Qwen3-TTS trim lead: $QWEN3_TTS_TRIM_LEADING_SILENCE"
 echo "Qwen3-TTS trim thres:$QWEN3_TTS_TRIM_LEADING_SILENCE_THRESHOLD_DB dB"
@@ -187,6 +205,7 @@ echo "Qwen3-TTS health:    http://127.0.0.1:$QWEN3_TTS_PORT/v1/health"
 echo "VoxCPM2 API:         http://$VOXCPM2_HOST:$VOXCPM2_PORT"
 echo "VoxCPM2 health:      http://127.0.0.1:$VOXCPM2_PORT/v1/health"
 echo "LongCat health:      http://127.0.0.1:$LONGCAT_AUDIODIT_PORT/v1/health"
+echo "dots.tts-soar health: http://127.0.0.1:$DOTS_TTS_SOAR_PORT/v1/health"
 echo "Qwen design route:   http://127.0.0.1:$PORT/v1/qwen/design"
 echo "MOSS design route:   http://127.0.0.1:$PORT/v1/moss/design"
 echo "Ming design route:   http://127.0.0.1:$PORT/v1/Ming/design"
@@ -197,6 +216,7 @@ echo "SoundEffect route:   http://127.0.0.1:$SOUNDEFFECT_PORT/v1/generate"
 echo "Qwen3-TTS synth:     http://127.0.0.1:$QWEN3_TTS_PORT/v2/synthesize"
 echo "VoxCPM2/Ming synth:  http://127.0.0.1:$VOXCPM2_PORT/v2/synthesize (backend/model selects worker)"
 echo "LongCat synth:       http://127.0.0.1:$LONGCAT_AUDIODIT_PORT/v2/synthesize"
+echo "dots.tts-soar synth: http://127.0.0.1:$DOTS_TTS_SOAR_PORT/v2/synthesize"
 echo "=================================================="
 
 cd "$PROJECT_DIR"
@@ -206,12 +226,13 @@ soundeffect_pid=""
 qwen3_tts_pid=""
 voxcpm2_pid=""
 longcat_audiodit_pid=""
+dots_tts_soar_pid=""
 
 cleanup() {
   local status=$?
   trap - INT TERM EXIT
 
-  for pid in "$main_pid" "$soundeffect_pid" "$qwen3_tts_pid" "$voxcpm2_pid" "$longcat_audiodit_pid"; do
+  for pid in "$main_pid" "$soundeffect_pid" "$qwen3_tts_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid"; do
     if [[ -n "$pid" ]] && kill -0 -- "-$pid" 2>/dev/null; then
       kill -TERM -- "-$pid" 2>/dev/null || true
     fi
@@ -219,7 +240,7 @@ cleanup() {
 
   sleep 1
 
-  for pid in "$main_pid" "$soundeffect_pid" "$qwen3_tts_pid" "$voxcpm2_pid" "$longcat_audiodit_pid"; do
+  for pid in "$main_pid" "$soundeffect_pid" "$qwen3_tts_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid"; do
     if [[ -n "$pid" ]] && kill -0 -- "-$pid" 2>/dev/null; then
       kill -KILL -- "-$pid" 2>/dev/null || true
     fi
@@ -230,6 +251,7 @@ cleanup() {
   wait "$qwen3_tts_pid" 2>/dev/null || true
   wait "$voxcpm2_pid" 2>/dev/null || true
   wait "$longcat_audiodit_pid" 2>/dev/null || true
+  wait "$dots_tts_soar_pid" 2>/dev/null || true
   exit "$status"
 }
 
@@ -245,5 +267,7 @@ HOST="$VOXCPM2_HOST" PORT="$VOXCPM2_PORT" setsid conda run --no-capture-output -
 voxcpm2_pid=$!
 HOST="$LONGCAT_AUDIODIT_HOST" PORT="$LONGCAT_AUDIODIT_PORT" setsid conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/longcat_audiodit_api.py" &
 longcat_audiodit_pid=$!
+HOST="$DOTS_TTS_SOAR_HOST" PORT="$DOTS_TTS_SOAR_PORT" setsid conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/dots_tts_soar_api.py" &
+dots_tts_soar_pid=$!
 
-wait -n "$main_pid" "$soundeffect_pid" "$qwen3_tts_pid" "$voxcpm2_pid" "$longcat_audiodit_pid"
+wait -n "$main_pid" "$soundeffect_pid" "$qwen3_tts_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid"

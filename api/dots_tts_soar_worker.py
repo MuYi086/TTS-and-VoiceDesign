@@ -1,0 +1,289 @@
+#!/usr/bin/env python3
+"""One-shot dots.tts-soar voice-cloning worker.
+
+The HTTP service deliberately does not import the heavyweight dots.tts
+runtime.  It serializes one request into this worker's Conda environment and
+the process exits after the request, which releases the model's CUDA context.
+"""
+
+from __future__ import annotations
+
+import argparse
+import gc
+import json
+import os
+import re
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="One-shot dots.tts-soar worker")
+    parser.add_argument("--input-json", required=True, help="Request JSON file path")
+    parser.add_argument("--output-wav", required=True, help="Output WAV file path")
+    return parser.parse_args()
+
+
+def load_request(path: str) -> dict[str, Any]:
+    with open(path, "r", encoding="utf-8") as file:
+        return json.load(file)
+
+
+def require_path(path: str, label: str) -> Path:
+    resolved = Path(path).expanduser().resolve()
+    if not resolved.exists():
+        raise FileNotFoundError(f"{label}不存在：{resolved}")
+    return resolved
+
+
+def normalize_optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    if not normalized or normalized.lower() == "none":
+        return None
+    return normalized
+
+
+def normalize_text(text: str) -> str:
+    normalized = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", (text or "").strip())
+    normalized = re.sub(r"(?m)^\s*[-*+]\s+", "", normalized)
+    if not normalized:
+        raise RuntimeError("text 不能为空。")
+    return normalized
+
+
+def split_text(text: str, max_chars: int) -> list[str]:
+    if max_chars <= 0 or len(text) <= max_chars:
+        return [text]
+
+    sentences = re.findall(r".+?[。！？；;!?]|.+$", text, flags=re.S)
+    chunks: list[str] = []
+    current = ""
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        if len(sentence) > max_chars:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.extend(split_long_sentence(sentence, max_chars))
+            continue
+        candidate = current + sentence
+        if current and len(candidate) > max_chars:
+            chunks.append(current)
+            current = sentence
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def split_long_sentence(text: str, max_chars: int) -> list[str]:
+    parts = re.findall(r".+?[，,、：:]|.+$", text, flags=re.S)
+    chunks: list[str] = []
+    current = ""
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        if len(part) > max_chars:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.extend(part[index : index + max_chars] for index in range(0, len(part), max_chars))
+            continue
+        candidate = current + part
+        if current and len(candidate) > max_chars:
+            chunks.append(current)
+            current = part
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def import_runtime():
+    try:
+        import numpy as np
+        import soundfile as sf
+        import torch
+        from dots_tts.runtime import DotsTtsRuntime
+        from dots_tts.utils.logging import configure_logging
+        from dots_tts.utils.util import seed_everything
+    except ImportError as exc:
+        raise RuntimeError(
+            "dots.tts-soar runtime 无法导入。请确认 dots_tts_soar Conda 环境已安装官方 "
+            f"dots.tts 包。缺少导入：{exc.name or exc}"
+        ) from exc
+    return DotsTtsRuntime, configure_logging, np, seed_everything, sf, torch
+
+
+def clear_cuda_cache(torch: Any) -> None:
+    """Release allocator blocks before the worker process exits."""
+    gc.collect()
+    try:
+        if not torch.cuda.is_available():
+            return
+        try:
+            torch.cuda.synchronize()
+        except Exception:
+            pass
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+        print("[dots.tts-soar worker] CUDA cache 已清理")
+    except Exception as exc:
+        print(f"[dots.tts-soar worker] CUDA cache 清理失败: {exc}", file=sys.stderr)
+
+
+def prepare_environment(request: dict[str, Any]) -> None:
+    runtime_cache_dir = str(
+        request.get("runtime_cache_dir") or Path(__file__).resolve().parent / ".cache/runtime"
+    )
+    hf_mirror_dir = str(request.get("hf_mirror_dir") or Path.home() / "hf-mirror")
+    local_files_only = bool(request.get("local_files_only", True))
+
+    os.environ.setdefault("HF_HOME", hf_mirror_dir)
+    os.environ.setdefault("HF_MODULES_CACHE", os.path.join(runtime_cache_dir, "hf_modules"))
+    os.environ.setdefault("NUMBA_CACHE_DIR", os.path.join(runtime_cache_dir, "numba"))
+    os.environ.setdefault("MPLCONFIGDIR", os.path.join(runtime_cache_dir, "matplotlib"))
+    os.environ.setdefault("XDG_CACHE_HOME", os.path.join(runtime_cache_dir, "xdg"))
+    os.environ.setdefault("TQDM_DISABLE", "1")
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+
+    for key in ("HF_MODULES_CACHE", "NUMBA_CACHE_DIR", "MPLCONFIGDIR", "XDG_CACHE_HOME"):
+        os.makedirs(os.environ[key], exist_ok=True)
+
+    if local_files_only:
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
+
+def to_mono_float32(audio: Any, np: Any) -> Any:
+    waveform = np.asarray(audio, dtype=np.float32)
+    if waveform.ndim == 2:
+        waveform = waveform.mean(axis=0 if waveform.shape[0] <= 2 else 1)
+    return waveform.reshape(-1)
+
+
+def join_waveforms(waveforms: list[Any], sample_rate: int, pause_ms: int, np: Any) -> Any:
+    if not waveforms:
+        raise RuntimeError("dots.tts-soar 未返回音频片段。")
+
+    segments = [to_mono_float32(waveform, np) for waveform in waveforms]
+    pause_samples = int(sample_rate * max(pause_ms, 0) / 1000)
+    if pause_samples <= 0 or len(segments) == 1:
+        return np.concatenate(segments)
+
+    pause = np.zeros(pause_samples, dtype=np.float32)
+    joined: list[Any] = []
+    for index, segment in enumerate(segments):
+        joined.append(segment)
+        if index < len(segments) - 1:
+            joined.append(pause)
+    return np.concatenate(joined)
+
+
+def synthesize(request: dict[str, Any], output_wav: Path) -> None:
+    if str(request.get("operation") or "clone") != "clone":
+        raise RuntimeError("dots.tts-soar worker 只接受 operation=clone。")
+
+    prepare_environment(request)
+    DotsTtsRuntime, configure_logging, np, seed_everything, sf, torch = import_runtime()
+
+    model_path = require_path(str(request.get("model_path") or ""), "模型路径")
+    ref_audio_path = require_path(str(request.get("ref_audio_path") or ""), "参考音频")
+    text = normalize_text(str(request.get("text") or ""))
+    prompt_text = normalize_optional_text(request.get("prompt_text"))
+    language_value = normalize_optional_text(request.get("language"))
+    language = language_value
+    if language_value and language_value.lower() == "auto_detect":
+        language = "auto_detect"
+
+    if not torch.cuda.is_available():
+        raise RuntimeError("dots.tts-soar 合成需要 CUDA GPU。")
+
+    configure_logging()
+    seed_everything(int(request.get("seed", 42)))
+    chunks = split_text(text, int(request.get("max_chars_per_chunk", 120)))
+    output_wav = output_wav.expanduser().resolve()
+    output_wav.parent.mkdir(parents=True, exist_ok=True)
+
+    precision = str(request.get("precision") or "bfloat16")
+    num_steps = int(request.get("num_steps", 10))
+    guidance_scale = float(request.get("guidance_scale", 1.2))
+    speaker_scale = float(request.get("speaker_scale", 1.5))
+    max_generate_length = int(request.get("max_generate_length", 500))
+    pause_ms = int(request.get("pause_ms", 250))
+    template_name = normalize_optional_text(request.get("template_name"))
+    ode_method = str(request.get("ode_method") or "euler")
+    normalize_text_flag = bool(request.get("normalize_text", False))
+    profile_inference = bool(request.get("profile_inference", False))
+
+    print(f"[dots.tts-soar worker] 模型目录: {model_path}")
+    print(f"[dots.tts-soar worker] 参考音频: {ref_audio_path}")
+    print(f"[dots.tts-soar worker] 参考文本: {'provided' if prompt_text else 'not provided; x-vector-only cloning mode'}")
+    print(f"[dots.tts-soar worker] 文本长度: {len(text)} 字, chunks={len(chunks)}")
+    print(
+        f"[dots.tts-soar worker] precision={precision}, num_steps={num_steps}, "
+        f"guidance_scale={guidance_scale}, speaker_scale={speaker_scale}, language={language or 'none'}"
+    )
+
+    runtime = None
+    waveforms: list[Any] = []
+    try:
+        started = time.perf_counter()
+        runtime = DotsTtsRuntime.from_pretrained(
+            str(model_path),
+            precision=precision,
+            max_generate_length=max_generate_length,
+        )
+
+        with torch.inference_mode():
+            for index, chunk in enumerate(chunks, start=1):
+                print(f"[dots.tts-soar worker] synthesizing chunk {index}/{len(chunks)} ({len(chunk)} chars)")
+                result = runtime.generate(
+                    text=chunk,
+                    prompt_audio_path=str(ref_audio_path),
+                    prompt_text=prompt_text,
+                    language=language,
+                    template_name=template_name,
+                    ode_method=ode_method,
+                    num_steps=num_steps,
+                    guidance_scale=guidance_scale,
+                    speaker_scale=speaker_scale,
+                    normalize_text=normalize_text_flag,
+                    profile_inference=profile_inference,
+                )
+                waveforms.append(result["audio"].float().cpu().squeeze().numpy())
+
+        sample_rate = int(runtime.sample_rate)
+        waveform = join_waveforms(waveforms, sample_rate, pause_ms, np)
+        sf.write(str(output_wav), waveform, sample_rate)
+        print(
+            f"[dots.tts-soar worker] elapsed={time.perf_counter() - started:.2f}s, "
+            f"sample_rate={sample_rate}, output={output_wav}"
+        )
+    finally:
+        runtime = None
+        waveforms.clear()
+        clear_cuda_cache(torch)
+
+
+def main() -> int:
+    args = parse_args()
+    try:
+        synthesize(load_request(args.input_json), Path(args.output_wav))
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

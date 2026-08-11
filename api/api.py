@@ -32,6 +32,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Res
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
+from audio_output import persist_audio_bytes
 from synthesis_request import CloneSynthesisRequest
 from gpu_runtime import cuda_status, terminate_process_group
 from voxcpm2_voice_design import (
@@ -95,6 +96,9 @@ INDEXTTS_CODE_DIR = os.getenv(
     DEFAULT_INDEXTTS_CODE_DIR if os.path.isdir(DEFAULT_INDEXTTS_CODE_DIR) else "",
 )
 PROMPTS_DIR = expand_path(os.getenv("PROMPTS_DIR", os.path.join(API_DIR, "prompts")))
+TTS_OUTPUT_DIR = expand_path(
+    os.getenv("TTS_OUTPUT_DIR", os.path.join(API_DIR, "tempAudio"))
+)
 RUNTIME_CACHE_DIR = expand_path(os.getenv("RUNTIME_CACHE_DIR", os.path.join(API_DIR, ".cache/runtime")))
 GPU_LOCK_FILE = expand_path(os.getenv("GPU_LOCK_FILE", os.path.join(RUNTIME_CACHE_DIR, "gpu-runtime.lock")))
 LOCAL_FILES_ONLY = env_bool("LOCAL_FILES_ONLY", True)
@@ -207,6 +211,7 @@ if INDEXTTS_CODE_DIR:
         sys.path.insert(0, indextts_code_path)
 
 os.makedirs(PROMPTS_DIR, exist_ok=True)
+os.makedirs(TTS_OUTPUT_DIR, exist_ok=True)
 os.makedirs(os.environ["HF_MODULES_CACHE"], exist_ok=True)
 os.makedirs(os.environ["NUMBA_CACHE_DIR"], exist_ok=True)
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
@@ -1214,6 +1219,7 @@ async def health():
             "indextts_worker_script": INDEXTTS_WORKER_SCRIPT,
             "indextts_worker_tmp_dir": INDEXTTS_WORKER_TMP_DIR,
             "prompts_dir": PROMPTS_DIR,
+            "tts_output_dir": TTS_OUTPUT_DIR,
             "gpu_lock_file": GPU_LOCK_FILE,
             "mimo_base_url": MIMO_BASE_URL,
         },
@@ -1493,6 +1499,8 @@ async def synthesize_v2(request: TextToSpeechRequest):
             try:
                 payload = manager.build_indextts_worker_payload(request, real_file_path)
                 data = manager.run_indextts_worker(payload)
+                saved_output_path = persist_audio_bytes(data, "indextts2", TTS_OUTPUT_DIR)
+                print(f"[IndexTTS2] 已保存生成音频: {saved_output_path}")
                 return Response(content=data, media_type="audio/wav")
             except HTTPException:
                 raise
