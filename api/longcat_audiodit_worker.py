@@ -18,6 +18,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from audio_trim import trim_leading_silence
+
 
 DEFAULT_REPO_CANDIDATES = (
     Path.home() / "tts-depency/LongCat-AudioDiT",
@@ -295,6 +297,24 @@ def join_waveforms(waveforms: list[Any], sample_rate: int, pause_ms: int, np: An
     return np.concatenate(joined)
 
 
+def trim_generated_waveform(
+    waveform: Any,
+    sample_rate: int,
+    np: Any,
+    *,
+    label: str,
+) -> Any:
+    """Remove a model-generated silent prefix before a segment is joined."""
+    trimmed_waveform, trimmed_samples = trim_leading_silence(
+        waveform,
+        sample_rate=sample_rate,
+        np=np,
+    )
+    if trimmed_samples > 0:
+        print(f"[LongCat] {label} 裁掉前导静音 {trimmed_samples / sample_rate:.2f}s")
+    return trimmed_waveform
+
+
 def release_cuda_memory(torch: Any) -> None:
     """Release allocator caches even when the worker is reused by a test harness."""
     gc.collect()
@@ -436,11 +456,26 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
                     cfg_strength=guidance_strength,
                     guidance_method=guidance_method,
                 )
-                waveforms.append(output.waveform.squeeze().detach().cpu().numpy())
+                waveform = output.waveform.squeeze().detach().cpu().numpy()
+                waveforms.append(
+                    trim_generated_waveform(
+                        waveform,
+                        sample_rate,
+                        np,
+                        label=f"chunk {index}/{len(chunks)}",
+                    )
+                )
                 del output
                 output = None
 
         waveform = join_waveforms(waveforms, sample_rate, pause_ms, np)
+        waveform, trimmed_samples = trim_leading_silence(
+            waveform,
+            sample_rate=sample_rate,
+            np=np,
+        )
+        if trimmed_samples > 0:
+            print(f"[LongCat] 最终音频裁掉前导静音 {trimmed_samples / sample_rate:.2f}s")
         output_wav = output_wav.expanduser().resolve()
         output_wav.parent.mkdir(parents=True, exist_ok=True)
         sf.write(str(output_wav), waveform, sample_rate)

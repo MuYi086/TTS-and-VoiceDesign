@@ -7,6 +7,7 @@
 - VoxCPM2：参考音频 + 文本合成，端口 `8306`
 - Ming-omni-tts-0.5B：参考音频 + 文本合成，复用端口 `8306`，通过 `backend` / `model` 选择
 - LongCat-AudioDiT-3.5B-bf16：24 kHz 参考音频声音克隆，端口 `8307`
+- dots.tts-soar：48 kHz 参考音频声音克隆，端口 `8308`
 - MOSS-SoundEffect v2.0：根据中英文提示词生成 48 kHz 声效，端口 `8311`
 - Qwen3-TTS VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/qwen/design`
 - MOSS VoiceGenerator：根据音色描述生成参考音频，走主 API 的 `/v1/moss/design`
@@ -15,7 +16,7 @@
 - VoxCPM2 VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/voxcpm2/design`
 - Step-Audio-EditX：对已上传的音频按情绪、说话风格、非语言表现等进行迭代编辑，走主 API 的 `/v1/step-audio-editx/edit`
 
-运行时 API、各模型 worker 和共享音频处理模块统一位于 `api/`；上传资源、缓存和供应商代码位于 `api/prompts/`、`api/.cache/` 与 `api/vendor/`。VoxCPM2 的成功合成结果会额外保留在 `api/tempAudio/`，可通过 `VOXCPM2_OUTPUT_DIR` 覆盖。不要把生成音频或模型权重提交到 Git。
+运行时 API、各模型 worker 和共享音频处理模块统一位于 `api/`；上传资源、缓存和供应商代码位于 `api/prompts/`、`api/.cache/` 与 `api/vendor/`。所有本地 TTS 模型成功合成的 WAV 都会额外保留在 `api/tempAudio/`，文件名前缀用于区分模型；可通过 `TTS_OUTPUT_DIR` 统一覆盖，也可通过对应模型的 `*_OUTPUT_DIR` 覆盖。不要把生成音频或模型权重提交到 Git。
 
 ## 本地环境
 
@@ -36,6 +37,7 @@ conda run -n moss-voiceGenerator python api/moss_voice_design_worker.py ...
 conda run -n Ming-omni-tts-0.5B python api/ming_omni_tts_worker.py ...
 conda run -n Step-Audio-EditX python api/step_audio_editx_worker.py ...
 conda run -n LongCat-AudioDiT-3.5B-bf16 python api/longcat_audiodit_worker.py ...
+conda run -n dots_tts_soar python api/dots_tts_soar_worker.py ...
 ```
 
 MOSS-SoundEffect 使用独立的 `moss-soundEffect` 环境。MiMo 是云端 API，须通过环境变量提供密钥：
@@ -62,6 +64,7 @@ MiMo 是云端服务，运行后端的机器必须能连接 `https://api.xiaomim
 /home/muyi086/hf-mirror/Qwen/Qwen3-TTS-12Hz-1.7B-Base
 /home/muyi086/hf-mirror/openbmb/VoxCPM2
 /home/muyi086/hf-mirror/drbaph/LongCat-AudioDiT-3.5B-bf16
+/home/muyi086/hf-mirror/rednote-hilab/dots.tts-soar
 /home/muyi086/hf-mirror/google/umt5-base
 /home/muyi086/tts-depency/LongCat-AudioDiT
 /home/muyi086/github/TTS-and-VoiceDesign/api/voxcpm2_helpers.py
@@ -80,6 +83,7 @@ curl http://127.0.0.1:8300/v1/health
 curl http://127.0.0.1:8305/v1/health
 curl http://127.0.0.1:8306/v1/health
 curl http://127.0.0.1:8307/v1/health
+curl http://127.0.0.1:8308/v1/health
 curl http://127.0.0.1:8311/v1/health
 ```
 
@@ -90,12 +94,13 @@ http://127.0.0.1:8300  IndexTTS2、音色设计与 Step-Audio-EditX 编辑
 http://127.0.0.1:8305  Qwen3-TTS-12Hz-1.7B-Base
 http://127.0.0.1:8306  VoxCPM2 / Ming-omni-tts（由请求中的 backend 或 model 选择）
 http://127.0.0.1:8307  LongCat-AudioDiT-3.5B-bf16
+http://127.0.0.1:8308  dots.tts-soar
 http://127.0.0.1:8311  MOSS-SoundEffect v2.0
 ```
 
 ## 语音合成接口
 
-四个语音合成服务均支持以下流程：
+五个语音合成服务均支持以下流程：
 
 1. `POST /v1/upload_audio` 上传参考音频。
 2. `GET /v1/check/audio?file_name=...` 确认后端已保存。
@@ -110,10 +115,17 @@ http://127.0.0.1:8311  MOSS-SoundEffect v2.0
 | `8306` VoxCPM2 | `clone_mode="ultimate"` 有准确 `prompt_text` 时走 Ultimate Cloning；`clone_mode="controllable"` 只接受 `control_instruction`，不接受 `prompt_text`，并将指令写入目标文本前；未指定模式时保留旧的参考文本 / 仅参考音频兼容路径。 |
 | `8306` Ming-omni-tts | 发送 `backend: "ming"` 或 `model: "ming-omni-tts"` 时进入 Ming worker；`prompt_text` / `ref_text` 作为参考音频转写。 |
 | `8307` LongCat-AudioDiT-3.5B-bf16 | 必须提供参考音频准确逐字的 `prompt_text`；worker 按官方接口拼接 `prompt_text + text`，把参考音频重采样为 24 kHz 单声道，并使用模型配置的 `max_wav_duration` 限制总时长。 |
+| `8308` dots.tts-soar | 推荐提供参考音频准确逐字的 `prompt_text`，用于 continuation voice cloning；没有参考文本时使用官方支持的 x-vector-only cloning。仅支持 CUDA，输出 48 kHz 单声道。 |
 
 LongCat-AudioDiT 的默认参数与官方声音克隆示例一致：16 步 ODE、`guidance_strength=4.0`、`guidance_method="apg"`、VAE 使用 float16。它只支持 CUDA；参考音频必须是获得授权的单说话人语音，`prompt_text` 必须与实际朗读内容准确一致。长文本按中文/英文标点分块，每块会重新带入参考音频并在片段间插入停顿；单段总时长不能超过模型配置的上限（本机 3.5B 权重为 60 秒）。这些限制来自 [LongCat-AudioDiT 官方仓库](https://github.com/meituan-longcat/LongCat-AudioDiT) 的 Python/CLI 推理示例。
 
 LongCat 服务采用“一次请求一个 worker”生命周期；worker 完成或报错时显式执行 CUDA 同步、`empty_cache`、`ipc_collect`，随后进程退出，以释放模型显存。可通过以下环境变量覆盖默认配置：`LONGCAT_AUDIODIT_CONDA_ENV`、`LONGCAT_AUDIODIT_MODEL_DIR`、`LONGCAT_AUDIODIT_REPO_PATH`、`LONGCAT_AUDIODIT_TOKENIZER_PATH`、`LONGCAT_AUDIODIT_NFE`、`LONGCAT_AUDIODIT_GUIDANCE_STRENGTH`、`LONGCAT_AUDIODIT_GUIDANCE_METHOD`、`LONGCAT_AUDIODIT_MAX_CHARS_PER_CHUNK`、`LONGCAT_AUDIODIT_PAUSE_MS`、`LONGCAT_AUDIODIT_VAE_DTYPE` 和 `LONGCAT_AUDIODIT_REQUEST_TIMEOUT`。
+
+LongCat、Qwen3-TTS、dots.tts-soar、Ming-omni-tts 和 IndexTTS2 的克隆调试默认值都集中在对应 API 文件顶部，并带有中文说明；直接修改 `*_DEFAULT` 常量后重启服务即可生效。`start.sh` 只负责启动路由、环境和模型路径，不再覆盖这些 API 内的合成默认值；部署时显式设置的同名环境变量仍然优先。
+
+LongCat-AudioDiT 和 dots.tts-soar 的 worker 会在每个生成分段拼接前裁掉明显的前导静音，并在完整音频拼接后再次兜底检查；裁剪保留 40 毫秒起音保护，分段之间通过 `pause_ms` 配置的停顿仍会保留。
+
+dots.tts-soar 同样采用“一次请求一个 worker”生命周期；worker 完成或报错时显式清理 CUDA allocator，随后进程退出释放模型显存。可通过 `DOTS_TTS_SOAR_CONDA_ENV`、`DOTS_TTS_SOAR_MODEL_DIR`、`DOTS_TTS_SOAR_PRECISION`、`DOTS_TTS_SOAR_LANGUAGE`、`DOTS_TTS_SOAR_NUM_STEPS`、`DOTS_TTS_SOAR_GUIDANCE_SCALE`、`DOTS_TTS_SOAR_SPEAKER_SCALE`、`DOTS_TTS_SOAR_MAX_GENERATE_LENGTH`、`DOTS_TTS_SOAR_MAX_CHARS_PER_CHUNK`、`DOTS_TTS_SOAR_PAUSE_MS`、`DOTS_TTS_SOAR_SEED` 和 `DOTS_TTS_SOAR_REQUEST_TIMEOUT` 覆盖默认配置。SOAR 的 continuation cloning 要求 `prompt_text` 与参考音频实际内容一致；省略时才使用 x-vector-only 模式。
 
 VoxCPM2 的 `ultimate` 与 `controllable` 请求路径严格互斥：前者用于最大化复刻参考音频细节，后者用于按短控制指令调整表演节奏和情绪。所有 VoxCPM2 克隆与音色设计请求未显式传 `cfg_value` 时统一使用顶部全局配置 `VOXCPM2_CFG_VALUE`（官方 Demo 默认 `2.0`）；需要单次覆盖时仍可在请求中显式传 `cfg_value`。默认 `seed=-1`，与官方在线推理一样不固定随机种子，重新生成会得到不同候选；需要精确复现时才显式传非负 `seed`。`control_instruction` 不是响度参数；成片响度应在合成后检测和统一归一化。
 
@@ -123,7 +135,7 @@ VoxCPM2 的 `ultimate` 与 `controllable` 请求路径严格互斥：前者用�
 
 VoxCPM2 可直接在 [`api/voxcpm2_api.py`](api/voxcpm2_api.py) 顶部修改集中默认值：`cfg_value`、`inference_timesteps`、`normalize`、`denoise`、`retry_badcase`、`load_denoiser`、`optimize`、`device`、`seed`、分片长度、分片停顿和超时。`start.sh` 不再写入这些默认值；如启动前显式设置同名 `VOXCPM2_*` 环境变量，环境变量仍会覆盖代码默认值。`denoise=true` 时会自动启用 `load_denoiser`。
 
-`8306` 每次合成成功后都会保留一份原始 WAV 到 `api/tempAudio/`，文件名形如 `voxcpm2_20260730_120000_xxxxx.wav`；接口响应内容不变。此目录不会自动清理，完成后请按需要转移或删除文件。
+每个本地 TTS 合成端点成功后都会保留一份原始 WAV 到输出目录，接口响应内容不变。默认目录为 `api/tempAudio/`，文件名示例为 `indextts2_20260730_120000_xxxxx.wav`、`qwen3_tts_20260730_120000_xxxxx.wav`、`voxcpm2_20260730_120000_xxxxx.wav`、`ming_tts_20260730_120000_xxxxx.wav`、`longcat_audiodit_20260730_120000_xxxxx.wav` 或 `dots_tts_soar_20260730_120000_xxxxx.wav`。此目录不会自动清理，完成后请按需要转移或删除文件；`VOXCPM2_OUTPUT_DIR` 继续兼容旧版 VoxCPM2 专用配置。
 
 ## Step-Audio-EditX 编辑接口
 
@@ -153,6 +165,11 @@ curl -X POST http://127.0.0.1:8307/v2/synthesize \
   -H 'Content-Type: application/json' \
   -d '{"text":"今天晴暖转阴雨。","audio_path":"reference.wav","prompt_text":"这是一句参考音频转写。"}' \
   -o longcat_synth.wav
+
+curl -X POST http://127.0.0.1:8308/v2/synthesize \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"今天晴暖转阴雨。","audio_path":"reference.wav","prompt_text":"这是一句参考音频转写。"}' \
+  -o dots_tts_soar_synth.wav
 ```
 
 音色设计端点：

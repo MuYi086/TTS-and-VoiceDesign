@@ -104,24 +104,79 @@ GPU_LOCK_FILE = expand_path(os.getenv("GPU_LOCK_FILE", os.path.join(RUNTIME_CACH
 LOCAL_FILES_ONLY = env_bool("LOCAL_FILES_ONLY", True)
 PRELOAD_INDEXTTS = env_bool("PRELOAD_INDEXTTS", False)
 CLEAN_UNKNOWN_PYTHON_PROCESSES = env_bool("CLEAN_UNKNOWN_PYTHON_PROCESSES", False)
-INDEXTTS_DEVICE = os.getenv("INDEXTTS_DEVICE") or None
-INDEXTTS_USE_FP16 = env_bool("INDEXTTS_USE_FP16", True)
-INDEXTTS_USE_CUDA_KERNEL = env_bool("INDEXTTS_USE_CUDA_KERNEL", False)
-INDEXTTS_NUM_BEAMS = int(os.getenv("INDEXTTS_NUM_BEAMS", "1"))
-INDEXTTS_REQUEST_TIMEOUT = float(os.getenv("INDEXTTS_REQUEST_TIMEOUT", "600"))
-INDEXTTS_CUDA_RETRY_COUNT = max(0, int(os.getenv("INDEXTTS_CUDA_RETRY_COUNT", "1")))
+# ============================================================================
+# IndexTTS2 参考音频克隆调试默认值
+#
+# 调试克隆效果时，优先直接修改下面带 _DEFAULT 后缀的值，然后重启服务。
+# 环境变量仍可覆盖默认值，方便部署时统一配置；这些值会进入 IndexTTS2
+# worker 的合成 payload。
+# ============================================================================
+# 运行设备：None 表示由 IndexTTS2 自动选择 CUDA/CPU。
+INDEXTTS_DEVICE_DEFAULT: Optional[str] = None
+# 是否使用 fp16：显存足够或遇到精度问题时可改为 False。
+INDEXTTS_USE_FP16_DEFAULT = True
+# 是否启用 CUDA kernel：需要本地扩展已正确安装，否则保持 False。
+INDEXTTS_USE_CUDA_KERNEL_DEFAULT = False
+# beam search 分支数：增大可能改善候选质量，但会增加耗时。
+INDEXTTS_NUM_BEAMS_DEFAULT = 1
+# 单次请求超时时间，单位为秒；包含 worker 启动和完整合成。
+INDEXTTS_REQUEST_TIMEOUT_DEFAULT = 600.0
+# CUDA 可重试次数：只针对可恢复的显存/执行错误。
+INDEXTTS_CUDA_RETRY_COUNT_DEFAULT = 1
+# 普通分段的最大文本 token 数，过大可能增加显存峰值。
+INDEXTTS_MAX_TEXT_TOKENS_PER_SEGMENT_DEFAULT = 80
+# 单段最大 mel token 数，过小可能截断长语音。
+INDEXTTS_MAX_MEL_TOKENS_DEFAULT = 1200
+# CUDA 重试时使用更保守的文本 token 上限。
+INDEXTTS_CUDA_RETRY_MAX_TEXT_TOKENS_DEFAULT = 50
+# CUDA 重试时使用更保守的 mel token 上限。
+INDEXTTS_CUDA_RETRY_MAX_MEL_TOKENS_DEFAULT = 900
+
+INDEXTTS_DEVICE = os.getenv("INDEXTTS_DEVICE") or INDEXTTS_DEVICE_DEFAULT
+INDEXTTS_USE_FP16 = env_bool("INDEXTTS_USE_FP16", INDEXTTS_USE_FP16_DEFAULT)
+INDEXTTS_USE_CUDA_KERNEL = env_bool(
+    "INDEXTTS_USE_CUDA_KERNEL", INDEXTTS_USE_CUDA_KERNEL_DEFAULT
+)
+INDEXTTS_NUM_BEAMS = int(
+    os.getenv("INDEXTTS_NUM_BEAMS", str(INDEXTTS_NUM_BEAMS_DEFAULT))
+)
+INDEXTTS_REQUEST_TIMEOUT = float(
+    os.getenv("INDEXTTS_REQUEST_TIMEOUT", str(INDEXTTS_REQUEST_TIMEOUT_DEFAULT))
+)
+INDEXTTS_CUDA_RETRY_COUNT = max(
+    0,
+    int(os.getenv("INDEXTTS_CUDA_RETRY_COUNT", str(INDEXTTS_CUDA_RETRY_COUNT_DEFAULT))),
+)
 INDEXTTS_MAX_TEXT_TOKENS_PER_SEGMENT = max(
     20,
-    int(os.getenv("INDEXTTS_MAX_TEXT_TOKENS_PER_SEGMENT", "80")),
+    int(
+        os.getenv(
+            "INDEXTTS_MAX_TEXT_TOKENS_PER_SEGMENT",
+            str(INDEXTTS_MAX_TEXT_TOKENS_PER_SEGMENT_DEFAULT),
+        )
+    ),
 )
-INDEXTTS_MAX_MEL_TOKENS = max(256, int(os.getenv("INDEXTTS_MAX_MEL_TOKENS", "1200")))
+INDEXTTS_MAX_MEL_TOKENS = max(
+    256,
+    int(os.getenv("INDEXTTS_MAX_MEL_TOKENS", str(INDEXTTS_MAX_MEL_TOKENS_DEFAULT))),
+)
 INDEXTTS_CUDA_RETRY_MAX_TEXT_TOKENS = max(
     20,
-    int(os.getenv("INDEXTTS_CUDA_RETRY_MAX_TEXT_TOKENS", "50")),
+    int(
+        os.getenv(
+            "INDEXTTS_CUDA_RETRY_MAX_TEXT_TOKENS",
+            str(INDEXTTS_CUDA_RETRY_MAX_TEXT_TOKENS_DEFAULT),
+        )
+    ),
 )
 INDEXTTS_CUDA_RETRY_MAX_MEL_TOKENS = max(
     256,
-    int(os.getenv("INDEXTTS_CUDA_RETRY_MAX_MEL_TOKENS", "900")),
+    int(
+        os.getenv(
+            "INDEXTTS_CUDA_RETRY_MAX_MEL_TOKENS",
+            str(INDEXTTS_CUDA_RETRY_MAX_MEL_TOKENS_DEFAULT),
+        )
+    ),
 )
 CUDA_RELEASE_DELAY = float(os.getenv("CUDA_RELEASE_DELAY", "2.0"))
 QWEN_DEVICE = os.getenv("QWEN_DEVICE") or None

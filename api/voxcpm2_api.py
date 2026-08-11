@@ -20,6 +20,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Res
 from fastapi.responses import JSONResponse
 from pydantic import Field, model_validator
 from starlette.middleware.base import BaseHTTPMiddleware
+from audio_output import persist_audio_bytes, persist_audio_file
 from synthesis_request import CloneSynthesisRequest
 from gpu_runtime import cuda_status, terminate_process_group
 from local_worker import LocalWorkerConfig, run_local_worker
@@ -112,7 +113,7 @@ VOXCPM2_OPTIMIZE = env_bool("VOXCPM2_OPTIMIZE", False)
 VOXCPM2_DEVICE = normalize_device_name(os.getenv("VOXCPM2_DEVICE"), "cuda")
 # 随机种子：官方在线推理默认不固定种子；负数表示沿用运行时随机状态。
 # 只有复现实验时才通过请求或 VOXCPM2_SEED 显式指定非负整数。
-VOXCPM2_SEED_DEFAULT = 20260614
+VOXCPM2_SEED_DEFAULT = -1
 VOXCPM2_SEED = int(os.getenv("VOXCPM2_SEED", str(VOXCPM2_SEED_DEFAULT)))
 # 分片字符数：0 表示不切分；长文本切分可降低单次显存压力，但会在片段间插入停顿。
 VOXCPM2_MAX_CHARS_PER_CHUNK = int(os.getenv("VOXCPM2_MAX_CHARS_PER_CHUNK", "0"))
@@ -131,14 +132,52 @@ MING_OMNI_TTS_MODEL_DIR = expand_path(
 MING_OMNI_TTS_CODE_PATH = expand_path(
     os.getenv("MING_OMNI_TTS_CODE_PATH", "~/tts-depency/Ming-omni-tts")
 )
+# ============================================================================
+# Ming-omni-tts 克隆调试默认值
+#
+# 调试 Ming 参考音频克隆效果时，优先直接修改下面带 _DEFAULT 后缀的值，
+# 然后重启 8306 服务。环境变量仍可覆盖默认值，方便部署时统一配置。
+# ============================================================================
+# 单次最大解码步数：增大可能改善长语音完整度，但会增加耗时。
+MING_OMNI_TTS_MAX_DECODE_STEPS_DEFAULT = 200
+# CFG 引导强度：提高可强化文本条件，过高可能影响自然度。
+MING_OMNI_TTS_CFG_DEFAULT = 2.0
+# 采样噪声尺度：数值越高随机性越强，固定较小值更便于复现。
+MING_OMNI_TTS_SIGMA_DEFAULT = 0.25
+# 采样温度：0 表示尽量确定性生成；提高会增加候选多样性。
+MING_OMNI_TTS_TEMPERATURE_DEFAULT = 0.0
+MING_OMNI_TTS_MAX_DECODE_STEPS = int(
+    os.getenv(
+        "MING_OMNI_TTS_MAX_DECODE_STEPS",
+        str(MING_OMNI_TTS_MAX_DECODE_STEPS_DEFAULT),
+    )
+)
+MING_OMNI_TTS_CFG = float(
+    os.getenv("MING_OMNI_TTS_CFG", str(MING_OMNI_TTS_CFG_DEFAULT))
+)
+MING_OMNI_TTS_SIGMA = float(
+    os.getenv("MING_OMNI_TTS_SIGMA", str(MING_OMNI_TTS_SIGMA_DEFAULT))
+)
+MING_OMNI_TTS_TEMPERATURE = float(
+    os.getenv("MING_OMNI_TTS_TEMPERATURE", str(MING_OMNI_TTS_TEMPERATURE_DEFAULT))
+)
 MING_OMNI_TTS_WORKER_SCRIPT = os.path.join(API_DIR, "ming_omni_tts_worker.py")
 MING_OMNI_TTS_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "ming_omni_tts_worker")
 MING_OMNI_TTS_REQUEST_TIMEOUT = float(os.getenv("MING_OMNI_TTS_REQUEST_TIMEOUT", "900"))
+MING_OMNI_TTS_OUTPUT_DIR = expand_path(
+    os.getenv(
+        "MING_OMNI_TTS_OUTPUT_DIR",
+        os.getenv("TTS_OUTPUT_DIR", os.path.join(API_DIR, "tempAudio")),
+    )
+)
 
 VOXCPM2_WORKER_SCRIPT = os.path.join(API_DIR, "voxcpm2_worker.py")
 VOXCPM2_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "voxcpm2_worker")
 VOXCPM2_OUTPUT_DIR = expand_path(
-    os.getenv("VOXCPM2_OUTPUT_DIR", os.path.join(API_DIR, "tempAudio"))
+    os.getenv(
+        "VOXCPM2_OUTPUT_DIR",
+        os.getenv("TTS_OUTPUT_DIR", os.path.join(API_DIR, "tempAudio")),
+    )
 )
 
 os.environ.setdefault("HF_HOME", HF_MIRROR_DIR)
@@ -221,27 +260,7 @@ def module_available(module_name: str) -> bool:
 
 def persist_generated_audio(source_path: str) -> str:
     """Copy a validated worker WAV to the user-accessible output directory."""
-    os.makedirs(VOXCPM2_OUTPUT_DIR, exist_ok=True)
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    output_fd, output_path = tempfile.mkstemp(
-        dir=VOXCPM2_OUTPUT_DIR,
-        prefix=f"voxcpm2_{timestamp}_",
-        suffix=".wav",
-    )
-    try:
-        with open(source_path, "rb") as source, os.fdopen(output_fd, "wb") as destination:
-            shutil.copyfileobj(source, destination)
-        return output_path
-    except Exception:
-        try:
-            os.close(output_fd)
-        except OSError:
-            pass
-        try:
-            os.remove(output_path)
-        except OSError:
-            pass
-        raise
+    return str(persist_audio_file(source_path, "voxcpm2", VOXCPM2_OUTPUT_DIR))
 
 
 def sha256_file(path: str) -> str:
@@ -432,6 +451,18 @@ class MingWorkerManager:
             "model_path": MING_OMNI_TTS_MODEL_DIR,
             "code_path": MING_OMNI_TTS_CODE_PATH,
             "local_files_only": LOCAL_FILES_ONLY,
+            "max_decode_steps": (
+                request.max_decode_steps
+                if request.max_decode_steps is not None
+                else MING_OMNI_TTS_MAX_DECODE_STEPS
+            ),
+            "cfg": request.cfg if request.cfg is not None else MING_OMNI_TTS_CFG,
+            "sigma": request.sigma if request.sigma is not None else MING_OMNI_TTS_SIGMA,
+            "temperature": (
+                request.temperature
+                if request.temperature is not None
+                else MING_OMNI_TTS_TEMPERATURE
+            ),
         }
         # The model script uses ref_text as the semantic name; keep the API's
         # prompt_text compatibility field while exposing one canonical value.
@@ -441,6 +472,12 @@ class MingWorkerManager:
     def run_worker(self, payload: dict) -> bytes:
         try:
             audio = run_local_worker(payload, MING_WORKER)
+            saved_output_path = persist_audio_bytes(
+                audio,
+                "ming_tts",
+                MING_OMNI_TTS_OUTPUT_DIR,
+            )
+            print(f"[Ming-omni-tts] 已保存生成音频: {saved_output_path}")
             self.last_error = None
             return audio
         except Exception as exc:
@@ -637,6 +674,7 @@ async def health():
             "voxcpm2_helper_script": VOXCPM2_HELPER_SCRIPT,
             "prompts_dir": PROMPTS_DIR,
             "gpu_lock_file": GPU_LOCK_FILE,
+            "ming_tts_output_dir": MING_OMNI_TTS_OUTPUT_DIR,
             "worker_script": VOXCPM2_WORKER_SCRIPT,
             "worker_tmp_dir": VOXCPM2_WORKER_TMP_DIR,
             "output_dir": VOXCPM2_OUTPUT_DIR,
@@ -667,6 +705,10 @@ async def health():
             "model_lifecycle": "one request -> one worker -> process exit releases VRAM",
             "local_files_only": LOCAL_FILES_ONLY,
             "request_timeout": VOXCPM2_REQUEST_TIMEOUT,
+            "ming_max_decode_steps": MING_OMNI_TTS_MAX_DECODE_STEPS,
+            "ming_cfg": MING_OMNI_TTS_CFG,
+            "ming_sigma": MING_OMNI_TTS_SIGMA,
+            "ming_temperature": MING_OMNI_TTS_TEMPERATURE,
             "cfg_value": VOXCPM2_CFG_VALUE,
             "inference_timesteps": VOXCPM2_INFERENCE_TIMESTEPS,
             "normalize": VOXCPM2_NORMALIZE,

@@ -18,6 +18,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from audio_trim import trim_leading_silence
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="One-shot dots.tts-soar worker")
@@ -189,6 +191,27 @@ def join_waveforms(waveforms: list[Any], sample_rate: int, pause_ms: int, np: An
     return np.concatenate(joined)
 
 
+def trim_generated_waveform(
+    waveform: Any,
+    sample_rate: int,
+    np: Any,
+    *,
+    label: str,
+) -> Any:
+    """Remove a model-generated silent prefix before a segment is joined."""
+    trimmed_waveform, trimmed_samples = trim_leading_silence(
+        waveform,
+        sample_rate=sample_rate,
+        np=np,
+    )
+    if trimmed_samples > 0:
+        print(
+            f"[dots.tts-soar worker] {label} 裁掉前导静音 "
+            f"{trimmed_samples / sample_rate:.2f}s"
+        )
+    return trimmed_waveform
+
+
 def synthesize(request: dict[str, Any], output_wav: Path) -> None:
     if str(request.get("operation") or "clone") != "clone":
         raise RuntimeError("dots.tts-soar worker 只接受 operation=clone。")
@@ -260,10 +283,28 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
                     normalize_text=normalize_text_flag,
                     profile_inference=profile_inference,
                 )
-                waveforms.append(result["audio"].float().cpu().squeeze().numpy())
+                waveform = result["audio"].float().cpu().squeeze().numpy()
+                waveforms.append(
+                    trim_generated_waveform(
+                        waveform,
+                        int(runtime.sample_rate),
+                        np,
+                        label=f"chunk {index}/{len(chunks)}",
+                    )
+                )
 
         sample_rate = int(runtime.sample_rate)
         waveform = join_waveforms(waveforms, sample_rate, pause_ms, np)
+        waveform, trimmed_samples = trim_leading_silence(
+            waveform,
+            sample_rate=sample_rate,
+            np=np,
+        )
+        if trimmed_samples > 0:
+            print(
+                f"[dots.tts-soar worker] 最终音频裁掉前导静音 "
+                f"{trimmed_samples / sample_rate:.2f}s"
+            )
         sf.write(str(output_wav), waveform, sample_rate)
         print(
             f"[dots.tts-soar worker] elapsed={time.perf_counter() - started:.2f}s, "

@@ -72,19 +72,90 @@ DOTS_TTS_SOAR_CONDA_ENV = os.getenv("DOTS_TTS_SOAR_CONDA_ENV", "dots_tts_soar")
 DOTS_TTS_SOAR_MODEL_DIR = expand_path(
     os.getenv("DOTS_TTS_SOAR_MODEL_DIR", os.path.join(HF_MIRROR_DIR, "rednote-hilab/dots.tts-soar"))
 )
-DOTS_TTS_SOAR_PRECISION = os.getenv("DOTS_TTS_SOAR_PRECISION", "bfloat16")
-DOTS_TTS_SOAR_LANGUAGE = normalize_optional_text(os.getenv("DOTS_TTS_SOAR_LANGUAGE", "chinese"))
-DOTS_TTS_SOAR_ODE_METHOD = os.getenv("DOTS_TTS_SOAR_ODE_METHOD", "euler")
-DOTS_TTS_SOAR_NUM_STEPS = int(os.getenv("DOTS_TTS_SOAR_NUM_STEPS", "10"))
-DOTS_TTS_SOAR_GUIDANCE_SCALE = float(os.getenv("DOTS_TTS_SOAR_GUIDANCE_SCALE", "1.2"))
-DOTS_TTS_SOAR_SPEAKER_SCALE = float(os.getenv("DOTS_TTS_SOAR_SPEAKER_SCALE", "1.5"))
-DOTS_TTS_SOAR_MAX_GENERATE_LENGTH = int(os.getenv("DOTS_TTS_SOAR_MAX_GENERATE_LENGTH", "500"))
-DOTS_TTS_SOAR_MAX_CHARS_PER_CHUNK = int(os.getenv("DOTS_TTS_SOAR_MAX_CHARS_PER_CHUNK", "120"))
-DOTS_TTS_SOAR_PAUSE_MS = int(os.getenv("DOTS_TTS_SOAR_PAUSE_MS", "250"))
-DOTS_TTS_SOAR_SEED = int(os.getenv("DOTS_TTS_SOAR_SEED", "42"))
-DOTS_TTS_SOAR_NORMALIZE_TEXT = env_bool("DOTS_TTS_SOAR_NORMALIZE_TEXT", False)
-DOTS_TTS_SOAR_PROFILE_INFERENCE = env_bool("DOTS_TTS_SOAR_PROFILE_INFERENCE", False)
-DOTS_TTS_SOAR_REQUEST_TIMEOUT = float(os.getenv("DOTS_TTS_SOAR_REQUEST_TIMEOUT", "900"))
+# ============================================================================
+# dots.tts-soar 克隆调试默认值
+#
+# 调试参考音频克隆效果时，优先直接修改下面带 _DEFAULT 后缀的值，然后
+# 重启服务即可生效。环境变量仍可覆盖默认值，方便部署时统一配置。
+# ============================================================================
+# 推理精度：bfloat16 通常更省显存；遇到硬件不兼容时可改为 float16 或 float32。
+DOTS_TTS_SOAR_PRECISION_DEFAULT = "bfloat16"
+# 语言标识：官方示例使用 chinese；多语言场景可按模型支持范围调整。
+DOTS_TTS_SOAR_LANGUAGE_DEFAULT = "chinese"
+# ODE 求解器：euler 速度较快；具体可选值取决于当前 dots.tts-soar 版本。
+DOTS_TTS_SOAR_ODE_METHOD_DEFAULT = "euler"
+# 推理步数：步数越高通常越稳定，但会增加生成耗时。
+DOTS_TTS_SOAR_NUM_STEPS_DEFAULT = 10
+# 文本引导强度：提高可强化内容约束，过高可能影响自然度。
+DOTS_TTS_SOAR_GUIDANCE_SCALE_DEFAULT = 1.2
+# 说话人条件强度：提高可强化参考音色，过高可能带来音色或韵律失真。
+DOTS_TTS_SOAR_SPEAKER_SCALE_DEFAULT = 1.5
+# 单段最大生成长度：用于限制模型一次生成的 token/帧长度，具体含义由官方 runtime 决定。
+DOTS_TTS_SOAR_MAX_GENERATE_LENGTH_DEFAULT = 500
+# 文本分片字符数：0 表示不分片；分片可以降低显存压力，但会插入停顿。
+DOTS_TTS_SOAR_MAX_CHARS_PER_CHUNK_DEFAULT = 120
+# 分片之间的停顿时长，单位为毫秒；仅在发生分片时生效。
+DOTS_TTS_SOAR_PAUSE_MS_DEFAULT = 250
+# 随机种子：固定整数便于复现；如需随机行为请按当前官方 runtime 支持范围调整。
+DOTS_TTS_SOAR_SEED_DEFAULT = 42
+# 是否让官方 runtime 规范化输入文本；保持 False 可最大程度保留原始文本。
+DOTS_TTS_SOAR_NORMALIZE_TEXT_DEFAULT = False
+# 是否开启推理性能分析；仅调试性能时开启，避免额外开销。
+DOTS_TTS_SOAR_PROFILE_INFERENCE_DEFAULT = False
+# 单次请求超时时间，单位为秒；包含 worker 启动和完整合成。
+DOTS_TTS_SOAR_REQUEST_TIMEOUT_DEFAULT = 900.0
+
+DOTS_TTS_SOAR_PRECISION = os.getenv(
+    "DOTS_TTS_SOAR_PRECISION", DOTS_TTS_SOAR_PRECISION_DEFAULT
+)
+DOTS_TTS_SOAR_LANGUAGE = normalize_optional_text(
+    os.getenv("DOTS_TTS_SOAR_LANGUAGE", DOTS_TTS_SOAR_LANGUAGE_DEFAULT)
+)
+DOTS_TTS_SOAR_ODE_METHOD = os.getenv(
+    "DOTS_TTS_SOAR_ODE_METHOD", DOTS_TTS_SOAR_ODE_METHOD_DEFAULT
+)
+DOTS_TTS_SOAR_NUM_STEPS = int(
+    os.getenv("DOTS_TTS_SOAR_NUM_STEPS", str(DOTS_TTS_SOAR_NUM_STEPS_DEFAULT))
+)
+DOTS_TTS_SOAR_GUIDANCE_SCALE = float(
+    os.getenv(
+        "DOTS_TTS_SOAR_GUIDANCE_SCALE", str(DOTS_TTS_SOAR_GUIDANCE_SCALE_DEFAULT)
+    )
+)
+DOTS_TTS_SOAR_SPEAKER_SCALE = float(
+    os.getenv(
+        "DOTS_TTS_SOAR_SPEAKER_SCALE", str(DOTS_TTS_SOAR_SPEAKER_SCALE_DEFAULT)
+    )
+)
+DOTS_TTS_SOAR_MAX_GENERATE_LENGTH = int(
+    os.getenv(
+        "DOTS_TTS_SOAR_MAX_GENERATE_LENGTH",
+        str(DOTS_TTS_SOAR_MAX_GENERATE_LENGTH_DEFAULT),
+    )
+)
+DOTS_TTS_SOAR_MAX_CHARS_PER_CHUNK = int(
+    os.getenv(
+        "DOTS_TTS_SOAR_MAX_CHARS_PER_CHUNK",
+        str(DOTS_TTS_SOAR_MAX_CHARS_PER_CHUNK_DEFAULT),
+    )
+)
+DOTS_TTS_SOAR_PAUSE_MS = int(
+    os.getenv("DOTS_TTS_SOAR_PAUSE_MS", str(DOTS_TTS_SOAR_PAUSE_MS_DEFAULT))
+)
+DOTS_TTS_SOAR_SEED = int(
+    os.getenv("DOTS_TTS_SOAR_SEED", str(DOTS_TTS_SOAR_SEED_DEFAULT))
+)
+DOTS_TTS_SOAR_NORMALIZE_TEXT = env_bool(
+    "DOTS_TTS_SOAR_NORMALIZE_TEXT", DOTS_TTS_SOAR_NORMALIZE_TEXT_DEFAULT
+)
+DOTS_TTS_SOAR_PROFILE_INFERENCE = env_bool(
+    "DOTS_TTS_SOAR_PROFILE_INFERENCE", DOTS_TTS_SOAR_PROFILE_INFERENCE_DEFAULT
+)
+DOTS_TTS_SOAR_REQUEST_TIMEOUT = float(
+    os.getenv(
+        "DOTS_TTS_SOAR_REQUEST_TIMEOUT", str(DOTS_TTS_SOAR_REQUEST_TIMEOUT_DEFAULT)
+    )
+)
 DOTS_TTS_SOAR_WORKER_SCRIPT = os.path.join(API_DIR, "dots_tts_soar_worker.py")
 DOTS_TTS_SOAR_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "dots_tts_soar_worker")
 DOTS_TTS_SOAR_OUTPUT_DIR = expand_path(
@@ -354,12 +425,16 @@ async def health():
             "sample_rate": 48000,
             "precision": DOTS_TTS_SOAR_PRECISION,
             "language": DOTS_TTS_SOAR_LANGUAGE,
+            "ode_method": DOTS_TTS_SOAR_ODE_METHOD,
+            "seed": DOTS_TTS_SOAR_SEED,
             "num_steps": DOTS_TTS_SOAR_NUM_STEPS,
             "guidance_scale": DOTS_TTS_SOAR_GUIDANCE_SCALE,
             "speaker_scale": DOTS_TTS_SOAR_SPEAKER_SCALE,
             "max_generate_length": DOTS_TTS_SOAR_MAX_GENERATE_LENGTH,
             "max_chars_per_chunk": DOTS_TTS_SOAR_MAX_CHARS_PER_CHUNK,
             "pause_ms": DOTS_TTS_SOAR_PAUSE_MS,
+            "normalize_text": DOTS_TTS_SOAR_NORMALIZE_TEXT,
+            "profile_inference": DOTS_TTS_SOAR_PROFILE_INFERENCE,
             "clone_contract": "prompt_audio + optional exact prompt_text; 48 kHz mono output",
         },
         "last_errors": {"dots_tts_soar": manager.last_error},

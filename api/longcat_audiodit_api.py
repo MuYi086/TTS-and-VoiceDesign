@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 from pydantic import Field
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from audio_output import persist_audio_bytes
 from gpu_runtime import cuda_status
 from local_worker import LocalWorkerConfig, resolve_conda_executable, run_local_worker
 from synthesis_request import CloneSynthesisRequest
@@ -69,26 +70,80 @@ LONGCAT_AUDIODIT_REPO_PATH = expand_path(
 LONGCAT_AUDIODIT_TOKENIZER_PATH = expand_path(
     os.getenv("LONGCAT_AUDIODIT_TOKENIZER_PATH", "~/hf-mirror/google/umt5-base")
 )
+
+# ============================================================================
+# LongCat-AudioDiT 克隆调试默认值
+#
+# 调试声音克隆效果时，优先直接修改下面带 _DEFAULT 后缀的值，然后重启
+# 服务即可生效。环境变量仍然可以覆盖这些默认值，方便部署时统一配置。
+# ============================================================================
+# 文本分片字符数：0 表示不分片；分片可以降低显存压力，但片段之间会有停顿。
+LONGCAT_AUDIODIT_MAX_CHARS_PER_CHUNK_DEFAULT = 180
+# 分片之间的停顿时长，单位为毫秒；只有实际发生分片时才会使用。
+LONGCAT_AUDIODIT_PAUSE_MS_DEFAULT = 250
+# NFE/ODE 推理步数：步数越高通常越稳定，但推理时间也会增加。
+LONGCAT_AUDIODIT_NFE_DEFAULT = 16
+# 引导强度：提高通常能强化文本和音色条件，但过高可能降低自然度。
+LONGCAT_AUDIODIT_GUIDANCE_STRENGTH_DEFAULT = 4.0
+# 引导算法：官方示例使用 apg，也可以切换为 cfg。
+LONGCAT_AUDIODIT_GUIDANCE_METHOD_DEFAULT = "apg"
+# 随机种子：固定非负整数便于复现；修改为 -1 可使用随机种子。
+LONGCAT_AUDIODIT_SEED_DEFAULT = 20260614
+# 时长缩放：大于 1 会倾向生成更长语音，小于 1 会倾向生成更短语音。
+LONGCAT_AUDIODIT_DURATION_SCALE_DEFAULT = 1.0
+# VAE 精度：float16 更省显存；遇到精度兼容问题时可改为 float32。
+LONGCAT_AUDIODIT_VAE_DTYPE_DEFAULT = "float16"
+# 单次请求超时时间，单位为秒；包含 worker 启动、加载模型和完整合成。
+LONGCAT_AUDIODIT_REQUEST_TIMEOUT_DEFAULT = 900.0
+
 LONGCAT_AUDIODIT_MAX_CHARS_PER_CHUNK = int(
-    os.getenv("LONGCAT_AUDIODIT_MAX_CHARS_PER_CHUNK", "180")
+    os.getenv(
+        "LONGCAT_AUDIODIT_MAX_CHARS_PER_CHUNK",
+        str(LONGCAT_AUDIODIT_MAX_CHARS_PER_CHUNK_DEFAULT),
+    )
 )
-LONGCAT_AUDIODIT_PAUSE_MS = int(os.getenv("LONGCAT_AUDIODIT_PAUSE_MS", "250"))
-LONGCAT_AUDIODIT_NFE = int(os.getenv("LONGCAT_AUDIODIT_NFE", "16"))
+LONGCAT_AUDIODIT_PAUSE_MS = int(
+    os.getenv("LONGCAT_AUDIODIT_PAUSE_MS", str(LONGCAT_AUDIODIT_PAUSE_MS_DEFAULT))
+)
+LONGCAT_AUDIODIT_NFE = int(
+    os.getenv("LONGCAT_AUDIODIT_NFE", str(LONGCAT_AUDIODIT_NFE_DEFAULT))
+)
 LONGCAT_AUDIODIT_GUIDANCE_STRENGTH = float(
-    os.getenv("LONGCAT_AUDIODIT_GUIDANCE_STRENGTH", "4.0")
+    os.getenv(
+        "LONGCAT_AUDIODIT_GUIDANCE_STRENGTH",
+        str(LONGCAT_AUDIODIT_GUIDANCE_STRENGTH_DEFAULT),
+    )
 )
-LONGCAT_AUDIODIT_GUIDANCE_METHOD = os.getenv("LONGCAT_AUDIODIT_GUIDANCE_METHOD", "apg")
-LONGCAT_AUDIODIT_SEED = int(os.getenv("LONGCAT_AUDIODIT_SEED", "20260614"))
+LONGCAT_AUDIODIT_GUIDANCE_METHOD = os.getenv(
+    "LONGCAT_AUDIODIT_GUIDANCE_METHOD", LONGCAT_AUDIODIT_GUIDANCE_METHOD_DEFAULT
+)
+LONGCAT_AUDIODIT_SEED = int(
+    os.getenv("LONGCAT_AUDIODIT_SEED", str(LONGCAT_AUDIODIT_SEED_DEFAULT))
+)
 LONGCAT_AUDIODIT_DURATION_SCALE = float(
-    os.getenv("LONGCAT_AUDIODIT_DURATION_SCALE", "1.0")
+    os.getenv(
+        "LONGCAT_AUDIODIT_DURATION_SCALE",
+        str(LONGCAT_AUDIODIT_DURATION_SCALE_DEFAULT),
+    )
 )
-LONGCAT_AUDIODIT_VAE_DTYPE = os.getenv("LONGCAT_AUDIODIT_VAE_DTYPE", "float16")
+LONGCAT_AUDIODIT_VAE_DTYPE = os.getenv(
+    "LONGCAT_AUDIODIT_VAE_DTYPE", LONGCAT_AUDIODIT_VAE_DTYPE_DEFAULT
+)
 LONGCAT_AUDIODIT_REQUEST_TIMEOUT = float(
-    os.getenv("LONGCAT_AUDIODIT_REQUEST_TIMEOUT", "900")
+    os.getenv(
+        "LONGCAT_AUDIODIT_REQUEST_TIMEOUT",
+        str(LONGCAT_AUDIODIT_REQUEST_TIMEOUT_DEFAULT),
+    )
 )
 LONGCAT_AUDIODIT_WORKER_SCRIPT = os.path.join(API_DIR, "longcat_audiodit_worker.py")
 LONGCAT_AUDIODIT_WORKER_TMP_DIR = os.path.join(
     RUNTIME_CACHE_DIR, "longcat_audiodit_worker"
+)
+LONGCAT_AUDIODIT_OUTPUT_DIR = expand_path(
+    os.getenv(
+        "LONGCAT_AUDIODIT_OUTPUT_DIR",
+        os.getenv("TTS_OUTPUT_DIR", os.path.join(API_DIR, "tempAudio")),
+    )
 )
 
 os.environ.setdefault("HF_HOME", HF_MIRROR_DIR)
@@ -304,6 +359,12 @@ class LongCatAudioDitWorkerManager:
     def run_worker(self, payload: dict) -> bytes:
         try:
             audio = run_local_worker(payload, LONGCAT_WORKER)
+            saved_output_path = persist_audio_bytes(
+                audio,
+                "longcat_audiodit",
+                LONGCAT_AUDIODIT_OUTPUT_DIR,
+            )
+            print(f"[LongCat-AudioDiT] 已保存生成音频: {saved_output_path}")
             self.last_error = None
             return audio
         except Exception as exc:
@@ -329,6 +390,7 @@ async def health():
             "repo_path": LONGCAT_AUDIODIT_REPO_PATH,
             "tokenizer_path": LONGCAT_AUDIODIT_TOKENIZER_PATH,
             "prompts_dir": PROMPTS_DIR,
+            "tts_output_dir": LONGCAT_AUDIODIT_OUTPUT_DIR,
             "gpu_lock_file": GPU_LOCK_FILE,
             "worker_script": LONGCAT_AUDIODIT_WORKER_SCRIPT,
             "worker_tmp_dir": LONGCAT_AUDIODIT_WORKER_TMP_DIR,

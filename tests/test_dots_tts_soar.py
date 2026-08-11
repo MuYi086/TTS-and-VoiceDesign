@@ -6,6 +6,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import numpy as np
+
 
 API_DIR = Path(__file__).resolve().parents[1] / "api"
 if str(API_DIR) not in sys.path:
@@ -90,6 +92,18 @@ class DotsTtsSoarTests(unittest.TestCase):
 
         dots_tts_soar_worker.clear_cuda_cache(FakeTorch())
         self.assertEqual(calls, ["synchronize", "empty_cache", "ipc_collect"])
+
+    def test_generated_segment_leading_silence_is_trimmed_before_join(self):
+        waveform = np.concatenate(
+            [np.zeros(600, dtype=np.float32), np.full(400, 0.2, dtype=np.float32)]
+        )
+
+        trimmed = dots_tts_soar_worker.trim_generated_waveform(
+            waveform, sample_rate=1000, np=np, label="test chunk"
+        )
+
+        self.assertLess(trimmed.size, waveform.size - 500)
+        self.assertGreater(float(np.max(trimmed)), 0.0)
 
 
 if __name__ == "__main__":

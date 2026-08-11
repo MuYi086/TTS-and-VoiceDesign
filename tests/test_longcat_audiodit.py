@@ -7,6 +7,8 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import numpy as np
+
 from fastapi import HTTPException
 
 
@@ -109,6 +111,18 @@ class LongCatAudioDitTests(unittest.TestCase):
 
         collect.assert_called_once_with()
         self.assertEqual(calls, ["synchronize", "empty_cache", "ipc_collect"])
+
+    def test_generated_segment_leading_silence_is_trimmed_before_join(self):
+        waveform = np.concatenate(
+            [np.zeros(600, dtype=np.float32), np.full(400, 0.2, dtype=np.float32)]
+        )
+
+        trimmed = longcat_audiodit_worker.trim_generated_waveform(
+            waveform, sample_rate=1000, np=np, label="test chunk"
+        )
+
+        self.assertLess(trimmed.size, waveform.size - 500)
+        self.assertGreater(float(np.max(trimmed)), 0.0)
 
 
 if __name__ == "__main__":

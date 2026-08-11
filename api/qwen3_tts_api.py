@@ -20,6 +20,7 @@ import uvicorn
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+from audio_output import persist_audio_bytes
 from synthesis_request import CloneSynthesisRequest
 from gpu_runtime import cuda_status, terminate_process_group
 
@@ -49,9 +50,9 @@ def env_optional_text(name: str, default: Optional[str] = None) -> Optional[str]
     return normalized
 
 
-def env_optional_float(name: str) -> Optional[float]:
+def env_optional_float(name: str, default: Optional[float] = None) -> Optional[float]:
     value = env_optional_text(name)
-    return float(value) if value is not None else None
+    return float(value) if value is not None else default
 
 
 def expand_path(path: str) -> str:
@@ -80,31 +81,116 @@ QWEN3_TTS_CONDA_ENV = os.getenv("QWEN3_TTS_CONDA_ENV", "qwen3-tts")
 QWEN3_TTS_MODEL_DIR = expand_path(
     os.getenv("QWEN3_TTS_MODEL_DIR", os.path.join(HF_MIRROR_DIR, "Qwen/Qwen3-TTS-12Hz-1.7B-Base"))
 )
-QWEN3_TTS_DEVICE_MAP = os.getenv("QWEN3_TTS_DEVICE_MAP", "cuda:0")
-QWEN3_TTS_DTYPE = os.getenv("QWEN3_TTS_DTYPE", "auto")
-QWEN3_TTS_LANGUAGE = env_optional_text("QWEN3_TTS_LANGUAGE", "Chinese")
-QWEN3_TTS_MAX_NEW_TOKENS = int(os.getenv("QWEN3_TTS_MAX_NEW_TOKENS", "2048"))
-QWEN3_TTS_TOP_P = env_optional_float("QWEN3_TTS_TOP_P")
-QWEN3_TTS_TEMPERATURE = env_optional_float("QWEN3_TTS_TEMPERATURE")
-QWEN3_TTS_ATTN_IMPLEMENTATION = os.getenv("QWEN3_TTS_ATTN_IMPLEMENTATION", "auto")
-QWEN3_TTS_X_VECTOR_ONLY = env_bool("QWEN3_TTS_X_VECTOR_ONLY", False)
-QWEN3_TTS_MAX_CHARS_PER_CHUNK = int(os.getenv("QWEN3_TTS_MAX_CHARS_PER_CHUNK", "120"))
-QWEN3_TTS_PAUSE_MS = int(os.getenv("QWEN3_TTS_PAUSE_MS", "250"))
-QWEN3_TTS_TRIM_LEADING_SILENCE = env_bool("QWEN3_TTS_TRIM_LEADING_SILENCE", True)
-QWEN3_TTS_TRIM_LEADING_SILENCE_THRESHOLD_DB = float(
-    os.getenv("QWEN3_TTS_TRIM_LEADING_SILENCE_THRESHOLD_DB", "-42")
+# ============================================================================
+# Qwen3-TTS 克隆调试默认值
+#
+# 调试参考音频克隆效果时，优先直接修改下面带 _DEFAULT 后缀的值，然后
+# 重启服务即可生效。环境变量仍可覆盖默认值，方便部署时统一配置。
+# ============================================================================
+# 推理设备映射：通常使用 cuda:0；多卡部署时可按模型加载方式调整。
+QWEN3_TTS_DEVICE_MAP_DEFAULT = "cuda:0"
+# 模型计算精度：auto 会根据设备自动选择，显存或兼容性异常时可显式指定。
+QWEN3_TTS_DTYPE_DEFAULT = "auto"
+# 参考音频对应的语言；Qwen3-TTS 使用官方语言名称，如 Chinese、English。
+QWEN3_TTS_LANGUAGE_DEFAULT = "Chinese"
+# 最大生成 token 数：过小会截断长语音，过大会增加耗时和显存占用。
+QWEN3_TTS_MAX_NEW_TOKENS_DEFAULT = 2048
+# 采样 top-p；None 表示不向模型额外传入该参数，便于使用模型默认值。
+QWEN3_TTS_TOP_P_DEFAULT: Optional[float] = None
+# 采样温度；None 表示不向模型额外传入该参数，便于使用模型默认值。
+QWEN3_TTS_TEMPERATURE_DEFAULT: Optional[float] = None
+# 注意力实现：auto 由 transformers 选择，也可按环境指定 eager 或 flash_attention_2。
+QWEN3_TTS_ATTN_IMPLEMENTATION_DEFAULT = "auto"
+# 是否强制使用仅音色向量克隆；有准确参考文本时通常保持 False。
+QWEN3_TTS_X_VECTOR_ONLY_DEFAULT = False
+# 文本分片字符数：0 表示不分片；分片可降低显存压力，但会插入停顿。
+QWEN3_TTS_MAX_CHARS_PER_CHUNK_DEFAULT = 120
+# 分片之间的停顿时长，单位为毫秒；仅在发生分片时生效。
+QWEN3_TTS_PAUSE_MS_DEFAULT = 250
+# 是否裁剪生成音频开头的静音；关闭可保留模型原始前导空间。
+QWEN3_TTS_TRIM_LEADING_SILENCE_DEFAULT = True
+# 判定静音的 RMS 阈值，单位为 dB；数值越低越不容易误裁正常弱音。
+QWEN3_TTS_TRIM_LEADING_SILENCE_THRESHOLD_DB_DEFAULT = -42.0
+# 至少达到该时长才认为是需要裁剪的前导静音，单位为毫秒。
+QWEN3_TTS_TRIM_LEADING_SILENCE_MIN_MS_DEFAULT = 120
+# 静音分析窗口，单位为毫秒；窗口越大越平滑，但定位会更粗。
+QWEN3_TTS_TRIM_LEADING_SILENCE_ANALYSIS_WINDOW_MS_DEFAULT = 30
+# 裁剪时保留的前滚时间，单位为毫秒，避免切掉起始辅音。
+QWEN3_TTS_TRIM_LEADING_SILENCE_PRE_ROLL_MS_DEFAULT = 40
+# 单次最多裁剪的前导静音，单位为毫秒，避免异常音频被过度裁剪。
+QWEN3_TTS_TRIM_LEADING_SILENCE_MAX_MS_DEFAULT = 8000
+# 单次请求超时时间，单位为秒；包含 worker 启动和完整合成。
+QWEN3_TTS_REQUEST_TIMEOUT_DEFAULT = 600.0
+
+QWEN3_TTS_DEVICE_MAP = os.getenv("QWEN3_TTS_DEVICE_MAP", QWEN3_TTS_DEVICE_MAP_DEFAULT)
+QWEN3_TTS_DTYPE = os.getenv("QWEN3_TTS_DTYPE", QWEN3_TTS_DTYPE_DEFAULT)
+QWEN3_TTS_LANGUAGE = env_optional_text("QWEN3_TTS_LANGUAGE", QWEN3_TTS_LANGUAGE_DEFAULT)
+QWEN3_TTS_MAX_NEW_TOKENS = int(
+    os.getenv("QWEN3_TTS_MAX_NEW_TOKENS", str(QWEN3_TTS_MAX_NEW_TOKENS_DEFAULT))
 )
-QWEN3_TTS_TRIM_LEADING_SILENCE_MIN_MS = int(os.getenv("QWEN3_TTS_TRIM_LEADING_SILENCE_MIN_MS", "120"))
+QWEN3_TTS_TOP_P = env_optional_float("QWEN3_TTS_TOP_P", QWEN3_TTS_TOP_P_DEFAULT)
+QWEN3_TTS_TEMPERATURE = env_optional_float(
+    "QWEN3_TTS_TEMPERATURE", QWEN3_TTS_TEMPERATURE_DEFAULT
+)
+QWEN3_TTS_ATTN_IMPLEMENTATION = os.getenv(
+    "QWEN3_TTS_ATTN_IMPLEMENTATION", QWEN3_TTS_ATTN_IMPLEMENTATION_DEFAULT
+)
+QWEN3_TTS_X_VECTOR_ONLY = env_bool(
+    "QWEN3_TTS_X_VECTOR_ONLY", QWEN3_TTS_X_VECTOR_ONLY_DEFAULT
+)
+QWEN3_TTS_MAX_CHARS_PER_CHUNK = int(
+    os.getenv(
+        "QWEN3_TTS_MAX_CHARS_PER_CHUNK",
+        str(QWEN3_TTS_MAX_CHARS_PER_CHUNK_DEFAULT),
+    )
+)
+QWEN3_TTS_PAUSE_MS = int(
+    os.getenv("QWEN3_TTS_PAUSE_MS", str(QWEN3_TTS_PAUSE_MS_DEFAULT))
+)
+QWEN3_TTS_TRIM_LEADING_SILENCE = env_bool(
+    "QWEN3_TTS_TRIM_LEADING_SILENCE", QWEN3_TTS_TRIM_LEADING_SILENCE_DEFAULT
+)
+QWEN3_TTS_TRIM_LEADING_SILENCE_THRESHOLD_DB = float(
+    os.getenv(
+        "QWEN3_TTS_TRIM_LEADING_SILENCE_THRESHOLD_DB",
+        str(QWEN3_TTS_TRIM_LEADING_SILENCE_THRESHOLD_DB_DEFAULT),
+    )
+)
+QWEN3_TTS_TRIM_LEADING_SILENCE_MIN_MS = int(
+    os.getenv(
+        "QWEN3_TTS_TRIM_LEADING_SILENCE_MIN_MS",
+        str(QWEN3_TTS_TRIM_LEADING_SILENCE_MIN_MS_DEFAULT),
+    )
+)
 QWEN3_TTS_TRIM_LEADING_SILENCE_ANALYSIS_WINDOW_MS = int(
-    os.getenv("QWEN3_TTS_TRIM_LEADING_SILENCE_ANALYSIS_WINDOW_MS", "30")
+    os.getenv(
+        "QWEN3_TTS_TRIM_LEADING_SILENCE_ANALYSIS_WINDOW_MS",
+        str(QWEN3_TTS_TRIM_LEADING_SILENCE_ANALYSIS_WINDOW_MS_DEFAULT),
+    )
 )
 QWEN3_TTS_TRIM_LEADING_SILENCE_PRE_ROLL_MS = int(
-    os.getenv("QWEN3_TTS_TRIM_LEADING_SILENCE_PRE_ROLL_MS", "40")
+    os.getenv(
+        "QWEN3_TTS_TRIM_LEADING_SILENCE_PRE_ROLL_MS",
+        str(QWEN3_TTS_TRIM_LEADING_SILENCE_PRE_ROLL_MS_DEFAULT),
+    )
 )
-QWEN3_TTS_TRIM_LEADING_SILENCE_MAX_MS = int(os.getenv("QWEN3_TTS_TRIM_LEADING_SILENCE_MAX_MS", "8000"))
-QWEN3_TTS_REQUEST_TIMEOUT = float(os.getenv("QWEN3_TTS_REQUEST_TIMEOUT", "600"))
+QWEN3_TTS_TRIM_LEADING_SILENCE_MAX_MS = int(
+    os.getenv(
+        "QWEN3_TTS_TRIM_LEADING_SILENCE_MAX_MS",
+        str(QWEN3_TTS_TRIM_LEADING_SILENCE_MAX_MS_DEFAULT),
+    )
+)
+QWEN3_TTS_REQUEST_TIMEOUT = float(
+    os.getenv("QWEN3_TTS_REQUEST_TIMEOUT", str(QWEN3_TTS_REQUEST_TIMEOUT_DEFAULT))
+)
 QWEN3_TTS_WORKER_SCRIPT = os.path.join(API_DIR, "qwen3_tts_worker.py")
 QWEN3_TTS_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "qwen3_tts_worker")
+QWEN3_TTS_OUTPUT_DIR = expand_path(
+    os.getenv(
+        "QWEN3_TTS_OUTPUT_DIR",
+        os.getenv("TTS_OUTPUT_DIR", os.path.join(API_DIR, "tempAudio")),
+    )
+)
 QWEN3_TTS_USE_QWEN_LIBS = env_bool("QWEN3_TTS_USE_QWEN_LIBS", False)
 QWEN_LIBS_PATH = expand_path(os.getenv("QWEN_LIBS", os.path.join(API_DIR, "vendor/qwen_libs")))
 
@@ -404,6 +490,12 @@ class Qwen3TtsWorkerManager:
 
             with open(output_path, "rb") as f:
                 audio_bytes = f.read()
+            saved_output_path = persist_audio_bytes(
+                audio_bytes,
+                "qwen3_tts",
+                QWEN3_TTS_OUTPUT_DIR,
+            )
+            print(f"[Qwen3-TTS] 已保存生成音频: {saved_output_path}")
             self.last_error = None
             return audio_bytes
         except Exception as exc:
@@ -432,6 +524,7 @@ async def health():
             "qwen3_tts_model_dir": QWEN3_TTS_MODEL_DIR,
             "qwen_libs_path": QWEN_LIBS_PATH,
             "prompts_dir": PROMPTS_DIR,
+            "tts_output_dir": QWEN3_TTS_OUTPUT_DIR,
             "gpu_lock_file": GPU_LOCK_FILE,
             "worker_script": QWEN3_TTS_WORKER_SCRIPT,
             "worker_tmp_dir": QWEN3_TTS_WORKER_TMP_DIR,
