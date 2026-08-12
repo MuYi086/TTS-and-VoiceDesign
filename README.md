@@ -9,6 +9,7 @@
 - LongCat-AudioDiT-3.5B-bf16：24 kHz 参考音频声音克隆，端口 `8307`
 - dots.tts-soar：48 kHz 参考音频声音克隆，端口 `8308`
 - MOSS-SoundEffect v2.0：根据中英文提示词生成 48 kHz 声效，端口 `8311`
+- Stable Audio 3 Small-SFX：根据英文提示词生成 44.1 kHz 立体声音效，端口 `8312`
 - Qwen3-TTS VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/qwen/design`
 - MOSS VoiceGenerator：根据音色描述生成参考音频，走主 API 的 `/v1/moss/design`
 - Ming-omni-tts VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/Ming/design`
@@ -40,7 +41,8 @@ conda run -n LongCat-AudioDiT-3.5B-bf16 python api/longcat_audiodit_worker.py ..
 conda run -n dots_tts_soar python api/dots_tts_soar_worker.py ...
 ```
 
-MOSS-SoundEffect 使用独立的 `moss-soundEffect` 环境。MiMo 是云端 API，须通过环境变量提供密钥：
+MOSS-SoundEffect 使用独立的 `moss-soundEffect` 环境；Stable Audio 3 Small-SFX 使用独立的
+`stable_audio_3_small_sfx` 环境，并通过本机 `stable-audio-3` 官方源码运行。MiMo 是云端 API，须通过环境变量提供密钥：
 
 ```bash
 export MIMO_API_KEY=...
@@ -61,12 +63,14 @@ MiMo 是云端服务，运行后端的机器必须能连接 `https://api.xiaomim
 /home/muyi086/hf-mirror/IndexTeam/IndexTTS-2
 /home/muyi086/hf-mirror/IndexTeam/IndexTTS-2/hf_cache
 /home/muyi086/hf-mirror/OpenMOSS-Team/MOSS-SoundEffect-v2.0
+/home/muyi086/hf-mirror/stabilityai/stable-audio-3-small-sfx
 /home/muyi086/hf-mirror/Qwen/Qwen3-TTS-12Hz-1.7B-Base
 /home/muyi086/hf-mirror/openbmb/VoxCPM2
 /home/muyi086/hf-mirror/drbaph/LongCat-AudioDiT-3.5B-bf16
 /home/muyi086/hf-mirror/rednote-hilab/dots.tts-soar
 /home/muyi086/hf-mirror/google/umt5-base
 /home/muyi086/tts-depency/LongCat-AudioDiT
+/home/muyi086/tts-depency/stable-audio-3
 /home/muyi086/github/TTS-and-VoiceDesign/api/voxcpm2_helpers.py
 /home/muyi086/hf-mirror/stepfun-ai/Step-Audio-EditX
 /home/muyi086/hf-mirror/stepfun-ai/Step-Audio-Tokenizer
@@ -85,6 +89,7 @@ curl http://127.0.0.1:8306/v1/health
 curl http://127.0.0.1:8307/v1/health
 curl http://127.0.0.1:8308/v1/health
 curl http://127.0.0.1:8311/v1/health
+curl http://127.0.0.1:8312/v1/health
 ```
 
 默认服务地址：
@@ -96,7 +101,41 @@ http://127.0.0.1:8306  VoxCPM2 / Ming-omni-tts（由请求中的 backend 或 mod
 http://127.0.0.1:8307  LongCat-AudioDiT-3.5B-bf16
 http://127.0.0.1:8308  dots.tts-soar
 http://127.0.0.1:8311  MOSS-SoundEffect v2.0
+http://127.0.0.1:8312  Stable Audio 3 Small-SFX
 ```
+
+## 音效生成接口
+
+MOSS-SoundEffect v2.0 与 Stable Audio 3 Small-SFX 都接受同样的基础请求结构：
+
+```bash
+curl -X POST http://127.0.0.1:8311/v1/generate \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"雨夜中木门被轻敲三下，近距离，无可辨认说话声","seconds":3}' \
+  -o moss-sfx.wav
+
+curl -X POST http://127.0.0.1:8312/v1/generate \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"A wooden door is knocked three times in a quiet room, close perspective, no speech. TrackType: SFX","seconds":3}' \
+  -o stable-sfx.wav
+```
+
+`8312` 也支持 `steps`（默认 `8`）、`cfg_scale`（默认 `1.0`）、`seed`（默认 `-1`，每次随机）、
+`device`（`auto`、`cuda`、`cpu`）和 `dtype`（`auto`、`float16`、`float32`）。Stable Audio 3
+Small-SFX 仅用于音效而非语音或声音克隆，最大时长为 120 秒，输出为 44.1 kHz 32-bit float 立体声 WAV。
+官方模型以英文描述训练，英文提示词效果最佳；WebUI 会在剧本分析时同时生成中文 MOSS 提示词和英文
+Stable Audio 提示词。短而具体的音效应使用与实际声音相符的短时长；`TrackType: SFX` 通常可帮助模型
+保持音效语义。
+
+Stable Audio 服务与其他本地推理服务一样采用“一请求一个 worker”：worker 在
+`stable_audio_3_small_sfx` 环境中载入模型，完成后显式执行 CUDA 同步、`empty_cache` 和
+`ipc_collect`，随后进程退出。服务进程本身不导入模型，因此没有常驻显存。成功的 WAV 会同步保存到
+`api/tempAudio/`（可用 `STABLE_AUDIO_3_SMALL_SFX_OUTPUT_DIR` 或 `TTS_OUTPUT_DIR` 覆盖）。
+可通过 `STABLE_AUDIO_3_SMALL_SFX_CONDA_ENV`、`STABLE_AUDIO_3_SMALL_SFX_MODEL_DIR`、
+`STABLE_AUDIO_3_REPO_PATH`、`STABLE_AUDIO_3_SMALL_SFX_DEVICE`、`STABLE_AUDIO_3_SMALL_SFX_DTYPE`、
+`STABLE_AUDIO_3_SMALL_SFX_DEFAULT_SECONDS`、`STABLE_AUDIO_3_SMALL_SFX_DEFAULT_STEPS`、
+`STABLE_AUDIO_3_SMALL_SFX_DEFAULT_CFG_SCALE`、`STABLE_AUDIO_3_SMALL_SFX_DEFAULT_SEED` 和
+`STABLE_AUDIO_3_SMALL_SFX_REQUEST_TIMEOUT` 覆盖配置。
 
 ## 语音合成接口
 
@@ -135,7 +174,7 @@ VoxCPM2 的 `ultimate` 与 `controllable` 请求路径严格互斥：前者用�
 
 VoxCPM2 可直接在 [`api/voxcpm2_api.py`](api/voxcpm2_api.py) 顶部修改集中默认值：`cfg_value`、`inference_timesteps`、`normalize`、`denoise`、`retry_badcase`、`load_denoiser`、`optimize`、`device`、`seed`、分片长度、分片停顿和超时。`start.sh` 不再写入这些默认值；如启动前显式设置同名 `VOXCPM2_*` 环境变量，环境变量仍会覆盖代码默认值。`denoise=true` 时会自动启用 `load_denoiser`。
 
-每个本地 TTS 合成端点成功后都会保留一份原始 WAV 到输出目录，接口响应内容不变。默认目录为 `api/tempAudio/`，文件名示例为 `indextts2_20260730_120000_xxxxx.wav`、`qwen3_tts_20260730_120000_xxxxx.wav`、`voxcpm2_20260730_120000_xxxxx.wav`、`ming_tts_20260730_120000_xxxxx.wav`、`longcat_audiodit_20260730_120000_xxxxx.wav` 或 `dots_tts_soar_20260730_120000_xxxxx.wav`。此目录不会自动清理，完成后请按需要转移或删除文件；`VOXCPM2_OUTPUT_DIR` 继续兼容旧版 VoxCPM2 专用配置。
+每个本地 TTS 与 Stable Audio 3 Small-SFX 端点成功后都会保留一份原始 WAV 到输出目录，接口响应内容不变。默认目录为 `api/tempAudio/`，文件名前缀示例为 `indextts2`、`qwen3_tts`、`voxcpm2`、`ming_tts`、`longcat_audiodit`、`dots_tts_soar` 或 `stable_audio_3_small_sfx`。此目录不会自动清理，完成后请按需要转移或删除文件；`VOXCPM2_OUTPUT_DIR` 继续兼容旧版 VoxCPM2 专用配置。
 
 ## Step-Audio-EditX 编辑接口
 
@@ -201,7 +240,7 @@ curl -X POST http://127.0.0.1:8300/v1/mimo/design \
   -o mimo_reference.wav
 ```
 
-`8311` 是独立的声效接口，不属于 WebUI 当前自动调用的 TTS 流程；生成的音频可手动导入前端 SFX 素材库。
+WebUI 的“脚本制作”页可在 `moss-soundEffect-v2`（8311）与 `stable-audio-3-small-sfx`（8312）间切换。剧本分析会为每项 SoundEffect 计划同时保存中文 `prompt` 和英文 `prompt_en`；选择 MOSS 时发送中文字段，选择 Stable Audio 时发送英文字段。两个服务生成的音频都会由页面存入工程资产库，Stable Audio 的服务端也会同步保留原始 WAV 到 `api/tempAudio/`。
 
 MOSS VoiceGenerator 必须搭配官方的 **MOSS-Audio-Tokenizer（v1，24 kHz、单声道）**；`MOSS-Audio-Tokenizer-v2` 是 48 kHz 双声道 codec，不能用于当前 1.7B VoiceGenerator，否则会产生非语音噪声。可通过 `MOSS_AUDIO_TOKENIZER_PATH` 覆盖默认路径。
 
@@ -225,4 +264,4 @@ VoxCPM2 音色设计由独立的 `api/voxcpm2_voice_design.py` 和 `api/voxcpm2_
 conda run -n qwen3-tts python -m unittest discover -s tests -v
 ```
 
-当前测试覆盖共享音频处理、GPU worker 生命周期、参考文本接口契约，以及 IndexTTS2、Qwen3-TTS、VoxCPM2、Ming 路由与 SoundEffect 的共享运行时约束。
+当前测试覆盖共享音频处理、GPU worker 生命周期、参考文本接口契约，以及 IndexTTS2、Qwen3-TTS、VoxCPM2、Ming、MOSS 与 Stable Audio 3 Small-SFX 的共享运行时约束。

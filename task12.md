@@ -1,9 +1,0 @@
-你阅读
-`api/longcat_audiodit_api.py`
-`api/dots_tts_soar_api.py`
-这些模型克隆的音频，在播放时前面有一段时间的空白，然后才是播放声音，这样会导致我最后将所有分段的音频合成完整的长音频时，每个断句中间都有空白。
-但是
-`api/qwen3_tts_api.py`
-`api/voxcpm2_api.py`
-克隆的音频是正常的，播放时没有空白。
-帮我分析原因，然后修复它
