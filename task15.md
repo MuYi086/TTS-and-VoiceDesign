@@ -1,0 +1,1 @@
+qwen3_tts目录软件已经安装了，接下来你参考`qwen3_tts迁移计划.md`，继续帮我完成`qwen3_tts`的功能，要求原`api`目录内qwen3_tts模型的功能都在qwen3_tts目录内实现，然后暴露再start.sh中以同样的端口提供服务，原有引用api内qwen3_tts的代码注释，等我确认迁移完全成功后再删除
