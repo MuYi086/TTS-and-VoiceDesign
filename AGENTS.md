@@ -2,33 +2,38 @@
 
 ## Project Structure & Module Organization
 
-This repository provides Unitale's local TTS and voice-design backend. Keep service-facing code in `api/`: `api.py` is the main API, `*_api.py` files expose model-specific HTTP services, and `*_worker.py` files run inference in their respective Conda environments. Shared request models and audio utilities live in `api/synthesis_request.py` and `api/audio_trim.py`. Runtime uploads, prompts, caches, and vendored upstream code belong under `api/prompts/`, `api/.cache/`, and `api/vendor/`; do not add generated audio or model weights to Git. Unit tests live in `tests/`; the standalone MOSS sound-effect example is in `soundEffect/`.
+This repository is Unitale's local TTS, voice-design, and sound-effect backend.
+
+- `api/` contains the HTTP entry points (`api.py` and model-specific `*_api.py` files), heavyweight inference workers (`*_worker.py`), shared request/audio helpers, and vendored upstream code.
+- The main API listens on `8300`; dedicated services use `8305` (Qwen3-TTS), `8306` (VoxCPM2/Ming), `8307` (LongCat), `8308` (dots.tts-soar), `8311` (MOSS sound effects), and `8313` (Stable Audio 3 Medium).
+- `tests/` contains standard-library `unittest` regression tests. `soundEffect/` contains the GPU-backed MOSS example and smoke test; `README.md` documents API contracts and model setup.
+- `api/prompts/`, `api/.cache/`, `api/tempAudio/`, and `api/vendor/` may contain runtime files, caches, generated WAVs, or local dependencies. Do not commit model weights, uploaded/reference audio, generated audio, or machine-specific paths.
 
 ## Build, Test, and Development Commands
 
-Activate the main environment before local work:
+Ensure Conda is available, then run:
 
 ```bash
-conda activate unitale-tts-local
-bash start.sh                         # 启动 8300、8305、8306 与 8311 服务
-conda run -n unitale-tts-local python -m unittest discover -s tests  # runs repository regression tests
-curl http://127.0.0.1:8300/v1/health # checks the main service
+conda activate qwen3-tts
+bash start.sh
+conda run -n qwen3-tts python -m unittest discover -s tests -v
+curl http://127.0.0.1:8300/v1/health
 ```
 
-`start.sh` exports the model paths, ports, cache paths, and worker Conda environments. Override settings through environment variables (for example, `PORT=8400 bash start.sh`) instead of editing machine-specific defaults. Use `soundEffect/run_moss_soundeffect_v2.sh` only for its GPU-backed sound-effect smoke test.
+`start.sh` launches all seven HTTP wrappers and their dedicated workers. Override ports, model locations, environments, and caches with environment variables (for example, `PORT=8400 bash start.sh`) rather than editing host-specific defaults. Use `soundEffect/run_moss_soundeffect_v2.sh` only for its CUDA/model smoke test.
 
-## Coding Style & Naming Conventions
+## Coding Style & Architecture
 
-Write Python with four-space indentation, `snake_case` functions and variables, and `PascalCase` Pydantic models. Follow the existing module split: keep HTTP validation and response handling in `*_api.py`, and heavyweight model loading/inference in `*_worker.py`. Preserve request compatibility fields and document any changed API contract in `README.md`. No formatter or linter is configured; match surrounding imports, type hints, docstrings, and line wrapping, and avoid unrelated reformatting.
+Use four-space Python indentation, `snake_case` for functions/variables, and `PascalCase` for Pydantic models. Keep request validation, HTTP responses, and compatibility behavior in `*_api.py`; keep model loading and inference in `*_worker.py`. Heavy workers run per request and coordinate through `GPU_LOCK_FILE`, so preserve cleanup and locking behavior. Match existing imports, type hints, docstrings, and line wrapping; no formatter or linter is configured.
+
+Preserve existing routes and compatibility fields. Add or update focused tests and document any API contract change in `README.md`. Model-specific defaults generally live at the top of the relevant API module; `start.sh` should primarily provide routing, paths, environments, and runtime configuration.
 
 ## Testing Guidelines
 
-Tests use the standard-library `unittest` runner and follow `test_*.py` / `test_*` naming. Add focused regression tests under `tests/` for shared API models, validation behavior, and audio utilities. Avoid tests that download models, require CUDA, or call external services; mock or isolate those boundaries. Run the full discovery command above before submitting changes.
+Name files `test_*.py` and methods `test_*`. Tests must avoid downloading models, requiring CUDA, or calling external services; mock workers, subprocesses, and filesystem boundaries instead. Run the full discovery command before submitting changes.
 
-## Commit & Pull Request Guidelines
+## Commits, Pull Requests & Security
 
-Recent history uses concise Conventional Commit-style subjects, primarily `feat: <summary>` (Chinese summaries are common). Use a clear type such as `feat:`, `fix:`, or `docs:` and keep each commit scoped. Pull requests should explain affected endpoints or workers, list test commands and results, link relevant issues, and include request/response examples or screenshots when behavior visible to the WebUI changes.
+Use concise Conventional Commit-style subjects such as `feat:`, `fix:`, or `docs:`; recent commits commonly use Chinese summaries. PRs should describe affected endpoints/workers, list test commands and results, link relevant issues, and include request/response examples or screenshots for WebUI-visible changes.
 
-## Security & Configuration
-
-Never commit API keys, local model paths, uploaded reference audio, caches, or generated WAV files. Supply `MIMO_API_KEY` and deployment-specific paths through the environment.
+Keep `MIMO_API_KEY` and deployment-specific paths in environment variables. Never commit secrets, local model directories, caches, uploaded audio, or generated WAV files.
