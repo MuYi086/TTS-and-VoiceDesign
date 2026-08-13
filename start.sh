@@ -43,16 +43,7 @@ export MOSS_SOUNDEFFECT_DEFAULT_CFG_SCALE="${MOSS_SOUNDEFFECT_DEFAULT_CFG_SCALE:
 export MOSS_SOUNDEFFECT_DEFAULT_SIGMA_SHIFT="${MOSS_SOUNDEFFECT_DEFAULT_SIGMA_SHIFT:-5.0}"
 export MOSS_SOUNDEFFECT_DEFAULT_SEED="${MOSS_SOUNDEFFECT_DEFAULT_SEED:-0}"
 export MOSS_SOUNDEFFECT_DISABLE_TORCHDYNAMO="${MOSS_SOUNDEFFECT_DISABLE_TORCHDYNAMO:-1}"
-export STABLE_AUDIO_3_SMALL_SFX_CONDA_ENV="${STABLE_AUDIO_3_SMALL_SFX_CONDA_ENV:-stable_audio_3_small_sfx}"
-export STABLE_AUDIO_3_SMALL_SFX_MODEL_DIR="${STABLE_AUDIO_3_SMALL_SFX_MODEL_DIR:-$HF_MIRROR_DIR/stabilityai/stable-audio-3-small-sfx}"
 export STABLE_AUDIO_3_REPO_PATH="${STABLE_AUDIO_3_REPO_PATH:-$HOME/tts-depency/stable-audio-3}"
-export STABLE_AUDIO_3_SMALL_SFX_DEVICE="${STABLE_AUDIO_3_SMALL_SFX_DEVICE:-auto}"
-export STABLE_AUDIO_3_SMALL_SFX_DTYPE="${STABLE_AUDIO_3_SMALL_SFX_DTYPE:-auto}"
-export STABLE_AUDIO_3_SMALL_SFX_DEFAULT_SECONDS="${STABLE_AUDIO_3_SMALL_SFX_DEFAULT_SECONDS:-7}"
-export STABLE_AUDIO_3_SMALL_SFX_DEFAULT_STEPS="${STABLE_AUDIO_3_SMALL_SFX_DEFAULT_STEPS:-8}"
-export STABLE_AUDIO_3_SMALL_SFX_DEFAULT_CFG_SCALE="${STABLE_AUDIO_3_SMALL_SFX_DEFAULT_CFG_SCALE:-1.0}"
-export STABLE_AUDIO_3_SMALL_SFX_DEFAULT_SEED="${STABLE_AUDIO_3_SMALL_SFX_DEFAULT_SEED:--1}"
-export STABLE_AUDIO_3_SMALL_SFX_REQUEST_TIMEOUT="${STABLE_AUDIO_3_SMALL_SFX_REQUEST_TIMEOUT:-900}"
 export STABLE_AUDIO_3_MEDIUM_CONDA_ENV="${STABLE_AUDIO_3_MEDIUM_CONDA_ENV:-stable_audio_3_medium}"
 export STABLE_AUDIO_3_MEDIUM_MODEL_DIR="${STABLE_AUDIO_3_MEDIUM_MODEL_DIR:-$HF_MIRROR_DIR/stabilityai/stable-audio-3-medium}"
 export STABLE_AUDIO_3_MEDIUM_DEVICE="${STABLE_AUDIO_3_MEDIUM_DEVICE:-cuda}"
@@ -107,8 +98,6 @@ export HOST="${HOST:-0.0.0.0}"
 export PORT="${PORT:-8300}"
 export SOUNDEFFECT_HOST="${SOUNDEFFECT_HOST:-$HOST}"
 export SOUNDEFFECT_PORT="${SOUNDEFFECT_PORT:-8311}"
-export STABLE_AUDIO_3_SMALL_SFX_HOST="${STABLE_AUDIO_3_SMALL_SFX_HOST:-$HOST}"
-export STABLE_AUDIO_3_SMALL_SFX_PORT="${STABLE_AUDIO_3_SMALL_SFX_PORT:-8312}"
 export STABLE_AUDIO_3_MEDIUM_HOST="${STABLE_AUDIO_3_MEDIUM_HOST:-$HOST}"
 export STABLE_AUDIO_3_MEDIUM_PORT="${STABLE_AUDIO_3_MEDIUM_PORT:-8313}"
 export QWEN3_TTS_HOST="${QWEN3_TTS_HOST:-$HOST}"
@@ -145,12 +134,9 @@ echo "IndexTTS2 code:      $INDEXTTS_CODE_DIR"
 echo "SoundEffect env:     $MOSS_SOUNDEFFECT_CONDA_ENV"
 echo "SoundEffect model:   $MOSS_SOUNDEFFECT_MODEL_DIR"
 echo "SoundEffect device:  $MOSS_SOUNDEFFECT_DEVICE ($MOSS_SOUNDEFFECT_DTYPE)"
-echo "Stable Audio 3 SFX env:    $STABLE_AUDIO_3_SMALL_SFX_CONDA_ENV"
-echo "Stable Audio 3 SFX model:  $STABLE_AUDIO_3_SMALL_SFX_MODEL_DIR"
-echo "Stable Audio 3 source:     $STABLE_AUDIO_3_REPO_PATH"
-echo "Stable Audio 3 SFX device: $STABLE_AUDIO_3_SMALL_SFX_DEVICE ($STABLE_AUDIO_3_SMALL_SFX_DTYPE)"
 echo "Stable Audio 3 Medium env:    $STABLE_AUDIO_3_MEDIUM_CONDA_ENV"
 echo "Stable Audio 3 Medium model:  $STABLE_AUDIO_3_MEDIUM_MODEL_DIR"
+echo "Stable Audio 3 source:        $STABLE_AUDIO_3_REPO_PATH"
 echo "Stable Audio 3 Medium device: $STABLE_AUDIO_3_MEDIUM_DEVICE ($STABLE_AUDIO_3_MEDIUM_DTYPE)"
 echo "Qwen3-TTS worker env: $QWEN3_TTS_CONDA_ENV"
 echo "Qwen3-TTS model:     $QWEN3_TTS_MODEL_DIR"
@@ -178,8 +164,6 @@ echo "Main API:            http://$HOST:$PORT"
 echo "Main health:         http://127.0.0.1:$PORT/v1/health"
 echo "SoundEffect API:     http://$SOUNDEFFECT_HOST:$SOUNDEFFECT_PORT"
 echo "SoundEffect health:  http://127.0.0.1:$SOUNDEFFECT_PORT/v1/health"
-echo "Stable Audio 3 SFX API:    http://$STABLE_AUDIO_3_SMALL_SFX_HOST:$STABLE_AUDIO_3_SMALL_SFX_PORT"
-echo "Stable Audio 3 SFX health: http://127.0.0.1:$STABLE_AUDIO_3_SMALL_SFX_PORT/v1/health"
 echo "Stable Audio 3 Medium API:    http://$STABLE_AUDIO_3_MEDIUM_HOST:$STABLE_AUDIO_3_MEDIUM_PORT"
 echo "Stable Audio 3 Medium health: http://127.0.0.1:$STABLE_AUDIO_3_MEDIUM_PORT/v1/health"
 echo "Qwen3-TTS API:       http://$QWEN3_TTS_HOST:$QWEN3_TTS_PORT"
@@ -195,7 +179,6 @@ echo "VoxCPM2 design route: http://127.0.0.1:$PORT/v1/voxcpm2/design"
 echo "MiMo design route:   http://127.0.0.1:$PORT/v1/mimo/design"
 echo "Step-Audio-EditX route: http://127.0.0.1:$PORT/v1/step-audio-editx/edit"
 echo "SoundEffect route:   http://127.0.0.1:$SOUNDEFFECT_PORT/v1/generate"
-echo "Stable Audio 3 SFX route: http://127.0.0.1:$STABLE_AUDIO_3_SMALL_SFX_PORT/v1/generate"
 echo "Stable Audio 3 Medium route: http://127.0.0.1:$STABLE_AUDIO_3_MEDIUM_PORT/v1/generate"
 echo "Qwen3-TTS synth:     http://127.0.0.1:$QWEN3_TTS_PORT/v2/synthesize"
 echo "VoxCPM2/Ming synth:  http://127.0.0.1:$VOXCPM2_PORT/v2/synthesize (backend/model selects worker)"
@@ -207,7 +190,6 @@ cd "$PROJECT_DIR"
 
 main_pid=""
 soundeffect_pid=""
-stable_audio_3_small_sfx_pid=""
 stable_audio_3_medium_pid=""
 qwen3_tts_pid=""
 voxcpm2_pid=""
@@ -218,7 +200,7 @@ cleanup() {
   local status=$?
   trap - INT TERM EXIT
 
-  for pid in "$main_pid" "$soundeffect_pid" "$stable_audio_3_small_sfx_pid" "$stable_audio_3_medium_pid" "$qwen3_tts_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid"; do
+  for pid in "$main_pid" "$soundeffect_pid" "$stable_audio_3_medium_pid" "$qwen3_tts_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid"; do
     if [[ -n "$pid" ]] && kill -0 -- "-$pid" 2>/dev/null; then
       kill -TERM -- "-$pid" 2>/dev/null || true
     fi
@@ -226,7 +208,7 @@ cleanup() {
 
   sleep 1
 
-  for pid in "$main_pid" "$soundeffect_pid" "$stable_audio_3_small_sfx_pid" "$stable_audio_3_medium_pid" "$qwen3_tts_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid"; do
+  for pid in "$main_pid" "$soundeffect_pid" "$stable_audio_3_medium_pid" "$qwen3_tts_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid"; do
     if [[ -n "$pid" ]] && kill -0 -- "-$pid" 2>/dev/null; then
       kill -KILL -- "-$pid" 2>/dev/null || true
     fi
@@ -234,7 +216,6 @@ cleanup() {
 
   wait "$main_pid" 2>/dev/null || true
   wait "$soundeffect_pid" 2>/dev/null || true
-  wait "$stable_audio_3_small_sfx_pid" 2>/dev/null || true
   wait "$stable_audio_3_medium_pid" 2>/dev/null || true
   wait "$qwen3_tts_pid" 2>/dev/null || true
   wait "$voxcpm2_pid" 2>/dev/null || true
@@ -249,8 +230,6 @@ setsid conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/api.py" &
 main_pid=$!
 HOST="$SOUNDEFFECT_HOST" PORT="$SOUNDEFFECT_PORT" setsid conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/soundeffect_api.py" &
 soundeffect_pid=$!
-HOST="$STABLE_AUDIO_3_SMALL_SFX_HOST" PORT="$STABLE_AUDIO_3_SMALL_SFX_PORT" setsid conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/stable_audio_3_small_sfx_api.py" &
-stable_audio_3_small_sfx_pid=$!
 HOST="$STABLE_AUDIO_3_MEDIUM_HOST" PORT="$STABLE_AUDIO_3_MEDIUM_PORT" setsid conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/stable_audio_3_medium_api.py" &
 stable_audio_3_medium_pid=$!
 HOST="$QWEN3_TTS_HOST" PORT="$QWEN3_TTS_PORT" setsid conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/qwen3_tts_api.py" &
@@ -262,4 +241,4 @@ longcat_audiodit_pid=$!
 HOST="$DOTS_TTS_SOAR_HOST" PORT="$DOTS_TTS_SOAR_PORT" setsid conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/dots_tts_soar_api.py" &
 dots_tts_soar_pid=$!
 
-wait -n "$main_pid" "$soundeffect_pid" "$stable_audio_3_small_sfx_pid" "$stable_audio_3_medium_pid" "$qwen3_tts_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid"
+wait -n "$main_pid" "$soundeffect_pid" "$stable_audio_3_medium_pid" "$qwen3_tts_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid"

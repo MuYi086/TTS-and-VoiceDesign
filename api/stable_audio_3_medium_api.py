@@ -140,8 +140,8 @@ class ForceCORS(BaseHTTPMiddleware):
 class StableAudio3MediumGenerateRequest(BaseModel):
     """Stable Audio 3 Medium text-to-audio parameters.
 
-    ``seconds`` keeps the same request contract as MOSS-SoundEffect and the
-    Small-SFX adapter; it is passed to the official runtime as ``duration``.
+    ``seconds`` keeps the same request contract as MOSS-SoundEffect; it is
+    passed to the official runtime as ``duration``.
     """
 
     prompt: str = Field(min_length=1, max_length=2_000)
