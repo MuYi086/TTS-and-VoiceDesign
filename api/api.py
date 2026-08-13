@@ -12,7 +12,6 @@ import queue
 import re
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import traceback
@@ -27,14 +26,12 @@ os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
 
 import uvicorn
 import soundfile as sf
-from typing import Any, Optional, List
+from typing import Any, Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
-from audio_output import persist_audio_bytes
-from synthesis_request import CloneSynthesisRequest
-from gpu_runtime import cuda_status, terminate_process_group
+from gpu_runtime import cuda_status
 from voxcpm2_voice_design import (
     VOXCPM2_MODEL_DIR,
     VOXCPM2_VOICE_DESIGN_WORKER_SCRIPT,
@@ -74,26 +71,12 @@ def expand_path(path: str) -> str:
 
 HF_MIRROR_DIR = expand_path(os.getenv("HF_MIRROR_DIR", "~/hf-mirror"))
 DEFAULT_QWEN_LIBS = os.path.join(API_DIR, "vendor/qwen_libs")
-DEFAULT_INDEXTTS_CODE_DIR = os.path.join(API_DIR, "vendor/index-tts")
 QWEN_LIBS = os.getenv("QWEN_LIBS", DEFAULT_QWEN_LIBS if os.path.isdir(DEFAULT_QWEN_LIBS) else "")
 QWEN_MODEL = expand_path(
     os.getenv(
         "QWEN_MODEL_DIR",
         os.path.join(HF_MIRROR_DIR, "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"),
     )
-)
-INDEXTTS_MODEL_DIR = expand_path(
-    os.getenv(
-        "INDEXTTS_MODEL_DIR",
-        os.path.join(HF_MIRROR_DIR, "IndexTeam/IndexTTS-2"),
-    )
-)
-INDEXTTS_CFG_PATH = expand_path(
-    os.getenv("INDEXTTS_CFG_PATH", os.path.join(INDEXTTS_MODEL_DIR, "config.yaml"))
-)
-INDEXTTS_CODE_DIR = os.getenv(
-    "INDEXTTS_CODE_DIR",
-    DEFAULT_INDEXTTS_CODE_DIR if os.path.isdir(DEFAULT_INDEXTTS_CODE_DIR) else "",
 )
 PROMPTS_DIR = expand_path(os.getenv("PROMPTS_DIR", os.path.join(API_DIR, "prompts")))
 TTS_OUTPUT_DIR = expand_path(
@@ -102,82 +85,7 @@ TTS_OUTPUT_DIR = expand_path(
 RUNTIME_CACHE_DIR = expand_path(os.getenv("RUNTIME_CACHE_DIR", os.path.join(API_DIR, ".cache/runtime")))
 GPU_LOCK_FILE = expand_path(os.getenv("GPU_LOCK_FILE", os.path.join(RUNTIME_CACHE_DIR, "gpu-runtime.lock")))
 LOCAL_FILES_ONLY = env_bool("LOCAL_FILES_ONLY", True)
-PRELOAD_INDEXTTS = env_bool("PRELOAD_INDEXTTS", False)
 CLEAN_UNKNOWN_PYTHON_PROCESSES = env_bool("CLEAN_UNKNOWN_PYTHON_PROCESSES", False)
-# ============================================================================
-# IndexTTS2 参考音频克隆调试默认值
-#
-# 调试克隆效果时，优先直接修改下面带 _DEFAULT 后缀的值，然后重启服务。
-# 环境变量仍可覆盖默认值，方便部署时统一配置；这些值会进入 IndexTTS2
-# worker 的合成 payload。
-# ============================================================================
-# 运行设备：None 表示由 IndexTTS2 自动选择 CUDA/CPU。
-INDEXTTS_DEVICE_DEFAULT: Optional[str] = None
-# 是否使用 fp16：显存足够或遇到精度问题时可改为 False。
-INDEXTTS_USE_FP16_DEFAULT = True
-# 是否启用 CUDA kernel：需要本地扩展已正确安装，否则保持 False。
-INDEXTTS_USE_CUDA_KERNEL_DEFAULT = False
-# beam search 分支数：增大可能改善候选质量，但会增加耗时。
-INDEXTTS_NUM_BEAMS_DEFAULT = 1
-# 单次请求超时时间，单位为秒；包含 worker 启动和完整合成。
-INDEXTTS_REQUEST_TIMEOUT_DEFAULT = 600.0
-# CUDA 可重试次数：只针对可恢复的显存/执行错误。
-INDEXTTS_CUDA_RETRY_COUNT_DEFAULT = 1
-# 普通分段的最大文本 token 数，过大可能增加显存峰值。
-INDEXTTS_MAX_TEXT_TOKENS_PER_SEGMENT_DEFAULT = 80
-# 单段最大 mel token 数，过小可能截断长语音。
-INDEXTTS_MAX_MEL_TOKENS_DEFAULT = 1200
-# CUDA 重试时使用更保守的文本 token 上限。
-INDEXTTS_CUDA_RETRY_MAX_TEXT_TOKENS_DEFAULT = 50
-# CUDA 重试时使用更保守的 mel token 上限。
-INDEXTTS_CUDA_RETRY_MAX_MEL_TOKENS_DEFAULT = 900
-
-INDEXTTS_DEVICE = os.getenv("INDEXTTS_DEVICE") or INDEXTTS_DEVICE_DEFAULT
-INDEXTTS_USE_FP16 = env_bool("INDEXTTS_USE_FP16", INDEXTTS_USE_FP16_DEFAULT)
-INDEXTTS_USE_CUDA_KERNEL = env_bool(
-    "INDEXTTS_USE_CUDA_KERNEL", INDEXTTS_USE_CUDA_KERNEL_DEFAULT
-)
-INDEXTTS_NUM_BEAMS = int(
-    os.getenv("INDEXTTS_NUM_BEAMS", str(INDEXTTS_NUM_BEAMS_DEFAULT))
-)
-INDEXTTS_REQUEST_TIMEOUT = float(
-    os.getenv("INDEXTTS_REQUEST_TIMEOUT", str(INDEXTTS_REQUEST_TIMEOUT_DEFAULT))
-)
-INDEXTTS_CUDA_RETRY_COUNT = max(
-    0,
-    int(os.getenv("INDEXTTS_CUDA_RETRY_COUNT", str(INDEXTTS_CUDA_RETRY_COUNT_DEFAULT))),
-)
-INDEXTTS_MAX_TEXT_TOKENS_PER_SEGMENT = max(
-    20,
-    int(
-        os.getenv(
-            "INDEXTTS_MAX_TEXT_TOKENS_PER_SEGMENT",
-            str(INDEXTTS_MAX_TEXT_TOKENS_PER_SEGMENT_DEFAULT),
-        )
-    ),
-)
-INDEXTTS_MAX_MEL_TOKENS = max(
-    256,
-    int(os.getenv("INDEXTTS_MAX_MEL_TOKENS", str(INDEXTTS_MAX_MEL_TOKENS_DEFAULT))),
-)
-INDEXTTS_CUDA_RETRY_MAX_TEXT_TOKENS = max(
-    20,
-    int(
-        os.getenv(
-            "INDEXTTS_CUDA_RETRY_MAX_TEXT_TOKENS",
-            str(INDEXTTS_CUDA_RETRY_MAX_TEXT_TOKENS_DEFAULT),
-        )
-    ),
-)
-INDEXTTS_CUDA_RETRY_MAX_MEL_TOKENS = max(
-    256,
-    int(
-        os.getenv(
-            "INDEXTTS_CUDA_RETRY_MAX_MEL_TOKENS",
-            str(INDEXTTS_CUDA_RETRY_MAX_MEL_TOKENS_DEFAULT),
-        )
-    ),
-)
 CUDA_RELEASE_DELAY = float(os.getenv("CUDA_RELEASE_DELAY", "2.0"))
 QWEN_DEVICE = os.getenv("QWEN_DEVICE") or None
 QWEN_DTYPE = os.getenv("QWEN_DTYPE") or None
@@ -201,16 +109,6 @@ MOSS_AUDIO_TOKENIZER_PATH = expand_path(
 MOSS_VOICEGENERATOR_WORKER_SCRIPT = os.path.join(API_DIR, "moss_voice_design_worker.py")
 MOSS_VOICEGENERATOR_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "moss_voice_design_worker")
 MOSS_VOICEGENERATOR_REQUEST_TIMEOUT = float(os.getenv("MOSS_VOICEGENERATOR_REQUEST_TIMEOUT", "900"))
-MING_OMNI_TTS_CONDA_ENV = os.getenv("MING_OMNI_TTS_CONDA_ENV", "Ming-omni-tts-0.5B")
-MING_OMNI_TTS_MODEL_DIR = expand_path(
-    os.getenv("MING_OMNI_TTS_MODEL_DIR", os.path.join(HF_MIRROR_DIR, "inclusionAI/Ming-omni-tts-0.5B"))
-)
-MING_OMNI_TTS_CODE_PATH = expand_path(
-    os.getenv("MING_OMNI_TTS_CODE_PATH", "~/tts-depency/Ming-omni-tts")
-)
-MING_OMNI_TTS_WORKER_SCRIPT = os.path.join(API_DIR, "ming_omni_tts_worker.py")
-MING_OMNI_TTS_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "ming_omni_tts_worker")
-MING_OMNI_TTS_REQUEST_TIMEOUT = float(os.getenv("MING_OMNI_TTS_REQUEST_TIMEOUT", "900"))
 MIMO_BASE_URL = os.getenv("MIMO_BASE_URL", "https://api.xiaomimimo.com/v1")
 MIMO_MODEL = os.getenv("MIMO_MODEL", "mimo-v2.5-tts-voicedesign")
 MIMO_AUTH_HEADER = os.getenv("MIMO_AUTH_HEADER", "api-key")
@@ -225,32 +123,6 @@ MIMO_RETRY_MAX_SECONDS = float(os.getenv("MIMO_RETRY_MAX_SECONDS", "60"))
 API_HOST = os.getenv("HOST", "0.0.0.0")
 API_PORT = int(os.getenv("PORT", "8300"))
 
-INDEXTTS_WORKER_SCRIPT = os.path.join(API_DIR, "indextts_worker.py")
-INDEXTTS_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "indextts_worker")
-
-INDEXTTS_AUX_DIR = os.path.join(INDEXTTS_MODEL_DIR, "hf_cache")
-INDEXTTS_REQUIRED_FILES = (
-    "config.yaml",
-    "bpe.model",
-    "wav2vec2bert_stats.pt",
-    "gpt.pth",
-    "s2mel.pth",
-    "feat2.pt",
-    "feat1.pt",
-    "qwen0.6bemo4-merge/config.json",
-    "qwen0.6bemo4-merge/model.safetensors",
-    "qwen0.6bemo4-merge/tokenizer.json",
-    "qwen0.6bemo4-merge/tokenizer_config.json",
-)
-INDEXTTS_AUX_REQUIRED_FILES = (
-    "hf_cache/w2v-bert-2.0/config.json",
-    "hf_cache/w2v-bert-2.0/preprocessor_config.json",
-    "hf_cache/semantic_codec_model.safetensors",
-    "hf_cache/campplus_cn_common.bin",
-    "hf_cache/bigvgan/config.json",
-    "hf_cache/bigvgan/bigvgan_generator.pt",
-)
-
 os.environ.setdefault("HF_HOME", HF_MIRROR_DIR)
 os.environ.setdefault("HF_MODULES_CACHE", os.path.join(RUNTIME_CACHE_DIR, "hf_modules"))
 os.environ.setdefault("NUMBA_CACHE_DIR", os.path.join(RUNTIME_CACHE_DIR, "numba"))
@@ -260,18 +132,12 @@ if LOCAL_FILES_ONLY:
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
     os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
-if INDEXTTS_CODE_DIR:
-    indextts_code_path = expand_path(INDEXTTS_CODE_DIR)
-    if os.path.isdir(indextts_code_path) and indextts_code_path not in sys.path:
-        sys.path.insert(0, indextts_code_path)
-
 os.makedirs(PROMPTS_DIR, exist_ok=True)
 os.makedirs(TTS_OUTPUT_DIR, exist_ok=True)
 os.makedirs(os.environ["HF_MODULES_CACHE"], exist_ok=True)
 os.makedirs(os.environ["NUMBA_CACHE_DIR"], exist_ok=True)
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 os.makedirs(os.environ["XDG_CACHE_HOME"], exist_ok=True)
-os.makedirs(INDEXTTS_WORKER_TMP_DIR, exist_ok=True)
 gpu_lock_dir = os.path.dirname(GPU_LOCK_FILE)
 if gpu_lock_dir:
     os.makedirs(gpu_lock_dir, exist_ok=True)
@@ -316,35 +182,6 @@ def gpu_runtime_lock(label: str):
             print(f"[GPU 锁] 已退出: {label}")
 
 
-def missing_relative_files(base_dir: str, relative_paths: tuple[str, ...]) -> List[str]:
-    return [
-        rel_path
-        for rel_path in relative_paths
-        if not os.path.isfile(os.path.join(base_dir, rel_path))
-    ]
-
-
-def indextts_aux_paths() -> dict:
-    return {
-        "w2v_bert": os.path.join(INDEXTTS_AUX_DIR, "w2v-bert-2.0"),
-        "semantic_codec": os.path.join(INDEXTTS_AUX_DIR, "semantic_codec_model.safetensors"),
-        "campplus": os.path.join(INDEXTTS_AUX_DIR, "campplus_cn_common.bin"),
-        "bigvgan": os.path.join(INDEXTTS_AUX_DIR, "bigvgan"),
-    }
-
-
-def indextts_file_status() -> dict:
-    main_missing = missing_relative_files(INDEXTTS_MODEL_DIR, INDEXTTS_REQUIRED_FILES)
-    aux_missing = missing_relative_files(INDEXTTS_MODEL_DIR, INDEXTTS_AUX_REQUIRED_FILES)
-    return {
-        "main_missing": main_missing,
-        "aux_missing": aux_missing,
-        "main_ready": not main_missing,
-        "aux_ready": not aux_missing,
-        "ready": not main_missing and not aux_missing,
-    }
-
-
 def module_available(module_name: str, search_path: Optional[str] = None) -> bool:
     if search_path:
         path = expand_path(search_path)
@@ -352,42 +189,6 @@ def module_available(module_name: str, search_path: Optional[str] = None) -> boo
             return False
         return importlib.machinery.PathFinder.find_spec(module_name, [path]) is not None
     return importlib.util.find_spec(module_name) is not None
-
-
-CUDA_ERROR_MARKERS = (
-    "cuda",
-    "cublas",
-    "cudnn",
-    "device not ready",
-    "device-side assert",
-    "out of memory",
-)
-
-
-def is_cuda_runtime_error(exc: BaseException | str) -> bool:
-    text = str(exc).lower()
-    return any(marker in text for marker in CUDA_ERROR_MARKERS)
-
-
-def is_retryable_cuda_error(exc: BaseException | str) -> bool:
-    text = str(exc).lower()
-    return any(
-        marker in text
-        for marker in (
-            "cuda driver error",
-            "device not ready",
-            "cuda error:",
-            "cublas_status_",
-            "cudnn_status_",
-        )
-    )
-
-
-def worker_error_excerpt(output: str) -> str:
-    lines = [line.strip() for line in output.splitlines() if line.strip()]
-    if not lines:
-        return "IndexTTS2 worker 未输出错误信息。"
-    return " | ".join(lines[-12:])
 
 
 def clear_worker_cuda_cache(torch_module: Any, label: str = "") -> None:
@@ -522,8 +323,6 @@ def qwen_daemon(input_q, output_q):
 # ==========================================
 class ModelManager:
     def __init__(self):
-        self.indextts_error: Optional[str] = None
-        self.indextts_process: Optional[subprocess.Popen] = None
         self.qwen_process: Optional[multiprocessing.Process] = None
         self.qwen_in_q: Optional[multiprocessing.Queue] = None
         self.qwen_out_q: Optional[multiprocessing.Queue] = None
@@ -532,9 +331,6 @@ class ModelManager:
         # 记录主进程 PID
         self.main_pid = os.getpid()
         
-        if PRELOAD_INDEXTTS and multiprocessing.current_process().name == 'MainProcess':
-            print("[启动] PRELOAD_INDEXTTS 已忽略：IndexTTS2 使用一次性 worker，不在 API 进程常驻。")
-
     def _kill_zombies(self):
         """云端兼容清理逻辑。本地默认关闭，避免误杀用户自己的 Python 任务。"""
         if not CLEAN_UNKNOWN_PYTHON_PROCESSES:
@@ -571,173 +367,12 @@ class ModelManager:
         except Exception:
             pass
 
-    def build_indextts_worker_payload(self, request, ref_audio_path: str) -> dict:
-        missing = []
-        if not os.path.isdir(INDEXTTS_MODEL_DIR):
-            missing.append(f"模型目录不存在: {INDEXTTS_MODEL_DIR}")
-        if not os.path.isfile(INDEXTTS_CFG_PATH):
-            missing.append(f"配置文件不存在: {INDEXTTS_CFG_PATH}")
-        file_status = indextts_file_status()
-        if file_status["main_missing"]:
-            missing.append("主模型文件缺失: " + ", ".join(file_status["main_missing"]))
-        if file_status["aux_missing"]:
-            missing.append("辅助模型文件缺失: " + ", ".join(file_status["aux_missing"]))
-        if not os.path.isfile(ref_audio_path):
-            missing.append(f"参考音频不存在: {ref_audio_path}")
-        if missing:
-            self.indextts_error = "；".join(missing)
-            raise RuntimeError(self.indextts_error)
-
-        return {
-            "text": request.text,
-            "ref_audio_path": ref_audio_path,
-            "emo_vector": request.emo_vector,
-            "emo_text": request.emo_text,
-            "model_dir": INDEXTTS_MODEL_DIR,
-            "cfg_path": INDEXTTS_CFG_PATH,
-            "code_dir": INDEXTTS_CODE_DIR,
-            "aux_paths": indextts_aux_paths(),
-            "device": INDEXTTS_DEVICE,
-            "use_fp16": INDEXTTS_USE_FP16,
-            "use_cuda_kernel": INDEXTTS_USE_CUDA_KERNEL,
-            "num_beams": INDEXTTS_NUM_BEAMS,
-            "qwen_emo_device": "cpu",
-            "offload_conditioning_models": True,
-            "max_text_tokens_per_segment": INDEXTTS_MAX_TEXT_TOKENS_PER_SEGMENT,
-            "max_mel_tokens": INDEXTTS_MAX_MEL_TOKENS,
-            "local_files_only": LOCAL_FILES_ONLY,
-            "runtime_cache_dir": RUNTIME_CACHE_DIR,
-            "hf_mirror_dir": HF_MIRROR_DIR,
-        }
-
-    @staticmethod
-    def _terminate_indextts_worker(proc: subprocess.Popen) -> None:
-        terminate_process_group(proc, "IndexTTS2")
-
-    def run_indextts_worker(self, payload: dict) -> bytes:
-        attempt_payload = dict(payload)
-        try:
-            for attempt in range(INDEXTTS_CUDA_RETRY_COUNT + 1):
-                try:
-                    audio_bytes = self._run_indextts_worker_once(attempt_payload)
-                    self.indextts_error = None
-                    return audio_bytes
-                except RuntimeError as exc:
-                    if attempt >= INDEXTTS_CUDA_RETRY_COUNT or not is_retryable_cuda_error(exc):
-                        raise
-
-                    retry_number = attempt + 1
-                    print(
-                        f"[IndexTTS2] 检测到可恢复的 CUDA 异常，自动启动新 worker 重试 "
-                        f"{retry_number}/{INDEXTTS_CUDA_RETRY_COUNT}: {exc}"
-                    )
-                    attempt_payload = dict(attempt_payload)
-                    attempt_payload["max_text_tokens_per_segment"] = min(
-                        int(
-                            attempt_payload.get("max_text_tokens_per_segment")
-                            or INDEXTTS_MAX_TEXT_TOKENS_PER_SEGMENT
-                        ),
-                        INDEXTTS_CUDA_RETRY_MAX_TEXT_TOKENS,
-                    )
-                    attempt_payload["max_mel_tokens"] = min(
-                        int(
-                            attempt_payload.get("max_mel_tokens")
-                            or INDEXTTS_MAX_MEL_TOKENS
-                        ),
-                        INDEXTTS_CUDA_RETRY_MAX_MEL_TOKENS,
-                    )
-        except Exception as exc:
-            self.indextts_error = str(exc)
-            raise
-
-        raise RuntimeError("IndexTTS2 worker 重试流程异常结束。")
-
-    def _run_indextts_worker_once(self, payload: dict) -> bytes:
-        if not os.path.isfile(INDEXTTS_WORKER_SCRIPT):
-            raise RuntimeError(f"IndexTTS2 worker 脚本不存在: {INDEXTTS_WORKER_SCRIPT}")
-
-        request_fd, request_path = tempfile.mkstemp(
-            dir=INDEXTTS_WORKER_TMP_DIR,
-            prefix="indextts_req_",
-            suffix=".json",
-        )
-        output_fd, output_path = tempfile.mkstemp(
-            dir=INDEXTTS_WORKER_TMP_DIR,
-            prefix="indextts_out_",
-            suffix=".wav",
-        )
-        os.close(request_fd)
-        os.close(output_fd)
-        proc: Optional[subprocess.Popen] = None
-
-        try:
-            with open(request_path, "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False)
-
-            command = [
-                sys.executable,
-                INDEXTTS_WORKER_SCRIPT,
-                "--input-json",
-                request_path,
-                "--output-wav",
-                output_path,
-            ]
-            print(f"[IndexTTS2] 启动一次性 worker: python={sys.executable}")
-            started = time.perf_counter()
-            proc = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                start_new_session=True,
-                env=os.environ.copy(),
-            )
-            self.indextts_process = proc
-            try:
-                stdout, stderr = proc.communicate(timeout=INDEXTTS_REQUEST_TIMEOUT)
-            except subprocess.TimeoutExpired:
-                self._terminate_indextts_worker(proc)
-                stdout, stderr = proc.communicate()
-                raise RuntimeError(
-                    f"IndexTTS2 worker 超时（>{INDEXTTS_REQUEST_TIMEOUT:.0f}s）"
-                )
-
-            elapsed = time.perf_counter() - started
-            if stdout.strip():
-                print(stdout.rstrip())
-            if stderr.strip():
-                print(stderr.rstrip())
-            print(f"[IndexTTS2] worker 退出码={proc.returncode}，耗时 {elapsed:.2f}s")
-
-            if proc.returncode != 0:
-                raise RuntimeError(worker_error_excerpt(stderr or stdout))
-            if not os.path.isfile(output_path) or os.path.getsize(output_path) == 0:
-                raise RuntimeError("IndexTTS2 worker 未生成音频文件。")
-
-            with open(output_path, "rb") as f:
-                audio_bytes = f.read()
-            return audio_bytes
-        finally:
-            if proc is not None:
-                self._terminate_indextts_worker(proc)
-            if self.indextts_process is proc:
-                self.indextts_process = None
-            for path in (request_path, output_path):
-                try:
-                    if os.path.exists(path):
-                        os.remove(path)
-                except Exception:
-                    pass
-            if proc is not None:
-                wait_after_cuda_release("after IndexTTS2 worker exit")
-
     def ensure_qwen_loaded(self):
         if self.qwen_process is not None and self.qwen_process.is_alive():
             return 
 
         print("🟡 [调度器] 准备启动 Qwen3...")
         self._kill_zombies() 
-        self.unload_indextts()
         
         print("🟡 [调度器] 拉起 Qwen3 守护进程...")
         self.qwen_in_q = multiprocessing.Queue()
@@ -781,33 +416,14 @@ class ModelManager:
         wait_after_cuda_release("after Qwen unload")
         print("✅ [调度器] Qwen3 已卸载")
 
-    def unload_indextts(self):
-        proc = self.indextts_process
-        if proc is None:
-            return
-
-        print("⚠️ [调度器] 正在终止 IndexTTS2 worker...")
-        self._terminate_indextts_worker(proc)
-        if self.indextts_process is proc:
-            self.indextts_process = None
-        wait_after_cuda_release("after IndexTTS2 worker exit")
-        print("✅ [调度器] IndexTTS2 worker 已退出")
-
     def unload_all(self):
         self.unload_qwen()
-        self.unload_indextts()
 
 manager = ModelManager()
 
 # ==========================================
 # 3. 接口定义
 # ==========================================
-class TextToSpeechRequest(CloneSynthesisRequest):
-    text: str 
-    audio_path: str 
-    emo_text: Optional[str] = None
-    emo_vector: Optional[List[float]] = Field(None, min_length=8, max_length=8)
-
 class QwenDesignRequest(BaseModel):
     voice_description: str
     text: str = "这是生成的参考音频预览。"
@@ -856,17 +472,6 @@ class MossDesignRequest(BaseModel):
     attn_implementation: Optional[str] = "auto"
 
 
-class MingDesignRequest(BaseModel):
-    voice_description: str
-    text: str = "这是生成的参考音频预览。"
-    save_as: Optional[str] = "designed_voice.wav"
-    prompt: Optional[str] = "Please generate speech based on the following description.\n"
-    max_decode_steps: Optional[int] = 200
-    cfg: Optional[float] = 2.0
-    sigma: Optional[float] = 0.25
-    temperature: Optional[float] = 0.0
-
-
 QWEN_VOICEDESIGN_WORKER = LocalWorkerConfig(
     conda_env=QWEN_VOICEDESIGN_CONDA_ENV,
     worker_script=QWEN_VOICEDESIGN_WORKER_SCRIPT,
@@ -885,17 +490,6 @@ MOSS_VOICEGENERATOR_WORKER = LocalWorkerConfig(
     label="MOSS-VoiceGenerator",
     file_prefix="moss_voice_design",
 )
-MING_OMNI_TTS_WORKER = LocalWorkerConfig(
-    conda_env=MING_OMNI_TTS_CONDA_ENV,
-    worker_script=MING_OMNI_TTS_WORKER_SCRIPT,
-    model_dir=MING_OMNI_TTS_MODEL_DIR,
-    temp_dir=MING_OMNI_TTS_WORKER_TMP_DIR,
-    timeout=MING_OMNI_TTS_REQUEST_TIMEOUT,
-    label="Ming-omni-tts",
-    file_prefix="ming_voice_design",
-)
-
-
 def run_qwen_voice_design(request: QwenDesignRequest) -> bytes:
     """Run Qwen VoiceDesign inside qwen3-voiceDesign, never in the API env."""
     payload = {
@@ -915,18 +509,6 @@ def run_moss_voice_design(request: MossDesignRequest) -> bytes:
         "local_files_only": LOCAL_FILES_ONLY,
     }
     return run_local_worker(payload, MOSS_VOICEGENERATOR_WORKER)
-
-
-def run_ming_voice_design(request: MingDesignRequest) -> bytes:
-    """Run Ming text-described voice generation inside its dedicated environment."""
-    payload = {
-        **request.model_dump(),
-        "operation": "voice_design",
-        "model_path": MING_OMNI_TTS_MODEL_DIR,
-        "code_path": MING_OMNI_TTS_CODE_PATH,
-        "local_files_only": LOCAL_FILES_ONLY,
-    }
-    return run_local_worker(payload, MING_OMNI_TTS_WORKER)
 
 
 class MiMoHTTPError(RuntimeError):
@@ -1248,8 +830,6 @@ def run_mimo_voice_design(request_data: dict[str, Any]) -> bytes:
 @app.get("/v1/health")
 async def health():
     qwen_pkg = module_available("qwen_tts", QWEN_LIBS)
-    indextts_pkg = module_available("indextts")
-    indextts_files = indextts_file_status()
     cuda = cuda_status()
     return {
         "code": 200,
@@ -1260,19 +840,11 @@ async def health():
             "moss_voicegenerator_model_dir": MOSS_VOICEGENERATOR_MODEL_DIR,
             "moss_audio_tokenizer_path": MOSS_AUDIO_TOKENIZER_PATH,
             "moss_voice_design_worker_script": MOSS_VOICEGENERATOR_WORKER_SCRIPT,
-            "ming_omni_tts_model_dir": MING_OMNI_TTS_MODEL_DIR,
-            "ming_omni_tts_code_path": MING_OMNI_TTS_CODE_PATH,
-            "ming_voice_design_worker_script": MING_OMNI_TTS_WORKER_SCRIPT,
             "voxcpm2_model_dir": VOXCPM2_MODEL_DIR,
             "voxcpm2_voice_design_worker_script": VOXCPM2_VOICE_DESIGN_WORKER_SCRIPT,
             "step_audio_editx_model_dir": str(STEP_AUDIO_EDITX_MODEL_DIR),
             "step_audio_tokenizer_path": str(STEP_AUDIO_TOKENIZER_PATH),
             "step_audio_editx_code_path": str(STEP_AUDIO_EDITX_CODE_PATH),
-            "indextts_model_dir": INDEXTTS_MODEL_DIR,
-            "indextts_cfg_path": INDEXTTS_CFG_PATH,
-            "indextts_aux_dir": INDEXTTS_AUX_DIR,
-            "indextts_worker_script": INDEXTTS_WORKER_SCRIPT,
-            "indextts_worker_tmp_dir": INDEXTTS_WORKER_TMP_DIR,
             "prompts_dir": PROMPTS_DIR,
             "tts_output_dir": TTS_OUTPUT_DIR,
             "gpu_lock_file": GPU_LOCK_FILE,
@@ -1284,9 +856,6 @@ async def health():
             "moss_voicegenerator_model_dir": os.path.isdir(MOSS_VOICEGENERATOR_MODEL_DIR),
             "moss_audio_tokenizer": is_moss_codec_path_ready(MOSS_AUDIO_TOKENIZER_PATH),
             "moss_voice_design_worker": os.path.isfile(MOSS_VOICEGENERATOR_WORKER_SCRIPT),
-            "ming_omni_tts_model_dir": os.path.isdir(MING_OMNI_TTS_MODEL_DIR),
-            "ming_omni_tts_code_path": os.path.isdir(MING_OMNI_TTS_CODE_PATH),
-            "ming_voice_design_worker": os.path.isfile(MING_OMNI_TTS_WORKER_SCRIPT),
             # Kept for compatibility with older health consumers; package
             # discovery in the API environment is not a readiness signal.
             "qwen_package": qwen_pkg,
@@ -1294,28 +863,13 @@ async def health():
             "voxcpm2_voice_design": voice_design_is_ready(),
             "step_audio_editx": step_audio_editx_is_ready(),
             "mimo_api_key": bool(os.getenv("MIMO_API_KEY")),
-            "indextts_model_dir": os.path.isdir(INDEXTTS_MODEL_DIR),
-            "indextts_config": os.path.isfile(INDEXTTS_CFG_PATH),
-            "indextts_package": indextts_pkg,
-            "indextts_worker_script": os.path.isfile(INDEXTTS_WORKER_SCRIPT),
-            "indextts_main_files": indextts_files["main_ready"],
-            "indextts_aux_files": indextts_files["aux_ready"],
-            "indextts_ready": indextts_files["ready"],
             "cuda": cuda["available"],
         },
         "cuda": cuda,
-        "missing": {
-            "indextts_main": indextts_files["main_missing"],
-            "indextts_aux": indextts_files["aux_missing"],
-        },
         "loaded": {
             "qwen_process": bool(manager.qwen_process and manager.qwen_process.is_alive()),
-            "indextts": bool(
-                manager.indextts_process and manager.indextts_process.poll() is None
-            ),
         },
         "last_errors": {
-            "indextts": manager.indextts_error,
             "step_audio_editx": step_audio_editx_manager.last_error,
         },
         "offline": {
@@ -1324,23 +878,13 @@ async def health():
             "transformers_offline": os.getenv("TRANSFORMERS_OFFLINE"),
         },
         "runtime": {
-            "voice_design_providers": ["qwen", "moss", "ming", "mimo", "voxcpm2"],
+            "voice_design_providers": ["qwen", "moss", "mimo", "voxcpm2"],
             "qwen_voice_design_worker_env": QWEN_VOICEDESIGN_CONDA_ENV,
             "moss_voice_design_worker_env": MOSS_VOICEGENERATOR_CONDA_ENV,
-            "ming_voice_design_worker_env": MING_OMNI_TTS_CONDA_ENV,
             "step_audio_editx_worker_env": STEP_AUDIO_EDITX_CONDA_ENV,
             "step_audio_editx_request_timeout": STEP_AUDIO_EDITX_REQUEST_TIMEOUT,
             "qwen_request_timeout": QWEN_REQUEST_TIMEOUT,
             "qwen_model_lifecycle": "one request -> one child process -> process exit releases VRAM",
-            "indextts_request_timeout": INDEXTTS_REQUEST_TIMEOUT,
-            "indextts_cuda_retry_count": INDEXTTS_CUDA_RETRY_COUNT,
-            "indextts_max_text_tokens_per_segment": INDEXTTS_MAX_TEXT_TOKENS_PER_SEGMENT,
-            "indextts_max_mel_tokens": INDEXTTS_MAX_MEL_TOKENS,
-            "indextts_retry_max_text_tokens": INDEXTTS_CUDA_RETRY_MAX_TEXT_TOKENS,
-            "indextts_retry_max_mel_tokens": INDEXTTS_CUDA_RETRY_MAX_MEL_TOKENS,
-            "indextts_qwen_emo_device": "cpu",
-            "indextts_offload_conditioning_models": True,
-            "indextts_model_lifecycle": "one request -> one worker -> process exit releases VRAM",
             "api_cuda_context": "disabled; health uses nvidia-smi",
             "gpu_scheduling": "all local services share one exclusive file lock",
             "mimo_model": MIMO_MODEL,
@@ -1381,18 +925,6 @@ async def voice_design_providers():
                 ),
             },
             {
-                "id": "ming",
-                "name": "Ming-omni-tts-0.5B",
-                "route": "/v1/Ming/design",
-                "type": "local_model",
-                "environment": MING_OMNI_TTS_CONDA_ENV,
-                "ready": (
-                    os.path.isdir(MING_OMNI_TTS_MODEL_DIR)
-                    and os.path.isdir(MING_OMNI_TTS_CODE_PATH)
-                    and os.path.isfile(MING_OMNI_TTS_WORKER_SCRIPT)
-                ),
-            },
-            {
                 "id": "voxcpm2",
                 "name": "VoxCPM2 VoiceDesign",
                 "route": "/v1/voxcpm2/design",
@@ -1416,7 +948,7 @@ async def internal_unload_all(request: Request):
     with gpu_runtime_lock("main/unload"):
         with manager.lock:
             manager.unload_all()
-    return JSONResponse({"code": 200, "msg": "已卸载 Qwen 并终止活动的 IndexTTS2 worker"})
+    return JSONResponse({"code": 200, "msg": "已卸载 Qwen worker"})
 
 @app.post("/v1/upload_audio")
 async def upload_audio(audio: UploadFile = File(...), full_path: str = Form(...)):
@@ -1483,21 +1015,6 @@ async def moss_design(request: MossDesignRequest):
             wait_after_cuda_release("after MOSS VoiceGenerator worker")
 
 
-@app.post("/v1/Ming/design")
-@app.post("/v1/ming/design")
-async def ming_design(request: MingDesignRequest):
-    with gpu_runtime_lock("ming/design"):
-        try:
-            return Response(content=run_ming_voice_design(request), media_type="audio/wav")
-        except HTTPException:
-            raise
-        except Exception as exc:
-            traceback.print_exc()
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
-        finally:
-            wait_after_cuda_release("after Ming VoiceDesign worker")
-
-
 @app.post("/v1/voxcpm2/design")
 async def voxcpm2_design(request: VoxCpm2VoiceDesignRequest):
     """独立的 VoxCPM2 音色设计接口，不与 Qwen 音色设计路由混用。"""
@@ -1540,57 +1057,14 @@ async def mimo_design(request: MimoDesignRequest):
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return Response(content=audio_bytes, media_type="audio/wav")
 
-@app.post("/v2/synthesize")
-async def synthesize_v2(request: TextToSpeechRequest):
-    with gpu_runtime_lock("indextts/synthesize"):
-        with manager.lock:
-            manager.unload_qwen()
-            manager._kill_zombies() # 双重保险
-
-            real_file_path = os.path.join(PROMPTS_DIR, hash_filename(request.audio_path))
-            if not os.path.isfile(real_file_path):
-                raise HTTPException(status_code=404, detail="音频不存在")
-
-            try:
-                payload = manager.build_indextts_worker_payload(request, real_file_path)
-                data = manager.run_indextts_worker(payload)
-                saved_output_path = persist_audio_bytes(data, "indextts2", TTS_OUTPUT_DIR)
-                print(f"[IndexTTS2] 已保存生成音频: {saved_output_path}")
-                return Response(content=data, media_type="audio/wav")
-            except HTTPException:
-                raise
-            except Exception as e:
-                manager.indextts_error = str(e)
-                traceback.print_exc()
-                if is_cuda_runtime_error(e):
-                    if is_retryable_cuda_error(e) and INDEXTTS_CUDA_RETRY_COUNT > 0:
-                        retry_detail = (
-                            f"已自动创建新 worker 重试 {INDEXTTS_CUDA_RETRY_COUNT} 次，"
-                        )
-                    elif is_retryable_cuda_error(e):
-                        retry_detail = "未启用自动重试，"
-                    else:
-                        retry_detail = "该异常不属于可自动恢复类型，"
-                    raise HTTPException(
-                        status_code=500,
-                        detail=(
-                            f"{e}. IndexTTS2 {retry_detail}但 CUDA 仍不可用。"
-                            "worker 已退出，当前请求的 CUDA 上下文已由进程边界回收；"
-                            "如果后续新请求仍报 device not ready，"
-                            "需要重启 WSL 或宿主机 NVIDIA 驱动。"
-                        ),
-                    )
-                raise HTTPException(status_code=500, detail=str(e))
-
 if __name__ == "__main__":
     multiprocessing.set_start_method('spawn', force=True)
     print("==================================================")
-    print("   Unitale AI 本地后端服务 IndexTTS2 + EditX + Qwen/MOSS/Ming/MiMo/VoxCPM2")
+    print("   Unitale AI 本地后端服务 EditX + Qwen/MOSS/MiMo/VoxCPM2")
     print("==================================================")
     print(f"[配置] Qwen 模型目录: {QWEN_MODEL}")
     print(f"[配置] Qwen VoiceDesign worker env: {QWEN_VOICEDESIGN_CONDA_ENV}")
     print(f"[配置] MOSS VoiceGenerator worker env: {MOSS_VOICEGENERATOR_CONDA_ENV}")
-    print(f"[配置] Ming-omni-tts worker env: {MING_OMNI_TTS_CONDA_ENV}")
     print(f"[配置] VoxCPM2 VoiceDesign 模型目录: {VOXCPM2_MODEL_DIR}")
     print(f"[配置] Step-Audio-EditX worker env: {STEP_AUDIO_EDITX_CONDA_ENV}")
     print(f"[配置] Step-Audio-EditX 模型目录: {STEP_AUDIO_EDITX_MODEL_DIR}")
@@ -1599,20 +1073,7 @@ if __name__ == "__main__":
     print(f"[配置] MiMo base URL: {MIMO_BASE_URL}")
     print(f"[配置] MiMo 模型: {MIMO_MODEL}")
     print(f"[配置] MiMo API key: {'已配置' if os.getenv('MIMO_API_KEY') else '未配置'}")
-    print(f"[配置] IndexTTS2 模型目录: {INDEXTTS_MODEL_DIR}")
-    print(f"[配置] IndexTTS2 配置: {INDEXTTS_CFG_PATH}")
-    print(f"[配置] IndexTTS2 worker: {INDEXTTS_WORKER_SCRIPT}")
     print(f"[配置] prompts 目录: {PROMPTS_DIR}")
     print(f"[配置] GPU 锁文件: {GPU_LOCK_FILE}")
-    print(f"[配置] local_files_only={LOCAL_FILES_ONLY}, preload_indextts={PRELOAD_INDEXTTS}")
-    print(
-        f"[配置] indextts_device={INDEXTTS_DEVICE or 'auto'}, "
-        f"indextts_fp16={INDEXTTS_USE_FP16}, "
-        f"indextts_cuda_kernel={INDEXTTS_USE_CUDA_KERNEL}, "
-        f"indextts_num_beams={INDEXTTS_NUM_BEAMS}, "
-        f"request_timeout={INDEXTTS_REQUEST_TIMEOUT:.0f}s, "
-        f"cuda_retry={INDEXTTS_CUDA_RETRY_COUNT}, "
-        f"segment_tokens={INDEXTTS_MAX_TEXT_TOKENS_PER_SEGMENT}, "
-        f"max_mel_tokens={INDEXTTS_MAX_MEL_TOKENS}"
-    )
+    print(f"[配置] local_files_only={LOCAL_FILES_ONLY}")
     uvicorn.run(app, host=API_HOST, port=API_PORT)

@@ -2,17 +2,14 @@
 
 本项目是 Unitale 前端使用的本地后端，当前提供：
 
-- IndexTTS2：参考音频 + 文本合成，端口 `8300`
 - Qwen3-TTS-12Hz-1.7B-Base：参考音频 + 文本合成，端口 `8305`
 - VoxCPM2：参考音频 + 文本合成，端口 `8306`
-- Ming-omni-tts-0.5B：参考音频 + 文本合成，复用端口 `8306`，通过 `backend` / `model` 选择
 - LongCat-AudioDiT-3.5B-bf16：24 kHz 参考音频声音克隆，端口 `8307`
 - dots.tts-soar：48 kHz 参考音频声音克隆，端口 `8308`
 - MOSS-SoundEffect v2.0：根据中英文提示词生成 48 kHz 声效，端口 `8311`
 - Stable Audio 3 Medium：默认音效模型；根据英文提示词生成音乐或 44.1 kHz 立体声音效，端口 `8313`
 - Qwen3-TTS VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/qwen/design`
 - MOSS VoiceGenerator：根据音色描述生成参考音频，走主 API 的 `/v1/moss/design`
-- Ming-omni-tts VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/Ming/design`
 - MiMo TTS VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/mimo/design`
 - VoxCPM2 VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/voxcpm2/design`
 - Step-Audio-EditX：对已上传的音频按情绪、说话风格、非语言表现等进行迭代编辑，走主 API 的 `/v1/step-audio-editx/edit`
@@ -21,21 +18,19 @@
 
 ## 本地环境
 
-主 API 与 IndexTTS2 worker 默认使用 `qwen3-tts` 环境；如果部署环境另有依赖，可通过 `CONDA_ENV` 覆盖：
+主 API 默认使用 `qwen3-tts` 环境；如果部署环境另有依赖，可通过 `CONDA_ENV` 覆盖：
 
 ```bash
 conda activate qwen3-tts
 ```
 
-Qwen3-TTS、MOSS VoiceGenerator、Ming-omni-tts、VoxCPM2 和 Step-Audio-EditX 在请求期间分别由对应 Conda 环境拉起一次性 worker。模型在请求结束后由 worker 退出释放显存；主 API、各包装器和 worker 共享 `GPU_LOCK_FILE`，避免并发抢占 GPU。
+Qwen3-TTS、MOSS VoiceGenerator、VoxCPM2 和 Step-Audio-EditX 在请求期间分别由对应 Conda 环境拉起一次性 worker。模型在请求结束后由 worker 退出释放显存；主 API、各包装器和 worker 共享 `GPU_LOCK_FILE`，避免并发抢占 GPU。
 
 ```bash
-conda run -n qwen3-tts python api/indextts_worker.py ...
 conda run -n qwen3-tts python api/qwen3_tts_worker.py ...
 conda run -n voxcpm2 python api/voxcpm2_worker.py ...
 conda run -n qwen3-voiceDesign python api/qwen_voice_design_worker.py ...
 conda run -n moss-voiceGenerator python api/moss_voice_design_worker.py ...
-conda run -n Ming-omni-tts-0.5B python api/ming_omni_tts_worker.py ...
 conda run -n Step-Audio-EditX python api/step_audio_editx_worker.py ...
 conda run -n LongCat-AudioDiT-3.5B-bf16 python api/longcat_audiodit_worker.py ...
 conda run -n dots_tts_soar python api/dots_tts_soar_worker.py ...
@@ -58,10 +53,6 @@ MiMo 是云端服务，运行后端的机器必须能连接 `https://api.xiaomim
 /home/muyi086/hf-mirror/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
 /home/muyi086/hf-mirror/OpenMOSS-Team/MOSS-VoiceGenerator
 /home/muyi086/hf-mirror/OpenMOSS-Team/MOSS-Audio-Tokenizer
-/home/muyi086/hf-mirror/inclusionAI/Ming-omni-tts-0.5B
-/home/muyi086/tts-depency/Ming-omni-tts
-/home/muyi086/hf-mirror/IndexTeam/IndexTTS-2
-/home/muyi086/hf-mirror/IndexTeam/IndexTTS-2/hf_cache
 /home/muyi086/hf-mirror/OpenMOSS-Team/MOSS-SoundEffect-v2.0
 /home/muyi086/hf-mirror/stabilityai/stable-audio-3-medium
 /home/muyi086/hf-mirror/Qwen/Qwen3-TTS-12Hz-1.7B-Base
@@ -76,8 +67,6 @@ MiMo 是云端服务，运行后端的机器必须能连接 `https://api.xiaomim
 /home/muyi086/hf-mirror/stepfun-ai/Step-Audio-Tokenizer
 /home/muyi086/tts-depency/Step-Audio-EditX
 ```
-
-`hf_cache` 内包含 IndexTTS2 辅助模型：`w2v-bert-2.0`、`semantic_codec`、`campplus` 和 `bigvgan`。
 
 ## 启动与健康检查
 
@@ -95,9 +84,9 @@ curl http://127.0.0.1:8313/v1/health
 默认服务地址：
 
 ```text
-http://127.0.0.1:8300  IndexTTS2、音色设计与 Step-Audio-EditX 编辑
+http://127.0.0.1:8300  音色设计与 Step-Audio-EditX 编辑
 http://127.0.0.1:8305  Qwen3-TTS-12Hz-1.7B-Base
-http://127.0.0.1:8306  VoxCPM2 / Ming-omni-tts（由请求中的 backend 或 model 选择）
+http://127.0.0.1:8306  VoxCPM2
 http://127.0.0.1:8307  LongCat-AudioDiT-3.5B-bf16
 http://127.0.0.1:8308  dots.tts-soar
 http://127.0.0.1:8311  MOSS-SoundEffect v2.0
@@ -135,7 +124,7 @@ Stable Audio 提示词。短而具体的音效应使用与实际声音相符的�
 
 ## 语音合成接口
 
-五个语音合成服务均支持以下流程：
+四个语音合成服务均支持以下流程：
 
 1. `POST /v1/upload_audio` 上传参考音频。
 2. `GET /v1/check/audio?file_name=...` 确认后端已保存。
@@ -145,10 +134,8 @@ Stable Audio 提示词。短而具体的音效应使用与实际声音相符的�
 
 | 服务 | `prompt_text` 处理 |
 | --- | --- |
-| `8300` IndexTTS2 | 不使用参考转写，只接收参考音频与情绪向量。 |
 | `8305` Qwen3-TTS Base | 映射为官方 `ref_text`；缺失时回退到仅参考音频的克隆。 |
 | `8306` VoxCPM2 | `clone_mode="ultimate"` 有准确 `prompt_text` 时走 Ultimate Cloning；`clone_mode="controllable"` 只接受 `control_instruction`，不接受 `prompt_text`，并将指令写入目标文本前；未指定模式时保留旧的参考文本 / 仅参考音频兼容路径。 |
-| `8306` Ming-omni-tts | 发送 `backend: "ming"` 或 `model: "ming-omni-tts"` 时进入 Ming worker；`prompt_text` / `ref_text` 作为参考音频转写。 |
 | `8307` LongCat-AudioDiT-3.5B-bf16 | 必须提供参考音频准确逐字的 `prompt_text`；worker 按官方接口拼接 `prompt_text + text`，把参考音频重采样为 24 kHz 单声道，并使用模型配置的 `max_wav_duration` 限制总时长。 |
 | `8308` dots.tts-soar | 推荐提供参考音频准确逐字的 `prompt_text`，用于 continuation voice cloning；没有参考文本时使用官方支持的 x-vector-only cloning。仅支持 CUDA，输出 48 kHz 单声道。 |
 
@@ -156,7 +143,7 @@ LongCat-AudioDiT 的默认参数与官方声音克隆示例一致：16 步 ODE�
 
 LongCat 服务采用“一次请求一个 worker”生命周期；worker 完成或报错时显式执行 CUDA 同步、`empty_cache`、`ipc_collect`，随后进程退出，以释放模型显存。可通过以下环境变量覆盖默认配置：`LONGCAT_AUDIODIT_CONDA_ENV`、`LONGCAT_AUDIODIT_MODEL_DIR`、`LONGCAT_AUDIODIT_REPO_PATH`、`LONGCAT_AUDIODIT_TOKENIZER_PATH`、`LONGCAT_AUDIODIT_NFE`、`LONGCAT_AUDIODIT_GUIDANCE_STRENGTH`、`LONGCAT_AUDIODIT_GUIDANCE_METHOD`、`LONGCAT_AUDIODIT_MAX_CHARS_PER_CHUNK`、`LONGCAT_AUDIODIT_PAUSE_MS`、`LONGCAT_AUDIODIT_VAE_DTYPE` 和 `LONGCAT_AUDIODIT_REQUEST_TIMEOUT`。
 
-LongCat、Qwen3-TTS、dots.tts-soar、Ming-omni-tts 和 IndexTTS2 的克隆调试默认值都集中在对应 API 文件顶部，并带有中文说明；直接修改 `*_DEFAULT` 常量后重启服务即可生效。`start.sh` 只负责启动路由、环境和模型路径，不再覆盖这些 API 内的合成默认值；部署时显式设置的同名环境变量仍然优先。
+LongCat、Qwen3-TTS 和 dots.tts-soar 的克隆调试默认值都集中在对应 API 文件顶部，并带有中文说明；直接修改 `*_DEFAULT` 常量后重启服务即可生效。`start.sh` 只负责启动路由、环境和模型路径，不再覆盖这些 API 内的合成默认值；部署时显式设置的同名环境变量仍然优先。
 
 LongCat-AudioDiT 和 dots.tts-soar 的 worker 会在每个生成分段拼接前裁掉明显的前导静音，并在完整音频拼接后再次兜底检查；裁剪保留 40 毫秒起音保护，分段之间通过 `pause_ms` 配置的停顿仍会保留。
 
@@ -170,7 +157,7 @@ VoxCPM2 的 `ultimate` 与 `controllable` 请求路径严格互斥：前者用�
 
 VoxCPM2 可直接在 [`api/voxcpm2_api.py`](api/voxcpm2_api.py) 顶部修改集中默认值：`cfg_value`、`inference_timesteps`、`normalize`、`denoise`、`retry_badcase`、`load_denoiser`、`optimize`、`device`、`seed`、分片长度、分片停顿和超时。`start.sh` 不再写入这些默认值；如启动前显式设置同名 `VOXCPM2_*` 环境变量，环境变量仍会覆盖代码默认值。`denoise=true` 时会自动启用 `load_denoiser`。
 
-每个本地 TTS 与 Stable Audio 3 Medium 端点成功后都会保留一份原始 WAV 到输出目录，接口响应内容不变。默认目录为 `api/tempAudio/`，文件名前缀示例为 `indextts2`、`qwen3_tts`、`voxcpm2`、`ming`、`longcat_audiodit`、`dots_tts_soar` 或 `stable_audio_3_medium`。此目录不会自动清理，完成后请按需要转移或删除文件；`VOXCPM2_OUTPUT_DIR` 继续兼容旧版 VoxCPM2 专用配置。
+每个本地 TTS 与 Stable Audio 3 Medium 端点成功后都会保留一份原始 WAV 到输出目录，接口响应内容不变。默认目录为 `api/tempAudio/`，文件名前缀示例为 `qwen3_tts`、`voxcpm2`、`longcat_audiodit`、`dots_tts_soar` 或 `stable_audio_3_medium`。此目录不会自动清理，完成后请按需要转移或删除文件；`VOXCPM2_OUTPUT_DIR` 继续兼容旧版 VoxCPM2 专用配置。
 
 ## Step-Audio-EditX 编辑接口
 
@@ -190,11 +177,6 @@ curl -X POST http://127.0.0.1:8306/v2/synthesize \
   -H 'Content-Type: application/json' \
   -d '{"text":"唉，还是晚了一步。","audio_path":"reference.wav","clone_mode":"controllable","control_instruction":"自然、清晰地表达，保留必要的非语言反应，吐字清晰","nonverbal_tags":["sigh"]}' \
   -o synth.wav
-
-curl -X POST http://127.0.0.1:8306/v2/synthesize \
-  -H 'Content-Type: application/json' \
-  -d '{"backend":"ming","text":"你好，欢迎来到 Unitale。","audio_path":"reference.wav","prompt_text":"你好。"}' \
-  -o ming_synth.wav
 
 curl -X POST http://127.0.0.1:8307/v2/synthesize \
   -H 'Content-Type: application/json' \
@@ -219,11 +201,6 @@ curl -X POST http://127.0.0.1:8300/v1/moss/design \
   -H 'Content-Type: application/json' \
   -d '{"voice_description":"成年女性，温柔、清晰，语速中等。","text":"你好。"}' \
   -o moss_reference.wav
-
-curl -X POST http://127.0.0.1:8300/v1/Ming/design \
-  -H 'Content-Type: application/json' \
-  -d '{"voice_description":"成年女性，温柔、清晰，语速中等。","text":"你好。"}' \
-  -o ming_reference.wav
 
 curl -X POST http://127.0.0.1:8300/v1/voxcpm2/design \
   -H 'Content-Type: application/json' \
@@ -263,4 +240,4 @@ VoxCPM2 音色设计由独立的 `api/voxcpm2_voice_design.py` 和 `api/voxcpm2_
 conda run -n qwen3-tts python -m unittest discover -s tests -v
 ```
 
-当前测试覆盖共享音频处理、GPU worker 生命周期、参考文本接口契约，以及 IndexTTS2、Qwen3-TTS、VoxCPM2、Ming、MOSS 与 Stable Audio 3 Medium 的共享运行时约束。
+当前测试覆盖共享音频处理、GPU worker 生命周期、参考文本接口契约，以及 Qwen3-TTS、VoxCPM2、MOSS 与 Stable Audio 3 Medium 的共享运行时约束。

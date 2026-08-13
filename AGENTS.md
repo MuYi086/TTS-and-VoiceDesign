@@ -5,7 +5,7 @@
 This repository is Unitale's local TTS, voice-design, and sound-effect backend.
 
 - `api/` contains the HTTP entry points (`api.py` and model-specific `*_api.py` files), heavyweight inference workers (`*_worker.py`), shared request/audio helpers, and vendored upstream code.
-- The main API listens on `8300`; dedicated services use `8305` (Qwen3-TTS), `8306` (VoxCPM2/Ming), `8307` (LongCat), `8308` (dots.tts-soar), `8311` (MOSS sound effects), and `8313` (Stable Audio 3 Medium).
+- The main API listens on `8300`; dedicated services use `8305` (Qwen3-TTS), `8306` (VoxCPM2), `8307` (LongCat), `8308` (dots.tts-soar), `8311` (MOSS sound effects), and `8313` (Stable Audio 3 Medium).
 - `tests/` contains standard-library `unittest` regression tests. `soundEffect/` contains the GPU-backed MOSS example and smoke test; `README.md` documents API contracts and model setup.
 - `api/prompts/`, `api/.cache/`, `api/tempAudio/`, and `api/vendor/` may contain runtime files, caches, generated WAVs, or local dependencies. Do not commit model weights, uploaded/reference audio, generated audio, or machine-specific paths.
 
