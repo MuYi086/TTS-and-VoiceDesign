@@ -9,29 +9,28 @@
 - MOSS-SoundEffect v2.0：根据中英文提示词生成 48 kHz 声效，端口 `8311`
 - Stable Audio 3 Medium：默认音效模型；根据英文提示词生成音乐或 44.1 kHz 立体声音效，端口 `8313`
 - Qwen3-TTS VoiceDesign：根据音色描述生成参考音频，独立 uv 服务端口 `8314`，路由 `/v1/qwen/design`
-- MOSS VoiceGenerator：根据音色描述生成参考音频，走主 API 的 `/v1/moss/design`
+- MOSS VoiceGenerator：根据音色描述生成参考音频，独立 uv 服务端口 `8315`，路由 `/v1/moss/design`
 - MiMo TTS VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/mimo/design`
 - VoxCPM2 VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/voxcpm2/design`
 - Step-Audio-EditX：对已上传的音频按情绪、说话风格、非语言表现等进行迭代编辑，走主 API 的 `/v1/step-audio-editx/edit`
 
-主 API、其它模型 wrapper/worker 和共享运行时模块位于 `api/`；Qwen3-TTS Base 的独立 HTTP 服务和 worker 位于 `qwen3_tts/`，Qwen3-TTS VoiceDesign 的独立 uv 服务和 worker 位于 `qwen3_voiceDesign/`。上传资源、缓存和供应商代码位于 `api/prompts/`、`api/.cache/` 与 `api/vendor/`。所有本地 TTS 模型成功合成的 WAV 都会额外保留在 `api/tempAudio/`，文件名前缀用于区分模型；可通过 `TTS_OUTPUT_DIR` 统一覆盖，也可通过对应模型的 `*_OUTPUT_DIR` 覆盖。不要把生成音频或模型权重提交到 Git。
+主 API、其它模型 wrapper/worker 和共享运行时模块位于 `api/`；Qwen3-TTS Base、Qwen3-TTS VoiceDesign 和 MOSS VoiceGenerator 分别位于 `qwen3_tts/`、`qwen3_voiceDesign/` 和 `moss_voiceGenerator/`，使用各自的 uv 环境。上传资源、缓存和供应商代码位于 `api/prompts/`、`api/.cache/` 与 `api/vendor/`。所有本地 TTS 模型成功合成的 WAV 都会额外保留在 `api/tempAudio/`，文件名前缀用于区分模型；可通过 `TTS_OUTPUT_DIR` 统一覆盖，也可通过对应模型的 `*_OUTPUT_DIR` 覆盖。不要把生成音频或模型权重提交到 Git。
 
 ## 本地环境
 
-主 API 和其它轻量 wrapper 默认使用 `moss-soundEffect` Conda 环境；Qwen3-TTS 8305 和 Qwen3-TTS VoiceDesign 8314 服务使用各自目录内的 uv 环境，由 `uv run` 启动。如果部署环境另有共享 wrapper 环境，可通过 `CONDA_ENV` 覆盖：
+主 API 和其它轻量 wrapper 默认使用 `moss-soundEffect` Conda 环境；Qwen3-TTS 8305、Qwen3-TTS VoiceDesign 8314 和 MOSS VoiceGenerator 8315 服务使用各自目录内的 uv 环境，由 `uv run` 启动。如果部署环境另有共享 wrapper 环境，可通过 `CONDA_ENV` 覆盖：
 
 ```bash
 conda activate moss-soundEffect
 ```
 
-Qwen3-TTS、MOSS VoiceGenerator、VoxCPM2 和 Step-Audio-EditX 在请求期间分别拉起一次性 worker；Qwen3-TTS 使用自己的 uv Python，其它模型使用对应 Conda 环境。模型在请求结束后由 worker 退出释放显存；主 API、各包装器和 worker 共享 `GPU_LOCK_FILE`，避免并发抢占 GPU。
+Qwen3-TTS、MOSS VoiceGenerator、VoxCPM2 和 Step-Audio-EditX 在请求期间分别拉起一次性 worker；Qwen3-TTS 和 MOSS VoiceGenerator 使用各自的 uv Python，其它模型使用对应 Conda 环境。模型在请求结束后由 worker 退出释放显存；主 API、各包装器和 worker 共享 `GPU_LOCK_FILE`，避免并发抢占 GPU。
 
 ```bash
 uv run --project qwen3_tts python qwen3_tts/worker.py ...
 conda run -n voxcpm2 python api/voxcpm2_worker.py ...
 uv run --project qwen3_voiceDesign python qwen3_voiceDesign/worker.py ...
-# 回退参考：conda run -n qwen3-voiceDesign python api/qwen_voice_design_worker.py ...
-conda run -n moss-voiceGenerator python api/moss_voice_design_worker.py ...
+uv run --project moss_voiceGenerator python moss_voiceGenerator/worker.py ...
 conda run -n Step-Audio-EditX python api/step_audio_editx_worker.py ...
 conda run -n LongCat-AudioDiT-3.5B-bf16 python api/longcat_audiodit_worker.py ...
 conda run -n dots_tts_soar python api/dots_tts_soar_worker.py ...
@@ -76,6 +75,7 @@ bash start.sh
 curl http://127.0.0.1:8300/v1/health
 curl http://127.0.0.1:8305/v1/health
 curl http://127.0.0.1:8314/v1/health
+curl http://127.0.0.1:8315/v1/health
 curl http://127.0.0.1:8306/v1/health
 curl http://127.0.0.1:8307/v1/health
 curl http://127.0.0.1:8308/v1/health
@@ -86,9 +86,10 @@ curl http://127.0.0.1:8313/v1/health
 默认服务地址：
 
 ```text
-http://127.0.0.1:8300  音色设计与 Step-Audio-EditX 编辑
+http://127.0.0.1:8300  MiMo/VoxCPM2 音色设计与 Step-Audio-EditX 编辑
 http://127.0.0.1:8305  Qwen3-TTS-12Hz-1.7B-Base
 http://127.0.0.1:8314  Qwen3-TTS VoiceDesign
+http://127.0.0.1:8315  MOSS VoiceGenerator
 http://127.0.0.1:8306  VoxCPM2
 http://127.0.0.1:8307  LongCat-AudioDiT-3.5B-bf16
 http://127.0.0.1:8308  dots.tts-soar
@@ -194,20 +195,15 @@ curl -X POST http://127.0.0.1:8308/v2/synthesize \
 
 音色设计端点：
 
-Qwen3-TTS VoiceDesign 的迁移入口是 8314；8300 的旧 `/v1/qwen/design` 仅暂时保留作回退兼容，确认迁移完成后再删除旧 worker。
+Qwen3-TTS VoiceDesign 已完全迁移到独立的 uv 服务，直接访问 8314；主 API 8300 不再承载该模型的旧 Conda 逻辑。
 
 ```bash
-curl -X POST http://127.0.0.1:8300/v1/qwen/design \
-  -H 'Content-Type: application/json' \
-  -d '{"voice_description":"成年女性，声音清晰自然，语速中等。","text":"你好。"}' \
-  -o qwen_reference.wav
-
 curl -X POST http://127.0.0.1:8314/v1/qwen/design \
   -H 'Content-Type: application/json' \
   -d '{"voice_description":"成年女性，声音清晰自然，语速中等。","text":"你好。"}' \
   -o qwen_voicedesign_reference.wav
 
-curl -X POST http://127.0.0.1:8300/v1/moss/design \
+curl -X POST http://127.0.0.1:8315/v1/moss/design \
   -H 'Content-Type: application/json' \
   -d '{"voice_description":"成年女性，温柔、清晰，语速中等。","text":"你好。"}' \
   -o moss_reference.wav
@@ -238,7 +234,7 @@ HF_ENDPOINT=https://hf-mirror.com hf download OpenMOSS-Team/MOSS-Audio-Tokenizer
   --local-dir "$MOSS_CODEC_DIR"
 ```
 
-下载完成后，`GET /v1/health` 中的 `available.moss_audio_tokenizer` 应为 `true`，再重启 `bash start.sh`。worker 现在会在加载 Transformers 前检查 codec 的 `model_type`、24 kHz 单声道配置和权重完整性，并对不完整目录给出明确错误。
+下载完成后，`GET http://127.0.0.1:8315/v1/health` 中的 `available.moss_audio_tokenizer` 应为 `true`，再重启 `bash start.sh`。worker 现在会在加载 Transformers 前检查 codec 的 `model_type`、24 kHz 单声道配置和权重完整性，并对不完整目录给出明确错误。
 
 VoxCPM2 音色设计由独立的 `api/voxcpm2_voice_design.py` 和 `api/voxcpm2_voice_design_worker.py` 处理，不与克隆 worker 或 Qwen / MiMo 逻辑混用。它按照官方文档将音色描述编码为 `(音色描述)正文` 后调用 `model.generate()`。官方示例中的 `seed=42` 是可复现示例值，不是质量专用值；本项目克隆与音色设计默认不固定随机种子，需要复现实例时可通过请求显式传入 `seed=42`。
 
@@ -247,7 +243,7 @@ VoxCPM2 音色设计由独立的 `api/voxcpm2_voice_design.py` 和 `api/voxcpm2_
 测试不会下载权重、调用外部服务或加载 TTS 模型：
 
 ```bash
-uv run --project qwen3_voiceDesign python -m unittest discover -s tests -v
+uv run --project moss_voiceGenerator python -m unittest discover -s tests -v
 ```
 
 当前测试覆盖 Qwen3-TTS Base 与 VoiceDesign 的路由、健康契约、音频上传和 prompt sidecar、请求校验，以及两个 worker 使用 uv 解释器的一次性启动约束；测试不会下载权重、调用外部服务或加载 TTS 模型。

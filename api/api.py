@@ -1,17 +1,10 @@
 import fcntl
 import base64
-import gc
 import hashlib
-import importlib.machinery
-import importlib.util
 import io
 import json
-import multiprocessing
 import os
-import queue
 import re
-import subprocess
-import sys
 import threading
 import time
 import traceback
@@ -25,10 +18,8 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_s
 os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
 
 import uvicorn
-import soundfile as sf
 from typing import Any, Optional
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Response
 from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 from gpu_runtime import cuda_status
@@ -50,13 +41,13 @@ from step_audio_editx import (
     step_audio_editx_is_ready,
 )
 from local_worker import LocalWorkerConfig, run_local_worker
-from moss_voice_design_compat import is_moss_codec_path_ready
+# MOSS VoiceGenerator 已迁移到 moss_voiceGenerator/main.py（8315）。
+# 旧 8300 worker 依赖保留在 api/moss_voice_design_worker.py，待迁移确认后删除。
 
 # ==========================================
 # 0. 系统配置
 # ==========================================
 API_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_DIR = os.path.dirname(API_DIR)
 
 def env_bool(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
@@ -70,14 +61,6 @@ def expand_path(path: str) -> str:
 
 
 HF_MIRROR_DIR = expand_path(os.getenv("HF_MIRROR_DIR", "~/hf-mirror"))
-DEFAULT_QWEN_LIBS = os.path.join(API_DIR, "vendor/qwen_libs")
-QWEN_LIBS = os.getenv("QWEN_LIBS", DEFAULT_QWEN_LIBS if os.path.isdir(DEFAULT_QWEN_LIBS) else "")
-QWEN_MODEL = expand_path(
-    os.getenv(
-        "QWEN_MODEL_DIR",
-        os.path.join(HF_MIRROR_DIR, "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"),
-    )
-)
 PROMPTS_DIR = expand_path(os.getenv("PROMPTS_DIR", os.path.join(API_DIR, "prompts")))
 TTS_OUTPUT_DIR = expand_path(
     os.getenv("TTS_OUTPUT_DIR", os.path.join(API_DIR, "tempAudio"))
@@ -85,32 +68,21 @@ TTS_OUTPUT_DIR = expand_path(
 RUNTIME_CACHE_DIR = expand_path(os.getenv("RUNTIME_CACHE_DIR", os.path.join(API_DIR, ".cache/runtime")))
 GPU_LOCK_FILE = expand_path(os.getenv("GPU_LOCK_FILE", os.path.join(RUNTIME_CACHE_DIR, "gpu-runtime.lock")))
 LOCAL_FILES_ONLY = env_bool("LOCAL_FILES_ONLY", True)
-CLEAN_UNKNOWN_PYTHON_PROCESSES = env_bool("CLEAN_UNKNOWN_PYTHON_PROCESSES", False)
 CUDA_RELEASE_DELAY = float(os.getenv("CUDA_RELEASE_DELAY", "2.0"))
-QWEN_DEVICE = os.getenv("QWEN_DEVICE") or None
-QWEN_DTYPE = os.getenv("QWEN_DTYPE") or None
-QWEN_ATTN_IMPLEMENTATION = os.getenv("QWEN_ATTN_IMPLEMENTATION") or None
-QWEN_REQUEST_TIMEOUT = float(
-    os.getenv("QWEN_REQUEST_TIMEOUT", os.getenv("QWEN_VOICEDESIGN_WORKER_TIMEOUT", "900"))
-)
-# Legacy rollback configuration. The migrated qwen3_voiceDesign uv service is
-# the standalone port-8314 entry point; keep these values until migration sign-off.
-QWEN_VOICEDESIGN_CONDA_ENV = os.getenv("QWEN_VOICEDESIGN_CONDA_ENV", "qwen3-voiceDesign")
-QWEN_VOICEDESIGN_WORKER_SCRIPT = os.path.join(API_DIR, "qwen_voice_design_worker.py")
-QWEN_VOICEDESIGN_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "qwen_voice_design_worker")
-MOSS_VOICEGENERATOR_CONDA_ENV = os.getenv("MOSS_VOICEGENERATOR_CONDA_ENV", "moss-voiceGenerator")
-MOSS_VOICEGENERATOR_MODEL_DIR = expand_path(
-    os.getenv("MOSS_VOICEGENERATOR_MODEL_DIR", os.path.join(HF_MIRROR_DIR, "OpenMOSS-Team/MOSS-VoiceGenerator"))
-)
-MOSS_AUDIO_TOKENIZER_PATH = expand_path(
-    os.getenv(
-        "MOSS_AUDIO_TOKENIZER_PATH",
-        os.path.join(HF_MIRROR_DIR, "OpenMOSS-Team/MOSS-Audio-Tokenizer"),
-    )
-)
-MOSS_VOICEGENERATOR_WORKER_SCRIPT = os.path.join(API_DIR, "moss_voice_design_worker.py")
-MOSS_VOICEGENERATOR_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "moss_voice_design_worker")
-MOSS_VOICEGENERATOR_REQUEST_TIMEOUT = float(os.getenv("MOSS_VOICEGENERATOR_REQUEST_TIMEOUT", "900"))
+# 迁移前的 MOSS VoiceGenerator 配置（保留备查，暂不在主 API 注册）：
+# MOSS_VOICEGENERATOR_CONDA_ENV = os.getenv("MOSS_VOICEGENERATOR_CONDA_ENV", "moss-voiceGenerator")
+# MOSS_VOICEGENERATOR_MODEL_DIR = expand_path(
+#     os.getenv("MOSS_VOICEGENERATOR_MODEL_DIR", os.path.join(HF_MIRROR_DIR, "OpenMOSS-Team/MOSS-VoiceGenerator"))
+# )
+# MOSS_AUDIO_TOKENIZER_PATH = expand_path(
+#     os.getenv(
+#         "MOSS_AUDIO_TOKENIZER_PATH",
+#         os.path.join(HF_MIRROR_DIR, "OpenMOSS-Team/MOSS-Audio-Tokenizer"),
+#     )
+# )
+# MOSS_VOICEGENERATOR_WORKER_SCRIPT = os.path.join(API_DIR, "moss_voice_design_worker.py")
+# MOSS_VOICEGENERATOR_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "moss_voice_design_worker")
+# MOSS_VOICEGENERATOR_REQUEST_TIMEOUT = float(os.getenv("MOSS_VOICEGENERATOR_REQUEST_TIMEOUT", "900"))
 MIMO_BASE_URL = os.getenv("MIMO_BASE_URL", "https://api.xiaomimimo.com/v1")
 MIMO_MODEL = os.getenv("MIMO_MODEL", "mimo-v2.5-tts-voicedesign")
 MIMO_AUTH_HEADER = os.getenv("MIMO_AUTH_HEADER", "api-key")
@@ -165,12 +137,6 @@ def hash_filename(filename: str) -> str:
     return f"{h}{ext}"
 
 
-def assert_local_request(request: Request) -> None:
-    client_host = request.client.host if request.client else ""
-    if client_host not in {"127.0.0.1", "::1", "localhost"}:
-        raise HTTPException(status_code=403, detail="仅允许本机访问内部接口")
-
-
 @contextmanager
 def gpu_runtime_lock(label: str):
     with open(GPU_LOCK_FILE, "a+", encoding="utf-8") as lock_file:
@@ -184,33 +150,6 @@ def gpu_runtime_lock(label: str):
             print(f"[GPU 锁] 已退出: {label}")
 
 
-def module_available(module_name: str, search_path: Optional[str] = None) -> bool:
-    if search_path:
-        path = expand_path(search_path)
-        if not os.path.isdir(path):
-            return False
-        return importlib.machinery.PathFinder.find_spec(module_name, [path]) is not None
-    return importlib.util.find_spec(module_name) is not None
-
-
-def clear_worker_cuda_cache(torch_module: Any, label: str = "") -> None:
-    """Clear CUDA only inside the short-lived process that owns the model."""
-    gc.collect()
-    if not torch_module.cuda.is_available():
-        return
-
-    prefix = f"[CUDA] {label}: " if label else "[CUDA] "
-    try:
-        torch_module.cuda.synchronize()
-    except Exception as exc:
-        print(f"{prefix}synchronize 跳过: {exc}")
-    try:
-        torch_module.cuda.empty_cache()
-        torch_module.cuda.ipc_collect()
-    except Exception as exc:
-        print(f"{prefix}cache cleanup 跳过: {exc}")
-
-
 def wait_after_cuda_release(label: str = "") -> None:
     if CUDA_RELEASE_DELAY <= 0:
         return
@@ -219,228 +158,9 @@ def wait_after_cuda_release(label: str = "") -> None:
     time.sleep(CUDA_RELEASE_DELAY)
 
 
-def close_mp_queue(q: Optional[multiprocessing.Queue]) -> None:
-    if q is None:
-        return
-    try:
-        q.cancel_join_thread()
-    except Exception:
-        pass
-    try:
-        q.close()
-    except Exception:
-        pass
-
 # ==========================================
-# 1. Qwen3 守护进程逻辑
+# 1. 接口定义
 # ==========================================
-def qwen_daemon(input_q, output_q):
-    model = None
-    torch_module = None
-    try:
-        if QWEN_LIBS:
-            qwen_libs_path = expand_path(QWEN_LIBS)
-            if os.path.isdir(qwen_libs_path) and qwen_libs_path not in sys.path:
-                sys.path.insert(0, qwen_libs_path)
-
-        import torch
-        import sox
-        torch_module = torch
-
-        try:
-            from qwen_tts import Qwen3TTSModel
-        except ImportError:
-            from qwen_tts.inference.qwen3_tts_model import Qwen3TTSModel
-
-        if not os.path.isdir(QWEN_MODEL):
-            raise FileNotFoundError(f"Qwen 模型目录不存在: {QWEN_MODEL}")
-        
-        print(f"🟢 [Qwen Daemon] 子进程启动 (PID: {os.getpid()})，正在加载模型...")
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-        device_map = QWEN_DEVICE or ("cuda:0" if torch.cuda.is_available() else "cpu")
-        dtype_name = QWEN_DTYPE or ("bfloat16" if torch.cuda.is_available() else "float32")
-        dtype = getattr(torch, dtype_name)
-        load_kwargs = {
-            "device_map": device_map,
-            "dtype": dtype,
-            "local_files_only": LOCAL_FILES_ONLY,
-        }
-        if QWEN_ATTN_IMPLEMENTATION:
-            load_kwargs["attn_implementation"] = QWEN_ATTN_IMPLEMENTATION
-
-        print(f"🟢 [Qwen Daemon] 模型目录: {QWEN_MODEL}")
-        print(f"🟢 [Qwen Daemon] device_map={device_map}, dtype={dtype_name}, local_files_only={LOCAL_FILES_ONLY}")
-        model = Qwen3TTSModel.from_pretrained(QWEN_MODEL, **load_kwargs)
-        print(f"🟢 [Qwen Daemon] 模型加载完毕，等待指令...")
-        
-        while True:
-            try:
-                task = input_q.get(timeout=1) 
-            except queue.Empty:
-                continue
-
-            if task.get("command") == "STOP":
-                print("🔴 [Qwen Daemon] 收到停止指令，正在退出...")
-                break
-            
-            if task.get("command") == "DESIGN":
-                try:
-                    print(f"🔵 [Qwen Daemon] 开始处理音色合成任务...")
-                    req_dict = task["data"]
-                    wavs, sr = model.generate_voice_design(
-                        text=req_dict.get("text", "预览"),
-                        language="Chinese",
-                        instruct=req_dict["voice_description"]
-                    )
-                    
-                    audio_data = wavs[0].cpu().numpy() if hasattr(wavs[0], "cpu") else wavs[0]
-                    buf = io.BytesIO()
-                    sf.write(buf, audio_data, sr, format="WAV")
-                    buf.seek(0)
-                    
-                    output_q.put({"success": True, "audio_bytes": buf.read()})
-                    print(f"🔵 [Qwen Daemon] 任务完成")
-                except Exception as e:
-                    traceback.print_exc()
-                    output_q.put({"success": False, "error": str(e)})
-                    
-    except Exception as e:
-        print(f"❌ [Qwen Daemon] 致命错误: {e}")
-        traceback.print_exc()
-        try:
-            output_q.put({"success": False, "error": str(e)})
-        except Exception:
-            pass
-    finally:
-        if model:
-            del model
-        if torch_module is not None:
-            clear_worker_cuda_cache(torch_module, "Qwen daemon exit")
-        print("🔴 [Qwen Daemon] 进程销毁，显存释放")
-
-# ==========================================
-# 2. 全局模型管理器 (精准白名单版)
-# ==========================================
-class ModelManager:
-    def __init__(self):
-        self.qwen_process: Optional[multiprocessing.Process] = None
-        self.qwen_in_q: Optional[multiprocessing.Queue] = None
-        self.qwen_out_q: Optional[multiprocessing.Queue] = None
-        self.lock = threading.RLock()
-        
-        # 记录主进程 PID
-        self.main_pid = os.getpid()
-        
-    def _kill_zombies(self):
-        """云端兼容清理逻辑。本地默认关闭，避免误杀用户自己的 Python 任务。"""
-        if not CLEAN_UNKNOWN_PYTHON_PROCESSES:
-            return
-
-        try:
-            # 使用 ps 命令获取更详细的信息：PID 和 命令行
-            cmd = "ps -eo pid,args | grep python"
-            output = subprocess.check_output(cmd, shell=True, encoding='utf-8')
-            
-            for line in output.strip().split('\n'):
-                if not line: continue
-                parts = line.strip().split(maxsplit=1)
-                if len(parts) < 2: continue
-                
-                try:
-                    pid = int(parts[0])
-                    cmdline = parts[1]
-                except ValueError:
-                    continue
-
-                # 🛑 豁免名单 (Whitelist)
-                if pid == self.main_pid: continue
-                if self.qwen_process and self.qwen_process.is_alive() and pid == self.qwen_process.pid: continue
-                if "resource_tracker" in cmdline: continue
-                if "grep" in cmdline or "ps -eo" in cmdline: continue
-
-                # ☠️ 只有不在白名单里的，才是真正的入侵者
-                print(f"💀 [内部清洗] 发现未知 Python 进程 PID: {pid} ({cmdline[:15]}...)，执行清理...")
-                try:
-                    os.kill(pid, 9)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-    def ensure_qwen_loaded(self):
-        if self.qwen_process is not None and self.qwen_process.is_alive():
-            return 
-
-        print("🟡 [调度器] 准备启动 Qwen3...")
-        self._kill_zombies() 
-        
-        print("🟡 [调度器] 拉起 Qwen3 守护进程...")
-        self.qwen_in_q = multiprocessing.Queue()
-        self.qwen_out_q = multiprocessing.Queue()
-        self.qwen_process = multiprocessing.Process(
-            target=qwen_daemon, 
-            args=(self.qwen_in_q, self.qwen_out_q),
-            daemon=True
-        )
-        self.qwen_process.start()
-
-    def unload_qwen(self):
-        proc = self.qwen_process
-        if proc is None:
-            return
-
-        if proc.is_alive():
-            print("⚠️ [调度器] 正在卸载 Qwen3...")
-            try:
-                if self.qwen_in_q is not None:
-                    self.qwen_in_q.put({"command": "STOP"})
-            except Exception as e:
-                print(f"⚠️ [调度器] 发送 Qwen3 停止指令失败: {e}")
-
-            proc.join(timeout=10)
-            if proc.is_alive():
-                print("⚠️ [调度器] Qwen3 未及时退出，强制终止")
-                proc.terminate()
-                proc.join(timeout=10)
-            if proc.is_alive():
-                proc.kill()
-                proc.join(timeout=5)
-            if proc.is_alive():
-                raise RuntimeError("Qwen3 子进程无法退出，拒绝释放 GPU 锁")
-
-        close_mp_queue(self.qwen_in_q)
-        close_mp_queue(self.qwen_out_q)
-        self.qwen_process = None
-        self.qwen_in_q = None
-        self.qwen_out_q = None
-        wait_after_cuda_release("after Qwen unload")
-        print("✅ [调度器] Qwen3 已卸载")
-
-    def unload_all(self):
-        self.unload_qwen()
-
-manager = ModelManager()
-
-# ==========================================
-# 3. 接口定义
-# ==========================================
-class QwenDesignRequest(BaseModel):
-    voice_description: str
-    text: str = "这是生成的参考音频预览。"
-    save_as: Optional[str] = "designed_voice.wav" 
-    language: Optional[str] = "Chinese"
-    max_chars_per_chunk: Optional[int] = 0
-    pause_ms: Optional[int] = 250
-    max_new_tokens: Optional[int] = 2048
-    top_p: Optional[float] = None
-    temperature: Optional[float] = None
-    dtype: Optional[str] = "auto"
-    attn_implementation: Optional[str] = "auto"
-    device_map: Optional[str] = "cuda:0"
-
-
 class MimoDesignRequest(BaseModel):
     voice_description: str
     text: str = "这是生成的参考音频预览。"
@@ -459,58 +179,39 @@ class MimoDesignRequest(BaseModel):
     retry_max_seconds: Optional[float] = None
 
 
-class MossDesignRequest(BaseModel):
-    voice_description: str
-    text: str = "这是生成的参考音频预览。"
-    save_as: Optional[str] = "designed_voice.wav"
-    max_chars_per_chunk: Optional[int] = 0
-    pause_ms: Optional[int] = 250
-    max_new_tokens: Optional[int] = 4096
-    audio_temperature: Optional[float] = 1.5
-    audio_top_p: Optional[float] = 0.6
-    audio_top_k: Optional[int] = 50
-    audio_repetition_penalty: Optional[float] = 1.1
-    dtype: Optional[str] = "auto"
-    attn_implementation: Optional[str] = "auto"
-
-
-QWEN_VOICEDESIGN_WORKER = LocalWorkerConfig(
-    conda_env=QWEN_VOICEDESIGN_CONDA_ENV,
-    worker_script=QWEN_VOICEDESIGN_WORKER_SCRIPT,
-    model_dir=QWEN_MODEL,
-    temp_dir=QWEN_VOICEDESIGN_WORKER_TMP_DIR,
-    timeout=QWEN_REQUEST_TIMEOUT,
-    label="Qwen3-TTS VoiceDesign",
-    file_prefix="qwen_voice_design",
-)
-MOSS_VOICEGENERATOR_WORKER = LocalWorkerConfig(
-    conda_env=MOSS_VOICEGENERATOR_CONDA_ENV,
-    worker_script=MOSS_VOICEGENERATOR_WORKER_SCRIPT,
-    model_dir=MOSS_VOICEGENERATOR_MODEL_DIR,
-    temp_dir=MOSS_VOICEGENERATOR_WORKER_TMP_DIR,
-    timeout=MOSS_VOICEGENERATOR_REQUEST_TIMEOUT,
-    label="MOSS-VoiceGenerator",
-    file_prefix="moss_voice_design",
-)
-def run_qwen_voice_design(request: QwenDesignRequest) -> bytes:
-    """Legacy Conda fallback; the migrated service owns the port-8314 path."""
-    payload = {
-        **request.model_dump(),
-        "model_path": QWEN_MODEL,
-        "local_files_only": LOCAL_FILES_ONLY,
-    }
-    return run_local_worker(payload, QWEN_VOICEDESIGN_WORKER)
-
-
-def run_moss_voice_design(request: MossDesignRequest) -> bytes:
-    """Run MOSS VoiceGenerator inside its dedicated Conda environment."""
-    payload = {
-        **request.model_dump(),
-        "model_path": MOSS_VOICEGENERATOR_MODEL_DIR,
-        "codec_path": MOSS_AUDIO_TOKENIZER_PATH,
-        "local_files_only": LOCAL_FILES_ONLY,
-    }
-    return run_local_worker(payload, MOSS_VOICEGENERATOR_WORKER)
+# 旧主 API 的 MOSS 请求模型和 Conda worker（迁移确认前保留为注释）：
+# class MossDesignRequest(BaseModel):
+#     voice_description: str
+#     text: str = "这是生成的参考音频预览。"
+#     save_as: Optional[str] = "designed_voice.wav"
+#     max_chars_per_chunk: Optional[int] = 0
+#     pause_ms: Optional[int] = 250
+#     max_new_tokens: Optional[int] = 4096
+#     audio_temperature: Optional[float] = 1.5
+#     audio_top_p: Optional[float] = 0.6
+#     audio_top_k: Optional[int] = 50
+#     audio_repetition_penalty: Optional[float] = 1.1
+#     dtype: Optional[str] = "auto"
+#     attn_implementation: Optional[str] = "auto"
+#
+# MOSS_VOICEGENERATOR_WORKER = LocalWorkerConfig(
+#     conda_env=MOSS_VOICEGENERATOR_CONDA_ENV,
+#     worker_script=MOSS_VOICEGENERATOR_WORKER_SCRIPT,
+#     model_dir=MOSS_VOICEGENERATOR_MODEL_DIR,
+#     temp_dir=MOSS_VOICEGENERATOR_WORKER_TMP_DIR,
+#     timeout=MOSS_VOICEGENERATOR_REQUEST_TIMEOUT,
+#     label="MOSS-VoiceGenerator",
+#     file_prefix="moss_voice_design",
+# )
+# def run_moss_voice_design(request: MossDesignRequest) -> bytes:
+#     """Run MOSS VoiceGenerator inside its former dedicated Conda environment."""
+#     payload = {
+#         **request.model_dump(),
+#         "model_path": MOSS_VOICEGENERATOR_MODEL_DIR,
+#         "codec_path": MOSS_AUDIO_TOKENIZER_PATH,
+#         "local_files_only": LOCAL_FILES_ONLY,
+#     }
+#     return run_local_worker(payload, MOSS_VOICEGENERATOR_WORKER)
 
 
 class MiMoHTTPError(RuntimeError):
@@ -831,17 +532,11 @@ def run_mimo_voice_design(request_data: dict[str, Any]) -> bytes:
 
 @app.get("/v1/health")
 async def health():
-    qwen_pkg = module_available("qwen_tts", QWEN_LIBS)
     cuda = cuda_status()
     return {
         "code": 200,
         "paths": {
             "hf_mirror_dir": HF_MIRROR_DIR,
-            "qwen_model_dir": QWEN_MODEL,
-            "qwen_voice_design_worker_script": QWEN_VOICEDESIGN_WORKER_SCRIPT,
-            "moss_voicegenerator_model_dir": MOSS_VOICEGENERATOR_MODEL_DIR,
-            "moss_audio_tokenizer_path": MOSS_AUDIO_TOKENIZER_PATH,
-            "moss_voice_design_worker_script": MOSS_VOICEGENERATOR_WORKER_SCRIPT,
             "voxcpm2_model_dir": VOXCPM2_MODEL_DIR,
             "voxcpm2_voice_design_worker_script": VOXCPM2_VOICE_DESIGN_WORKER_SCRIPT,
             "step_audio_editx_model_dir": str(STEP_AUDIO_EDITX_MODEL_DIR),
@@ -853,14 +548,6 @@ async def health():
             "mimo_base_url": MIMO_BASE_URL,
         },
         "available": {
-            "qwen_model_dir": os.path.isdir(QWEN_MODEL),
-            "qwen_voice_design_worker": os.path.isfile(QWEN_VOICEDESIGN_WORKER_SCRIPT),
-            "moss_voicegenerator_model_dir": os.path.isdir(MOSS_VOICEGENERATOR_MODEL_DIR),
-            "moss_audio_tokenizer": is_moss_codec_path_ready(MOSS_AUDIO_TOKENIZER_PATH),
-            "moss_voice_design_worker": os.path.isfile(MOSS_VOICEGENERATOR_WORKER_SCRIPT),
-            # Kept for compatibility with older health consumers; package
-            # discovery in the API environment is not a readiness signal.
-            "qwen_package": qwen_pkg,
             "voxcpm2_model_dir": os.path.isdir(VOXCPM2_MODEL_DIR),
             "voxcpm2_voice_design": voice_design_is_ready(),
             "step_audio_editx": step_audio_editx_is_ready(),
@@ -868,9 +555,6 @@ async def health():
             "cuda": cuda["available"],
         },
         "cuda": cuda,
-        "loaded": {
-            "qwen_process": bool(manager.qwen_process and manager.qwen_process.is_alive()),
-        },
         "last_errors": {
             "step_audio_editx": step_audio_editx_manager.last_error,
         },
@@ -880,13 +564,9 @@ async def health():
             "transformers_offline": os.getenv("TRANSFORMERS_OFFLINE"),
         },
         "runtime": {
-            "voice_design_providers": ["qwen", "moss", "mimo", "voxcpm2"],
-            "qwen_voice_design_worker_env": QWEN_VOICEDESIGN_CONDA_ENV,
-            "moss_voice_design_worker_env": MOSS_VOICEGENERATOR_CONDA_ENV,
+            "voice_design_providers": ["mimo", "voxcpm2"],
             "step_audio_editx_worker_env": STEP_AUDIO_EDITX_CONDA_ENV,
             "step_audio_editx_request_timeout": STEP_AUDIO_EDITX_REQUEST_TIMEOUT,
-            "qwen_request_timeout": QWEN_REQUEST_TIMEOUT,
-            "qwen_model_lifecycle": "one request -> one child process -> process exit releases VRAM",
             "api_cuda_context": "disabled; health uses nvidia-smi",
             "gpu_scheduling": "all local services share one exclusive file lock",
             "mimo_model": MIMO_MODEL,
@@ -907,26 +587,6 @@ async def voice_design_providers():
         "code": 200,
         "providers": [
             {
-                "id": "qwen",
-                "name": "Qwen3-TTS VoiceDesign",
-                "route": "/v1/qwen/design",
-                "type": "local_model",
-                "environment": QWEN_VOICEDESIGN_CONDA_ENV,
-                "ready": os.path.isdir(QWEN_MODEL) and os.path.isfile(QWEN_VOICEDESIGN_WORKER_SCRIPT),
-            },
-            {
-                "id": "moss",
-                "name": "MOSS-VoiceGenerator",
-                "route": "/v1/moss/design",
-                "type": "local_model",
-                "environment": MOSS_VOICEGENERATOR_CONDA_ENV,
-                "ready": (
-                    os.path.isdir(MOSS_VOICEGENERATOR_MODEL_DIR)
-                    and is_moss_codec_path_ready(MOSS_AUDIO_TOKENIZER_PATH)
-                    and os.path.isfile(MOSS_VOICEGENERATOR_WORKER_SCRIPT)
-                ),
-            },
-            {
                 "id": "voxcpm2",
                 "name": "VoxCPM2 VoiceDesign",
                 "route": "/v1/voxcpm2/design",
@@ -943,14 +603,6 @@ async def voice_design_providers():
         ],
     }
 
-
-@app.post("/internal/unload_all")
-async def internal_unload_all(request: Request):
-    assert_local_request(request)
-    with gpu_runtime_lock("main/unload"):
-        with manager.lock:
-            manager.unload_all()
-    return JSONResponse({"code": 200, "msg": "已卸载 Qwen worker"})
 
 @app.post("/v1/upload_audio")
 async def upload_audio(audio: UploadFile = File(...), full_path: str = Form(...)):
@@ -989,34 +641,19 @@ async def check_audio_exists(file_name: str):
     exists = os.path.isfile(os.path.join(PROMPTS_DIR, hash_filename(file_name)))
     return {"code": 200 if exists else 404, "exists": exists}
 
-@app.post("/v1/qwen/design")
-async def qwen_design(request: QwenDesignRequest):
-    # Legacy 8300 compatibility route. New callers should use the standalone
-    # qwen3_voiceDesign service on 8314 while this fallback remains for rollback.
-    with gpu_runtime_lock("qwen/design"):
-        try:
-            return Response(content=run_qwen_voice_design(request), media_type="audio/wav")
-        except HTTPException:
-            raise
-        except Exception as exc:
-            traceback.print_exc()
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
-        finally:
-            wait_after_cuda_release("after Qwen VoiceDesign worker")
-
-
-@app.post("/v1/moss/design")
-async def moss_design(request: MossDesignRequest):
-    with gpu_runtime_lock("moss/design"):
-        try:
-            return Response(content=run_moss_voice_design(request), media_type="audio/wav")
-        except HTTPException:
-            raise
-        except Exception as exc:
-            traceback.print_exc()
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
-        finally:
-            wait_after_cuda_release("after MOSS VoiceGenerator worker")
+# 旧 MOSS 路由已迁移到 moss_voiceGenerator/main.py:8315；确认迁移成功后删除本注释块。
+# @app.post("/v1/moss/design")
+# async def moss_design(request: MossDesignRequest):
+#     with gpu_runtime_lock("moss/design"):
+#         try:
+#             return Response(content=run_moss_voice_design(request), media_type="audio/wav")
+#         except HTTPException:
+#             raise
+#         except Exception as exc:
+#             traceback.print_exc()
+#             raise HTTPException(status_code=500, detail=str(exc)) from exc
+#         finally:
+#             wait_after_cuda_release("after MOSS VoiceGenerator worker")
 
 
 @app.post("/v1/voxcpm2/design")
@@ -1062,13 +699,10 @@ async def mimo_design(request: MimoDesignRequest):
     return Response(content=audio_bytes, media_type="audio/wav")
 
 if __name__ == "__main__":
-    multiprocessing.set_start_method('spawn', force=True)
     print("==================================================")
-    print("   Unitale AI 本地后端服务 EditX + Qwen/MOSS/MiMo/VoxCPM2")
+    print("   Unitale AI 本地后端服务 EditX + MiMo/VoxCPM2")
     print("==================================================")
-    print(f"[配置] Qwen 模型目录: {QWEN_MODEL}")
-    print(f"[配置] Qwen VoiceDesign worker env: {QWEN_VOICEDESIGN_CONDA_ENV}")
-    print(f"[配置] MOSS VoiceGenerator worker env: {MOSS_VOICEGENERATOR_CONDA_ENV}")
+    # MOSS VoiceGenerator 已由 start.sh 单独启动在 8315。
     print(f"[配置] VoxCPM2 VoiceDesign 模型目录: {VOXCPM2_MODEL_DIR}")
     print(f"[配置] Step-Audio-EditX worker env: {STEP_AUDIO_EDITX_CONDA_ENV}")
     print(f"[配置] Step-Audio-EditX 模型目录: {STEP_AUDIO_EDITX_MODEL_DIR}")

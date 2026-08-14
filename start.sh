@@ -11,12 +11,11 @@ API_DIR="$PROJECT_DIR/api"
 CONDA_ENV="${CONDA_ENV:-moss-soundEffect}"
 QWEN3_TTS_PROJECT_DIR="${QWEN3_TTS_PROJECT_DIR:-$PROJECT_DIR/qwen3_tts}"
 QWEN3_VOICEDESIGN_PROJECT_DIR="${QWEN3_VOICEDESIGN_PROJECT_DIR:-$PROJECT_DIR/qwen3_voiceDesign}"
+MOSS_VOICEGENERATOR_PROJECT_DIR="${MOSS_VOICEGENERATOR_PROJECT_DIR:-$PROJECT_DIR/moss_voiceGenerator}"
 
 export HF_MIRROR_DIR="${HF_MIRROR_DIR:-$HOME/hf-mirror}"
-export QWEN_MODEL_DIR="${QWEN_MODEL_DIR:-$HF_MIRROR_DIR/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign}"
-export QWEN_VOICEDESIGN_CONDA_ENV="${QWEN_VOICEDESIGN_CONDA_ENV:-qwen3-voiceDesign}"
-export QWEN_VOICEDESIGN_WORKER_TIMEOUT="${QWEN_VOICEDESIGN_WORKER_TIMEOUT:-900}"
-export QWEN_VOICEDESIGN_MODEL_DIR="${QWEN_VOICEDESIGN_MODEL_DIR:-$QWEN_MODEL_DIR}"
+export QWEN_VOICEDESIGN_MODEL_DIR="${QWEN_VOICEDESIGN_MODEL_DIR:-$HF_MIRROR_DIR/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign}"
+# 仅供迁移确认前保留的旧主 API 配置；MOSS VoiceGenerator 现在由 uv 8315 服务启动。
 export MOSS_VOICEGENERATOR_CONDA_ENV="${MOSS_VOICEGENERATOR_CONDA_ENV:-moss-voiceGenerator}"
 export MOSS_VOICEGENERATOR_MODEL_DIR="${MOSS_VOICEGENERATOR_MODEL_DIR:-$HF_MIRROR_DIR/OpenMOSS-Team/MOSS-VoiceGenerator}"
 export MOSS_AUDIO_TOKENIZER_PATH="${MOSS_AUDIO_TOKENIZER_PATH:-$HF_MIRROR_DIR/OpenMOSS-Team/MOSS-Audio-Tokenizer}"
@@ -60,7 +59,6 @@ export PROMPTS_DIR="${PROMPTS_DIR:-$API_DIR/prompts}"
 export RUNTIME_CACHE_DIR="${RUNTIME_CACHE_DIR:-$API_DIR/.cache/runtime}"
 export GPU_LOCK_FILE="${GPU_LOCK_FILE:-$RUNTIME_CACHE_DIR/gpu-runtime.lock}"
 export LOCAL_FILES_ONLY="${LOCAL_FILES_ONLY:-1}"
-export CLEAN_UNKNOWN_PYTHON_PROCESSES="${CLEAN_UNKNOWN_PYTHON_PROCESSES:-0}"
 # LongCat、dots.tts-soar 的克隆默认值集中在各自 API 顶部；Qwen3-TTS 的默认值
 # 集中在 qwen3_tts/main.py；
 # 此处只保留环境、模型路径等启动路由配置，避免覆盖 API 内可直接调试的值。
@@ -78,7 +76,6 @@ export DOTS_TTS_SOAR_MODEL_DIR="${DOTS_TTS_SOAR_MODEL_DIR:-$HF_MIRROR_DIR/rednot
 export QWEN3_TTS_USE_QWEN_LIBS="${QWEN3_TTS_USE_QWEN_LIBS:-0}"
 export MOSS_SOUNDEFFECT_REQUEST_TIMEOUT="${MOSS_SOUNDEFFECT_REQUEST_TIMEOUT:-600}"
 export CUDA_RELEASE_DELAY="${CUDA_RELEASE_DELAY:-2.0}"
-export QWEN_REQUEST_TIMEOUT="${QWEN_REQUEST_TIMEOUT:-900}"
 export MIMO_BASE_URL="${MIMO_BASE_URL:-https://api.xiaomimimo.com/v1}"
 export MIMO_MODEL="${MIMO_MODEL:-mimo-v2.5-tts-voicedesign}"
 export MIMO_AUTH_HEADER="${MIMO_AUTH_HEADER:-api-key}"
@@ -106,6 +103,8 @@ export DOTS_TTS_SOAR_HOST="${DOTS_TTS_SOAR_HOST:-$HOST}"
 export DOTS_TTS_SOAR_PORT="${DOTS_TTS_SOAR_PORT:-8308}"
 export QWEN_VOICEDESIGN_HOST="${QWEN_VOICEDESIGN_HOST:-$HOST}"
 export QWEN_VOICEDESIGN_PORT="${QWEN_VOICEDESIGN_PORT:-8314}"
+export MOSS_VOICEGENERATOR_HOST="${MOSS_VOICEGENERATOR_HOST:-$HOST}"
+export MOSS_VOICEGENERATOR_PORT="${MOSS_VOICEGENERATOR_PORT:-8315}"
 
 export HF_MODULES_CACHE="${HF_MODULES_CACHE:-$RUNTIME_CACHE_DIR/hf_modules}"
 export NUMBA_CACHE_DIR="${NUMBA_CACHE_DIR:-$RUNTIME_CACHE_DIR/numba}"
@@ -117,9 +116,7 @@ echo "=================================================="
 echo "   Unitale AI local backend"
 echo "=================================================="
 echo "Main conda env:      $CONDA_ENV"
-echo "Qwen model:          $QWEN_MODEL_DIR"
-echo "Qwen VoiceDesign env: $QWEN_VOICEDESIGN_CONDA_ENV"
-echo "MOSS VoiceDesign env: $MOSS_VOICEGENERATOR_CONDA_ENV"
+echo "MOSS VoiceGenerator legacy Conda env: $MOSS_VOICEGENERATOR_CONDA_ENV"
 echo "MOSS VoiceGenerator:  $MOSS_VOICEGENERATOR_MODEL_DIR"
 echo "Step-Audio-EditX env: $STEP_AUDIO_EDITX_CONDA_ENV"
 echo "Step-Audio-EditX model: $STEP_AUDIO_EDITX_MODEL_DIR"
@@ -136,6 +133,9 @@ echo "Qwen3-TTS uv project:  $QWEN3_TTS_PROJECT_DIR"
 echo "Qwen3-TTS model:     $QWEN3_TTS_MODEL_DIR"
 echo "Qwen VoiceDesign uv project: $QWEN3_VOICEDESIGN_PROJECT_DIR"
 echo "Qwen VoiceDesign model:      $QWEN_VOICEDESIGN_MODEL_DIR"
+echo "MOSS VoiceGenerator uv project: $MOSS_VOICEGENERATOR_PROJECT_DIR"
+echo "MOSS VoiceGenerator model:      $MOSS_VOICEGENERATOR_MODEL_DIR"
+echo "MOSS Audio tokenizer:           $MOSS_AUDIO_TOKENIZER_PATH"
 echo "VoxCPM2 worker env:  $VOXCPM2_CONDA_ENV"
 echo "VoxCPM2 model:       $VOXCPM2_MODEL_DIR"
 echo "LongCat worker env:  $LONGCAT_AUDIODIT_CONDA_ENV"
@@ -165,12 +165,13 @@ echo "Qwen3-TTS API:       http://$QWEN3_TTS_HOST:$QWEN3_TTS_PORT"
 echo "Qwen3-TTS health:    http://127.0.0.1:$QWEN3_TTS_PORT/v1/health"
 echo "Qwen VoiceDesign API: http://$QWEN_VOICEDESIGN_HOST:$QWEN_VOICEDESIGN_PORT"
 echo "Qwen VoiceDesign health: http://127.0.0.1:$QWEN_VOICEDESIGN_PORT/v1/health"
+echo "MOSS VoiceGenerator API: http://$MOSS_VOICEGENERATOR_HOST:$MOSS_VOICEGENERATOR_PORT"
+echo "MOSS VoiceGenerator health: http://127.0.0.1:$MOSS_VOICEGENERATOR_PORT/v1/health"
 echo "VoxCPM2 API:         http://$VOXCPM2_HOST:$VOXCPM2_PORT"
 echo "VoxCPM2 health:      http://127.0.0.1:$VOXCPM2_PORT/v1/health"
 echo "LongCat health:      http://127.0.0.1:$LONGCAT_AUDIODIT_PORT/v1/health"
 echo "dots.tts-soar health: http://127.0.0.1:$DOTS_TTS_SOAR_PORT/v1/health"
-echo "Qwen design route:   http://127.0.0.1:$PORT/v1/qwen/design"
-echo "MOSS design route:   http://127.0.0.1:$PORT/v1/moss/design"
+echo "MOSS design route:   http://127.0.0.1:$MOSS_VOICEGENERATOR_PORT/v1/moss/design"
 echo "VoxCPM2 design route: http://127.0.0.1:$PORT/v1/voxcpm2/design"
 echo "MiMo design route:   http://127.0.0.1:$PORT/v1/mimo/design"
 echo "Step-Audio-EditX route: http://127.0.0.1:$PORT/v1/step-audio-editx/edit"
@@ -193,12 +194,13 @@ voxcpm2_pid=""
 longcat_audiodit_pid=""
 dots_tts_soar_pid=""
 qwen_voicedesign_pid=""
+moss_voicegenerator_pid=""
 
 cleanup() {
   local status=$?
   trap - INT TERM EXIT
 
-  for pid in "$main_pid" "$soundeffect_pid" "$stable_audio_3_medium_pid" "$qwen3_tts_pid" "$qwen_voicedesign_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid"; do
+  for pid in "$main_pid" "$soundeffect_pid" "$stable_audio_3_medium_pid" "$qwen3_tts_pid" "$qwen_voicedesign_pid" "$moss_voicegenerator_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid"; do
     if [[ -n "$pid" ]] && kill -0 -- "-$pid" 2>/dev/null; then
       kill -TERM -- "-$pid" 2>/dev/null || true
     fi
@@ -206,7 +208,7 @@ cleanup() {
 
   sleep 1
 
-  for pid in "$main_pid" "$soundeffect_pid" "$stable_audio_3_medium_pid" "$qwen3_tts_pid" "$qwen_voicedesign_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid"; do
+  for pid in "$main_pid" "$soundeffect_pid" "$stable_audio_3_medium_pid" "$qwen3_tts_pid" "$qwen_voicedesign_pid" "$moss_voicegenerator_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid"; do
     if [[ -n "$pid" ]] && kill -0 -- "-$pid" 2>/dev/null; then
       kill -KILL -- "-$pid" 2>/dev/null || true
     fi
@@ -217,6 +219,7 @@ cleanup() {
   wait "$stable_audio_3_medium_pid" 2>/dev/null || true
   wait "$qwen3_tts_pid" 2>/dev/null || true
   wait "$qwen_voicedesign_pid" 2>/dev/null || true
+  wait "$moss_voicegenerator_pid" 2>/dev/null || true
   wait "$voxcpm2_pid" 2>/dev/null || true
   wait "$longcat_audiodit_pid" 2>/dev/null || true
   wait "$dots_tts_soar_pid" 2>/dev/null || true
@@ -234,12 +237,18 @@ stable_audio_3_medium_pid=$!
 # Qwen3-TTS uv 服务：保持原端口 8305、环境变量和 API 路由。
 HOST="$QWEN3_TTS_HOST" PORT="$QWEN3_TTS_PORT" setsid uv run --project "$QWEN3_TTS_PROJECT_DIR" python "$QWEN3_TTS_PROJECT_DIR/main.py" &
 qwen3_tts_pid=$!
-# Qwen3-TTS VoiceDesign 已迁移到独立 uv 服务，保留 api/api.py 中的旧实现作为回退参考。
+# Qwen3-TTS VoiceDesign 独立 uv 服务：使用专用端口 8314。
 QWEN_VOICEDESIGN_HOST="$QWEN_VOICEDESIGN_HOST" QWEN_VOICEDESIGN_PORT="$QWEN_VOICEDESIGN_PORT" \
   HOST="$QWEN_VOICEDESIGN_HOST" PORT="$QWEN_VOICEDESIGN_PORT" \
   setsid uv run --project "$QWEN3_VOICEDESIGN_PROJECT_DIR" \
   python "$QWEN3_VOICEDESIGN_PROJECT_DIR/main.py" &
 qwen_voicedesign_pid=$!
+# MOSS VoiceGenerator 独立 uv 服务：使用专用端口 8315。
+MOSS_VOICEGENERATOR_HOST="$MOSS_VOICEGENERATOR_HOST" MOSS_VOICEGENERATOR_PORT="$MOSS_VOICEGENERATOR_PORT" \
+  HOST="$MOSS_VOICEGENERATOR_HOST" PORT="$MOSS_VOICEGENERATOR_PORT" \
+  setsid uv run --project "$MOSS_VOICEGENERATOR_PROJECT_DIR" \
+  python "$MOSS_VOICEGENERATOR_PROJECT_DIR/main.py" &
+moss_voicegenerator_pid=$!
 HOST="$VOXCPM2_HOST" PORT="$VOXCPM2_PORT" setsid conda run --no-capture-output -n "$VOXCPM2_CONDA_ENV" python "$API_DIR/voxcpm2_api.py" &
 voxcpm2_pid=$!
 HOST="$LONGCAT_AUDIODIT_HOST" PORT="$LONGCAT_AUDIODIT_PORT" setsid conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/longcat_audiodit_api.py" &
@@ -247,4 +256,4 @@ longcat_audiodit_pid=$!
 HOST="$DOTS_TTS_SOAR_HOST" PORT="$DOTS_TTS_SOAR_PORT" setsid conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/dots_tts_soar_api.py" &
 dots_tts_soar_pid=$!
 
-wait -n "$main_pid" "$soundeffect_pid" "$stable_audio_3_medium_pid" "$qwen3_tts_pid" "$qwen_voicedesign_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid"
+wait -n "$main_pid" "$soundeffect_pid" "$stable_audio_3_medium_pid" "$qwen3_tts_pid" "$qwen_voicedesign_pid" "$moss_voicegenerator_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid"
