@@ -33,6 +33,8 @@ from voxcpm2_voice_design import (
 from step_audio_editx import (
     STEP_AUDIO_EDITX_CODE_PATH,
     STEP_AUDIO_EDITX_CONDA_ENV,
+    STEP_AUDIO_EDITX_RUNTIME,
+    STEP_AUDIO_EDITX_UV_BASE_URL,
     STEP_AUDIO_EDITX_MODEL_DIR,
     STEP_AUDIO_EDITX_REQUEST_TIMEOUT,
     STEP_AUDIO_TOKENIZER_PATH,
@@ -40,9 +42,6 @@ from step_audio_editx import (
     manager as step_audio_editx_manager,
     step_audio_editx_is_ready,
 )
-from local_worker import LocalWorkerConfig, run_local_worker
-# MOSS VoiceGenerator 已迁移到 moss_voiceGenerator/main.py（8315）。
-# 旧 8300 worker 依赖保留在 api/moss_voice_design_worker.py，待迁移确认后删除。
 
 # ==========================================
 # 0. 系统配置
@@ -69,20 +68,6 @@ RUNTIME_CACHE_DIR = expand_path(os.getenv("RUNTIME_CACHE_DIR", os.path.join(API_
 GPU_LOCK_FILE = expand_path(os.getenv("GPU_LOCK_FILE", os.path.join(RUNTIME_CACHE_DIR, "gpu-runtime.lock")))
 LOCAL_FILES_ONLY = env_bool("LOCAL_FILES_ONLY", True)
 CUDA_RELEASE_DELAY = float(os.getenv("CUDA_RELEASE_DELAY", "2.0"))
-# 迁移前的 MOSS VoiceGenerator 配置（保留备查，暂不在主 API 注册）：
-# MOSS_VOICEGENERATOR_CONDA_ENV = os.getenv("MOSS_VOICEGENERATOR_CONDA_ENV", "moss-voiceGenerator")
-# MOSS_VOICEGENERATOR_MODEL_DIR = expand_path(
-#     os.getenv("MOSS_VOICEGENERATOR_MODEL_DIR", os.path.join(HF_MIRROR_DIR, "OpenMOSS-Team/MOSS-VoiceGenerator"))
-# )
-# MOSS_AUDIO_TOKENIZER_PATH = expand_path(
-#     os.getenv(
-#         "MOSS_AUDIO_TOKENIZER_PATH",
-#         os.path.join(HF_MIRROR_DIR, "OpenMOSS-Team/MOSS-Audio-Tokenizer"),
-#     )
-# )
-# MOSS_VOICEGENERATOR_WORKER_SCRIPT = os.path.join(API_DIR, "moss_voice_design_worker.py")
-# MOSS_VOICEGENERATOR_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "moss_voice_design_worker")
-# MOSS_VOICEGENERATOR_REQUEST_TIMEOUT = float(os.getenv("MOSS_VOICEGENERATOR_REQUEST_TIMEOUT", "900"))
 MIMO_BASE_URL = os.getenv("MIMO_BASE_URL", "https://api.xiaomimimo.com/v1")
 MIMO_MODEL = os.getenv("MIMO_MODEL", "mimo-v2.5-tts-voicedesign")
 MIMO_AUTH_HEADER = os.getenv("MIMO_AUTH_HEADER", "api-key")
@@ -177,41 +162,6 @@ class MimoDesignRequest(BaseModel):
     max_retries: Optional[int] = None
     retry_base_seconds: Optional[float] = None
     retry_max_seconds: Optional[float] = None
-
-
-# 旧主 API 的 MOSS 请求模型和 Conda worker（迁移确认前保留为注释）：
-# class MossDesignRequest(BaseModel):
-#     voice_description: str
-#     text: str = "这是生成的参考音频预览。"
-#     save_as: Optional[str] = "designed_voice.wav"
-#     max_chars_per_chunk: Optional[int] = 0
-#     pause_ms: Optional[int] = 250
-#     max_new_tokens: Optional[int] = 4096
-#     audio_temperature: Optional[float] = 1.5
-#     audio_top_p: Optional[float] = 0.6
-#     audio_top_k: Optional[int] = 50
-#     audio_repetition_penalty: Optional[float] = 1.1
-#     dtype: Optional[str] = "auto"
-#     attn_implementation: Optional[str] = "auto"
-#
-# MOSS_VOICEGENERATOR_WORKER = LocalWorkerConfig(
-#     conda_env=MOSS_VOICEGENERATOR_CONDA_ENV,
-#     worker_script=MOSS_VOICEGENERATOR_WORKER_SCRIPT,
-#     model_dir=MOSS_VOICEGENERATOR_MODEL_DIR,
-#     temp_dir=MOSS_VOICEGENERATOR_WORKER_TMP_DIR,
-#     timeout=MOSS_VOICEGENERATOR_REQUEST_TIMEOUT,
-#     label="MOSS-VoiceGenerator",
-#     file_prefix="moss_voice_design",
-# )
-# def run_moss_voice_design(request: MossDesignRequest) -> bytes:
-#     """Run MOSS VoiceGenerator inside its former dedicated Conda environment."""
-#     payload = {
-#         **request.model_dump(),
-#         "model_path": MOSS_VOICEGENERATOR_MODEL_DIR,
-#         "codec_path": MOSS_AUDIO_TOKENIZER_PATH,
-#         "local_files_only": LOCAL_FILES_ONLY,
-#     }
-#     return run_local_worker(payload, MOSS_VOICEGENERATOR_WORKER)
 
 
 class MiMoHTTPError(RuntimeError):
@@ -565,7 +515,9 @@ async def health():
         },
         "runtime": {
             "voice_design_providers": ["mimo", "voxcpm2"],
+            "step_audio_editx_runtime": STEP_AUDIO_EDITX_RUNTIME,
             "step_audio_editx_worker_env": STEP_AUDIO_EDITX_CONDA_ENV,
+            "step_audio_editx_uv_base_url": STEP_AUDIO_EDITX_UV_BASE_URL,
             "step_audio_editx_request_timeout": STEP_AUDIO_EDITX_REQUEST_TIMEOUT,
             "api_cuda_context": "disabled; health uses nvidia-smi",
             "gpu_scheduling": "all local services share one exclusive file lock",
@@ -614,47 +566,41 @@ async def upload_audio(audio: UploadFile = File(...), full_path: str = Form(...)
 
 @app.post("/v1/step-audio-editx/edit")
 async def step_audio_editx_edit(request: StepAudioEditXEditRequest):
-    """使用已上传的当前台词音频执行一次 Step-Audio-EditX 编辑。"""
+    """兼容 WebUI 的 Step-Audio-EditX 编辑入口。"""
     prompt_audio_path = os.path.join(PROMPTS_DIR, hash_filename(request.prompt_audio))
-    with gpu_runtime_lock("step-audio-editx/edit"):
-        try:
+    try:
+        if STEP_AUDIO_EDITX_RUNTIME == "uv":
+            # 迁移期间保留此 8300 入口；GPU 锁由独立 8316 服务持有，避免跨进程重复加锁死锁。
             with step_audio_editx_manager.lock:
-                payload = step_audio_editx_manager.build_worker_payload(
-                    request,
-                    Path(prompt_audio_path),
-                    local_files_only=LOCAL_FILES_ONLY,
+                audio_bytes = step_audio_editx_manager.run_uv_service(
+                    request, Path(prompt_audio_path)
                 )
-                audio_bytes = step_audio_editx_manager.run_worker(payload)
-            return Response(content=audio_bytes, media_type="audio/wav")
-        except HTTPException:
-            raise
-        except FileNotFoundError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except Exception as exc:
-            traceback.print_exc()
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
-        finally:
-            wait_after_cuda_release("after Step-Audio-EditX worker")
+        else:
+            # 旧 Conda worker 继续作为显式回退，待迁移确认后再删除。
+            with gpu_runtime_lock("step-audio-editx/edit"):
+                with step_audio_editx_manager.lock:
+                    payload = step_audio_editx_manager.build_worker_payload(
+                        request,
+                        Path(prompt_audio_path),
+                        local_files_only=LOCAL_FILES_ONLY,
+                    )
+                    audio_bytes = step_audio_editx_manager.run_worker(payload)
+                wait_after_cuda_release("after Step-Audio-EditX worker")
+        return Response(content=audio_bytes, media_type="audio/wav")
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=int(getattr(exc, "status_code", 500)), detail=str(exc)
+        ) from exc
 
 @app.get("/v1/check/audio")
 async def check_audio_exists(file_name: str):
     exists = os.path.isfile(os.path.join(PROMPTS_DIR, hash_filename(file_name)))
     return {"code": 200 if exists else 404, "exists": exists}
-
-# 旧 MOSS 路由已迁移到 moss_voiceGenerator/main.py:8315；确认迁移成功后删除本注释块。
-# @app.post("/v1/moss/design")
-# async def moss_design(request: MossDesignRequest):
-#     with gpu_runtime_lock("moss/design"):
-#         try:
-#             return Response(content=run_moss_voice_design(request), media_type="audio/wav")
-#         except HTTPException:
-#             raise
-#         except Exception as exc:
-#             traceback.print_exc()
-#             raise HTTPException(status_code=500, detail=str(exc)) from exc
-#         finally:
-#             wait_after_cuda_release("after MOSS VoiceGenerator worker")
-
 
 @app.post("/v1/voxcpm2/design")
 async def voxcpm2_design(request: VoxCpm2VoiceDesignRequest):
@@ -702,7 +648,6 @@ if __name__ == "__main__":
     print("==================================================")
     print("   Unitale AI 本地后端服务 EditX + MiMo/VoxCPM2")
     print("==================================================")
-    # MOSS VoiceGenerator 已由 start.sh 单独启动在 8315。
     print(f"[配置] VoxCPM2 VoiceDesign 模型目录: {VOXCPM2_MODEL_DIR}")
     print(f"[配置] Step-Audio-EditX worker env: {STEP_AUDIO_EDITX_CONDA_ENV}")
     print(f"[配置] Step-Audio-EditX 模型目录: {STEP_AUDIO_EDITX_MODEL_DIR}")

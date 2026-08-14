@@ -10,9 +10,9 @@
 - Stable Audio 3 Medium：默认音效模型；根据英文提示词生成音乐或 44.1 kHz 立体声音效，端口 `8313`
 - Qwen3-TTS VoiceDesign：根据音色描述生成参考音频，独立 uv 服务端口 `8314`，路由 `/v1/qwen/design`
 - MOSS VoiceGenerator：根据音色描述生成参考音频，独立 uv 服务端口 `8315`，路由 `/v1/moss/design`
+- Step-Audio-EditX：对已上传的音频按情绪、说话风格、非语言表现等进行迭代编辑；独立 uv 服务端口 `8316`，主 API `8300` 保留兼容代理，路由 `/v1/step-audio-editx/edit`
 - MiMo TTS VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/mimo/design`
 - VoxCPM2 VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/voxcpm2/design`
-- Step-Audio-EditX：对已上传的音频按情绪、说话风格、非语言表现等进行迭代编辑，走主 API 的 `/v1/step-audio-editx/edit`
 
 主 API、其它模型 wrapper/worker 和共享运行时模块位于 `api/`；Qwen3-TTS Base、Qwen3-TTS VoiceDesign 和 MOSS VoiceGenerator 分别位于 `qwen3_tts/`、`qwen3_voiceDesign/` 和 `moss_voiceGenerator/`，使用各自的 uv 环境。上传资源、缓存和供应商代码位于 `api/prompts/`、`api/.cache/` 与 `api/vendor/`。所有本地 TTS 模型成功合成的 WAV 都会额外保留在 `api/tempAudio/`，文件名前缀用于区分模型；可通过 `TTS_OUTPUT_DIR` 统一覆盖，也可通过对应模型的 `*_OUTPUT_DIR` 覆盖。不要把生成音频或模型权重提交到 Git。
 
@@ -24,14 +24,14 @@
 conda activate moss-soundEffect
 ```
 
-Qwen3-TTS、MOSS VoiceGenerator、VoxCPM2 和 Step-Audio-EditX 在请求期间分别拉起一次性 worker；Qwen3-TTS 和 MOSS VoiceGenerator 使用各自的 uv Python，其它模型使用对应 Conda 环境。模型在请求结束后由 worker 退出释放显存；主 API、各包装器和 worker 共享 `GPU_LOCK_FILE`，避免并发抢占 GPU。
+Qwen3-TTS、MOSS VoiceGenerator 和 Step-Audio-EditX 在请求期间分别拉起一次性 worker；三者使用各自 uv 项目的 Python，其它模型使用对应 Conda 环境。模型在请求结束后由 worker 退出释放显存；主 API、各包装器和 worker 共享 `GPU_LOCK_FILE`，避免并发抢占 GPU。迁移期间可设置 `STEP_AUDIO_EDITX_RUNTIME=conda` 回退到旧 `api/step_audio_editx_worker.py`。
 
 ```bash
 uv run --project qwen3_tts python qwen3_tts/worker.py ...
 conda run -n voxcpm2 python api/voxcpm2_worker.py ...
 uv run --project qwen3_voiceDesign python qwen3_voiceDesign/worker.py ...
 uv run --project moss_voiceGenerator python moss_voiceGenerator/worker.py ...
-conda run -n Step-Audio-EditX python api/step_audio_editx_worker.py ...
+uv run --project Step_Audio_EditX python Step_Audio_EditX/worker.py ...
 conda run -n LongCat-AudioDiT-3.5B-bf16 python api/longcat_audiodit_worker.py ...
 conda run -n dots_tts_soar python api/dots_tts_soar_worker.py ...
 ```
@@ -76,6 +76,7 @@ curl http://127.0.0.1:8300/v1/health
 curl http://127.0.0.1:8305/v1/health
 curl http://127.0.0.1:8314/v1/health
 curl http://127.0.0.1:8315/v1/health
+curl http://127.0.0.1:8316/v1/health
 curl http://127.0.0.1:8306/v1/health
 curl http://127.0.0.1:8307/v1/health
 curl http://127.0.0.1:8308/v1/health
@@ -90,6 +91,7 @@ http://127.0.0.1:8300  MiMo/VoxCPM2 音色设计与 Step-Audio-EditX 编辑
 http://127.0.0.1:8305  Qwen3-TTS-12Hz-1.7B-Base
 http://127.0.0.1:8314  Qwen3-TTS VoiceDesign
 http://127.0.0.1:8315  MOSS VoiceGenerator
+http://127.0.0.1:8316  Step-Audio-EditX uv 服务
 http://127.0.0.1:8306  VoxCPM2
 http://127.0.0.1:8307  LongCat-AudioDiT-3.5B-bf16
 http://127.0.0.1:8308  dots.tts-soar
@@ -174,7 +176,9 @@ curl -X POST http://127.0.0.1:8300/v1/step-audio-editx/edit \
   -o edited.wav
 ```
 
-请求字段 `edit_type`、`edit_info` 分别映射官方命令行的 `--edit-type`、`--edit-info`。`emotion`、`style` 与 `speed` 需要非空 `edit_info`；`paralinguistic` 使用目标文本中的官方标签；`denoise` 与 `vad` 不要求文本。服务用 `STEP_AUDIO_EDITX_CONDA_ENV`（默认 `Step-Audio-EditX`）启动一次性 worker；模型、tokenizer、官方源码和推理参数可分别通过 `STEP_AUDIO_EDITX_MODEL_DIR`、`STEP_AUDIO_TOKENIZER_PATH`、`STEP_AUDIO_EDITX_CODE_PATH`、`STEP_AUDIO_EDITX_*` 覆盖。单次音频建议不超过 30 秒。
+请求字段 `edit_type`、`edit_info` 分别映射官方命令行的 `--edit-type`、`--edit-info`。`emotion`、`style` 与 `speed` 需要非空 `edit_info`；`paralinguistic` 使用目标文本中的官方标签；`denoise` 与 `vad` 不要求文本。`start.sh` 默认启动 `Step_Audio_EditX/` 的 uv 服务到 `8316`，主 API `8300` 的同路径会代理到该服务，因此 WebUI 无需修改地址；启动脚本使用 `uv run --no-sync`，请先完成一次 `uv sync --project Step_Audio_EditX --locked`。模型、tokenizer、官方源码和推理参数可分别通过 `STEP_AUDIO_EDITX_MODEL_DIR`、`STEP_AUDIO_TOKENIZER_PATH`、`STEP_AUDIO_EDITX_CODE_PATH`、`STEP_AUDIO_EDITX_*` 覆盖。单次音频建议不超过 30 秒。
+
+Step-Audio-EditX 当前不要求安装 `flash_attn`：本机 uv/Conda 环境均未安装该模块，上游推理路径固定使用 `VLLM_ATTENTION_BACKEND=TRITON_ATTN`，并默认 `enforce_eager=1`；`/v1/health` 会报告 `flash_attn` 状态和该策略。`/home/muyi086/tts-depency/flash-attention` 是源码仓库，不等于已安装且可加载的扩展；只有后续实测需要 FlashAttention 性能优化时，才应针对当前 Torch/CUDA/Python 编译并单独做 canary。
 
 ```bash
 curl -X POST http://127.0.0.1:8306/v2/synthesize \

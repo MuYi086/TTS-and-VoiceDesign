@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
+import json
 import threading
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -15,6 +18,10 @@ from local_worker import LocalWorkerConfig, run_local_worker
 API_DIR = Path(__file__).resolve().parent
 HF_MIRROR_DIR = Path(os.path.expandvars(os.path.expanduser(os.getenv("HF_MIRROR_DIR", "~/hf-mirror")))).resolve()
 STEP_AUDIO_EDITX_CONDA_ENV = os.getenv("STEP_AUDIO_EDITX_CONDA_ENV", "Step-Audio-EditX")
+STEP_AUDIO_EDITX_RUNTIME = os.getenv("STEP_AUDIO_EDITX_RUNTIME", "conda").strip().lower()
+STEP_AUDIO_EDITX_UV_BASE_URL = os.getenv(
+    "STEP_AUDIO_EDITX_UV_BASE_URL", "http://127.0.0.1:8316"
+).rstrip("/")
 STEP_AUDIO_EDITX_MODEL_DIR = Path(
     os.path.expandvars(
         os.path.expanduser(
@@ -142,6 +149,58 @@ class StepAudioEditXWorkerManager:
         except Exception as exc:
             self.last_error = str(exc)
             raise
+
+    def run_uv_service(
+        self,
+        request: StepAudioEditXEditRequest,
+        prompt_audio_path: Path,
+    ) -> bytes:
+        """Call the standalone uv service while keeping the old API contract."""
+
+        if not prompt_audio_path.is_file():
+            raise FileNotFoundError(f"Step-Audio-EditX prompt 音频不存在：{prompt_audio_path}")
+        body = json.dumps(request.model_dump(mode="json"), ensure_ascii=False).encode("utf-8")
+        http_request = urllib.request.Request(
+            f"{STEP_AUDIO_EDITX_UV_BASE_URL}/v1/step-audio-editx/edit",
+            data=body,
+            headers={"Content-Type": "application/json", "Accept": "audio/wav"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(
+                http_request, timeout=STEP_AUDIO_EDITX_REQUEST_TIMEOUT
+            ) as response:
+                audio_bytes = response.read()
+                content_type = response.headers.get("Content-Type", "")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace").strip()
+            try:
+                detail = str(json.loads(detail).get("detail", detail))
+            except (TypeError, ValueError):
+                pass
+            error = RuntimeError(
+                f"Step-Audio-EditX uv 服务返回 HTTP {exc.code}: {detail or exc.reason}"
+            )
+            error.status_code = exc.code  # type: ignore[attr-defined]
+            self.last_error = str(error)
+            raise error from exc
+        except urllib.error.URLError as exc:
+            error = RuntimeError(
+                f"Step-Audio-EditX uv 服务不可达：{STEP_AUDIO_EDITX_UV_BASE_URL} ({exc.reason})"
+            )
+            error.status_code = 503  # type: ignore[attr-defined]
+            self.last_error = str(error)
+            raise error from exc
+        if not audio_bytes or not audio_bytes.startswith(b"RIFF"):
+            error = RuntimeError(
+                "Step-Audio-EditX uv 服务未返回有效 WAV"
+                + (f"（Content-Type: {content_type}）" if content_type else "")
+            )
+            error.status_code = 502  # type: ignore[attr-defined]
+            self.last_error = str(error)
+            raise error
+        self.last_error = None
+        return audio_bytes
 
 
 manager = StepAudioEditXWorkerManager()
