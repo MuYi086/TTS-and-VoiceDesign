@@ -1,2 +1,1 @@
-def main() -> None:
-    print("Hello from qwen3-tts!")
+"""Package marker for the standalone Qwen3-TTS uv project."""

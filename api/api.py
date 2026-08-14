@@ -93,6 +93,8 @@ QWEN_ATTN_IMPLEMENTATION = os.getenv("QWEN_ATTN_IMPLEMENTATION") or None
 QWEN_REQUEST_TIMEOUT = float(
     os.getenv("QWEN_REQUEST_TIMEOUT", os.getenv("QWEN_VOICEDESIGN_WORKER_TIMEOUT", "900"))
 )
+# Legacy rollback configuration. The migrated qwen3_voiceDesign uv service is
+# the standalone port-8314 entry point; keep these values until migration sign-off.
 QWEN_VOICEDESIGN_CONDA_ENV = os.getenv("QWEN_VOICEDESIGN_CONDA_ENV", "qwen3-voiceDesign")
 QWEN_VOICEDESIGN_WORKER_SCRIPT = os.path.join(API_DIR, "qwen_voice_design_worker.py")
 QWEN_VOICEDESIGN_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "qwen_voice_design_worker")
@@ -491,7 +493,7 @@ MOSS_VOICEGENERATOR_WORKER = LocalWorkerConfig(
     file_prefix="moss_voice_design",
 )
 def run_qwen_voice_design(request: QwenDesignRequest) -> bytes:
-    """Run Qwen VoiceDesign inside qwen3-voiceDesign, never in the API env."""
+    """Legacy Conda fallback; the migrated service owns the port-8314 path."""
     payload = {
         **request.model_dump(),
         "model_path": QWEN_MODEL,
@@ -989,6 +991,8 @@ async def check_audio_exists(file_name: str):
 
 @app.post("/v1/qwen/design")
 async def qwen_design(request: QwenDesignRequest):
+    # Legacy 8300 compatibility route. New callers should use the standalone
+    # qwen3_voiceDesign service on 8314 while this fallback remains for rollback.
     with gpu_runtime_lock("qwen/design"):
         try:
             return Response(content=run_qwen_voice_design(request), media_type="audio/wav")

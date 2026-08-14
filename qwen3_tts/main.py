@@ -4,7 +4,6 @@ import importlib.util
 import json
 import os
 import re
-import shutil
 import sys
 import subprocess
 import tempfile
@@ -78,7 +77,6 @@ CUDA_RELEASE_DELAY = float(os.getenv("CUDA_RELEASE_DELAY", "2.0"))
 API_HOST = os.getenv("HOST", "0.0.0.0")
 API_PORT = int(os.getenv("PORT", "8305"))
 
-QWEN3_TTS_CONDA_ENV = os.getenv("QWEN3_TTS_CONDA_ENV", "qwen3-tts")
 QWEN3_TTS_MODEL_DIR = expand_path(
     os.getenv("QWEN3_TTS_MODEL_DIR", os.path.join(HF_MIRROR_DIR, "Qwen/Qwen3-TTS-12Hz-1.7B-Base"))
 )
@@ -269,13 +267,6 @@ def save_prompt_text_sidecar(filename: str, prompt_text: Optional[str]) -> None:
 
 def module_available(module_name: str) -> bool:
     return importlib.util.find_spec(module_name) is not None
-
-
-def resolve_conda_executable() -> Optional[str]:
-    conda_exe = os.environ.get("CONDA_EXE")
-    if conda_exe and os.path.isfile(expand_path(conda_exe)):
-        return expand_path(conda_exe)
-    return shutil.which("conda")
 
 
 def assert_local_request(request: Request) -> None:
@@ -526,7 +517,6 @@ async def health():
             "worker_tmp_dir": QWEN3_TTS_WORKER_TMP_DIR,
         },
         "available": {
-            "conda": bool(resolve_conda_executable()),
             "python": sys.executable,
             "worker_script": os.path.isfile(QWEN3_TTS_WORKER_SCRIPT),
             "qwen3_tts_model_dir": os.path.isdir(QWEN3_TTS_MODEL_DIR),
@@ -536,7 +526,6 @@ async def health():
         },
         "cuda": cuda,
         "runtime": {
-            "worker_env": QWEN3_TTS_CONDA_ENV,
             "worker_runtime": "uv",
             "worker_python": sys.executable,
             "model_lifecycle": "one request -> one worker -> process exit releases VRAM",
@@ -629,7 +618,6 @@ if __name__ == "__main__":
     print("==================================================")
     print("   Unitale AI 本地后端 Qwen3-TTS Voice Clone")
     print("==================================================")
-    print(f"[配置] Qwen3-TTS worker env: {QWEN3_TTS_CONDA_ENV}")
     print(f"[配置] Qwen3-TTS 模型目录: {QWEN3_TTS_MODEL_DIR}")
     print(f"[配置] Qwen sidecar libs: {QWEN_LIBS_PATH}")
     print(f"[配置] prompts 目录: {PROMPTS_DIR}")

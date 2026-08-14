@@ -8,29 +8,29 @@
 - dots.tts-soar：48 kHz 参考音频声音克隆，端口 `8308`
 - MOSS-SoundEffect v2.0：根据中英文提示词生成 48 kHz 声效，端口 `8311`
 - Stable Audio 3 Medium：默认音效模型；根据英文提示词生成音乐或 44.1 kHz 立体声音效，端口 `8313`
-- Qwen3-TTS VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/qwen/design`
+- Qwen3-TTS VoiceDesign：根据音色描述生成参考音频，独立 uv 服务端口 `8314`，路由 `/v1/qwen/design`
 - MOSS VoiceGenerator：根据音色描述生成参考音频，走主 API 的 `/v1/moss/design`
 - MiMo TTS VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/mimo/design`
 - VoxCPM2 VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/voxcpm2/design`
 - Step-Audio-EditX：对已上传的音频按情绪、说话风格、非语言表现等进行迭代编辑，走主 API 的 `/v1/step-audio-editx/edit`
 
-主 API、其它模型 wrapper/worker 和共享运行时模块位于 `api/`；Qwen3-TTS 的独立 HTTP 服务和 worker 位于 `qwen3_tts/`，由 uv 管理。上传资源、缓存和供应商代码位于 `api/prompts/`、`api/.cache/` 与 `api/vendor/`。所有本地 TTS 模型成功合成的 WAV 都会额外保留在 `api/tempAudio/`，文件名前缀用于区分模型；可通过 `TTS_OUTPUT_DIR` 统一覆盖，也可通过对应模型的 `*_OUTPUT_DIR` 覆盖。不要把生成音频或模型权重提交到 Git。
+主 API、其它模型 wrapper/worker 和共享运行时模块位于 `api/`；Qwen3-TTS Base 的独立 HTTP 服务和 worker 位于 `qwen3_tts/`，Qwen3-TTS VoiceDesign 的独立 uv 服务和 worker 位于 `qwen3_voiceDesign/`。上传资源、缓存和供应商代码位于 `api/prompts/`、`api/.cache/` 与 `api/vendor/`。所有本地 TTS 模型成功合成的 WAV 都会额外保留在 `api/tempAudio/`，文件名前缀用于区分模型；可通过 `TTS_OUTPUT_DIR` 统一覆盖，也可通过对应模型的 `*_OUTPUT_DIR` 覆盖。不要把生成音频或模型权重提交到 Git。
 
 ## 本地环境
 
-主 API 和其它模型 wrapper 默认使用 Conda 环境；Qwen3-TTS 8305 服务默认使用 `qwen3_tts/.venv`，由 `uv run` 启动。如果部署环境另有 Conda 依赖，可通过 `CONDA_ENV` 覆盖：
+主 API 和其它轻量 wrapper 默认使用 `moss-soundEffect` Conda 环境；Qwen3-TTS 8305 和 Qwen3-TTS VoiceDesign 8314 服务使用各自目录内的 uv 环境，由 `uv run` 启动。如果部署环境另有共享 wrapper 环境，可通过 `CONDA_ENV` 覆盖：
 
 ```bash
-conda activate qwen3-tts
+conda activate moss-soundEffect
 ```
 
 Qwen3-TTS、MOSS VoiceGenerator、VoxCPM2 和 Step-Audio-EditX 在请求期间分别拉起一次性 worker；Qwen3-TTS 使用自己的 uv Python，其它模型使用对应 Conda 环境。模型在请求结束后由 worker 退出释放显存；主 API、各包装器和 worker 共享 `GPU_LOCK_FILE`，避免并发抢占 GPU。
 
 ```bash
 uv run --project qwen3_tts python qwen3_tts/worker.py ...
-# 迁移回退：QWEN3_TTS_RUNNER=conda bash start.sh
 conda run -n voxcpm2 python api/voxcpm2_worker.py ...
-conda run -n qwen3-voiceDesign python api/qwen_voice_design_worker.py ...
+uv run --project qwen3_voiceDesign python qwen3_voiceDesign/worker.py ...
+# 回退参考：conda run -n qwen3-voiceDesign python api/qwen_voice_design_worker.py ...
 conda run -n moss-voiceGenerator python api/moss_voice_design_worker.py ...
 conda run -n Step-Audio-EditX python api/step_audio_editx_worker.py ...
 conda run -n LongCat-AudioDiT-3.5B-bf16 python api/longcat_audiodit_worker.py ...
@@ -75,6 +75,7 @@ MiMo 是云端服务，运行后端的机器必须能连接 `https://api.xiaomim
 bash start.sh
 curl http://127.0.0.1:8300/v1/health
 curl http://127.0.0.1:8305/v1/health
+curl http://127.0.0.1:8314/v1/health
 curl http://127.0.0.1:8306/v1/health
 curl http://127.0.0.1:8307/v1/health
 curl http://127.0.0.1:8308/v1/health
@@ -87,6 +88,7 @@ curl http://127.0.0.1:8313/v1/health
 ```text
 http://127.0.0.1:8300  音色设计与 Step-Audio-EditX 编辑
 http://127.0.0.1:8305  Qwen3-TTS-12Hz-1.7B-Base
+http://127.0.0.1:8314  Qwen3-TTS VoiceDesign
 http://127.0.0.1:8306  VoxCPM2
 http://127.0.0.1:8307  LongCat-AudioDiT-3.5B-bf16
 http://127.0.0.1:8308  dots.tts-soar
@@ -144,7 +146,7 @@ LongCat-AudioDiT 的默认参数与官方声音克隆示例一致：16 步 ODE�
 
 LongCat 服务采用“一次请求一个 worker”生命周期；worker 完成或报错时显式执行 CUDA 同步、`empty_cache`、`ipc_collect`，随后进程退出，以释放模型显存。可通过以下环境变量覆盖默认配置：`LONGCAT_AUDIODIT_CONDA_ENV`、`LONGCAT_AUDIODIT_MODEL_DIR`、`LONGCAT_AUDIODIT_REPO_PATH`、`LONGCAT_AUDIODIT_TOKENIZER_PATH`、`LONGCAT_AUDIODIT_NFE`、`LONGCAT_AUDIODIT_GUIDANCE_STRENGTH`、`LONGCAT_AUDIODIT_GUIDANCE_METHOD`、`LONGCAT_AUDIODIT_MAX_CHARS_PER_CHUNK`、`LONGCAT_AUDIODIT_PAUSE_MS`、`LONGCAT_AUDIODIT_VAE_DTYPE` 和 `LONGCAT_AUDIODIT_REQUEST_TIMEOUT`。
 
-LongCat、dots.tts-soar 和 Qwen3-TTS 的克隆调试默认值都集中在对应服务入口顶部，并带有中文说明；直接修改 `*_DEFAULT` 常量后重启服务即可生效。`start.sh` 只负责启动路由、环境和模型路径，不再覆盖这些服务入口内的合成默认值；部署时显式设置的同名环境变量仍然优先。Qwen3-TTS 可通过 `QWEN3_TTS_RUNNER=conda bash start.sh` 临时回退到旧的 `api/qwen3_tts_api.py`。
+LongCat、dots.tts-soar 和 Qwen3-TTS 的克隆调试默认值都集中在对应服务入口顶部，并带有中文说明；直接修改 `*_DEFAULT` 常量后重启服务即可生效。`start.sh` 只负责启动路由、环境和模型路径，不再覆盖这些服务入口内的合成默认值；部署时显式设置的同名环境变量仍然优先。
 
 LongCat-AudioDiT 和 dots.tts-soar 的 worker 会在每个生成分段拼接前裁掉明显的前导静音，并在完整音频拼接后再次兜底检查；裁剪保留 40 毫秒起音保护，分段之间通过 `pause_ms` 配置的停顿仍会保留。
 
@@ -192,11 +194,18 @@ curl -X POST http://127.0.0.1:8308/v2/synthesize \
 
 音色设计端点：
 
+Qwen3-TTS VoiceDesign 的迁移入口是 8314；8300 的旧 `/v1/qwen/design` 仅暂时保留作回退兼容，确认迁移完成后再删除旧 worker。
+
 ```bash
 curl -X POST http://127.0.0.1:8300/v1/qwen/design \
   -H 'Content-Type: application/json' \
   -d '{"voice_description":"成年女性，声音清晰自然，语速中等。","text":"你好。"}' \
   -o qwen_reference.wav
+
+curl -X POST http://127.0.0.1:8314/v1/qwen/design \
+  -H 'Content-Type: application/json' \
+  -d '{"voice_description":"成年女性，声音清晰自然，语速中等。","text":"你好。"}' \
+  -o qwen_voicedesign_reference.wav
 
 curl -X POST http://127.0.0.1:8300/v1/moss/design \
   -H 'Content-Type: application/json' \
@@ -238,7 +247,7 @@ VoxCPM2 音色设计由独立的 `api/voxcpm2_voice_design.py` 和 `api/voxcpm2_
 测试不会下载权重、调用外部服务或加载 TTS 模型：
 
 ```bash
-uv run --project qwen3_tts python -m unittest discover -s tests -v
+uv run --project qwen3_voiceDesign python -m unittest discover -s tests -v
 ```
 
-当前测试覆盖 Qwen3-TTS 的路由与健康契约、音频上传和 prompt sidecar、参考文本请求校验，以及 worker 使用 uv 解释器的一次性启动约束；测试不会下载权重、调用外部服务或加载 TTS 模型。
+当前测试覆盖 Qwen3-TTS Base 与 VoiceDesign 的路由、健康契约、音频上传和 prompt sidecar、请求校验，以及两个 worker 使用 uv 解释器的一次性启动约束；测试不会下载权重、调用外部服务或加载 TTS 模型。
