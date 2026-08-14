@@ -1,10 +1,8 @@
-"""Legacy Conda one-shot LongCat-AudioDiT-3.5B voice-cloning worker.
+"""One-shot LongCat-AudioDiT-3.5B voice-cloning worker.
 
-The HTTP wrapper deliberately stays free of the heavy AudioDiT runtime.  This
-process loads the official ``audiodit`` package in the legacy dedicated Conda
-environment, writes one WAV, and explicitly releases CUDA allocations before
-exiting. The migrated uv worker lives in
-``LongCat_AudioDiT_3.5B_bf16/worker.py`` and this file remains for rollback.
+This worker is intentionally separate from the FastAPI process. It imports the
+official audiodit source only after a request starts, writes one WAV, clears
+CUDA state, and exits so the existing one-request/one-worker lifecycle remains.
 """
 
 from __future__ import annotations
@@ -16,6 +14,7 @@ import os
 import re
 import sys
 import time
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -38,8 +37,12 @@ def load_request(path: str | Path) -> dict[str, Any]:
 
 
 def maybe_add_repo_path(repo_path: str | Path | None) -> None:
-    """Make the official repository containing ``audiodit`` importable."""
-    candidates = [Path(repo_path).expanduser()] if repo_path else list(DEFAULT_REPO_CANDIDATES)
+    """Make the external repository containing audiodit importable."""
+    candidates = (
+        [Path(repo_path).expanduser()]
+        if repo_path
+        else list(DEFAULT_REPO_CANDIDATES)
+    )
     for candidate in candidates:
         resolved = candidate.resolve()
         if (resolved / "audiodit").is_dir() and str(resolved) not in sys.path:
@@ -96,12 +99,14 @@ def split_text(text: str, max_chars: int) -> list[str]:
                 current = ""
             chunks.extend(split_long_sentence(sentence, max_chars))
             continue
+
         candidate = current + sentence
         if current and len(candidate) > max_chars:
             chunks.append(current)
             current = sentence
         else:
             current = candidate
+
     if current:
         chunks.append(current)
     return chunks
@@ -124,12 +129,14 @@ def split_long_sentence(text: str, max_chars: int) -> list[str]:
                 for index in range(0, len(part), max_chars)
             )
             continue
+
         candidate = current + part
         if current and len(candidate) > max_chars:
             chunks.append(current)
             current = part
         else:
             current = candidate
+
     if current:
         chunks.append(current)
     return chunks
@@ -149,11 +156,37 @@ def approx_duration_from_text(text: str, max_duration: float = 30.0) -> float:
             num_en += 1
         else:
             num_other += 1
+
     if num_zh > num_en:
         num_zh += num_other
     else:
         num_en += num_other
     return min(max_duration, num_zh * zh_dur_per_char + num_en * en_dur_per_char)
+
+
+def prepare_environment(request: dict[str, Any]) -> None:
+    runtime_cache_dir = Path(
+        request.get("runtime_cache_dir")
+        or Path(__file__).resolve().parents[1] / "api/.cache/runtime"
+    ).expanduser()
+    hf_mirror_dir = Path(
+        request.get("hf_mirror_dir") or Path.home() / "hf-mirror"
+    ).expanduser()
+
+    os.environ.setdefault("HF_HOME", str(hf_mirror_dir))
+    os.environ.setdefault("HF_MODULES_CACHE", str(runtime_cache_dir / "hf_modules"))
+    os.environ.setdefault("NUMBA_CACHE_DIR", str(runtime_cache_dir / "numba"))
+    os.environ.setdefault("MPLCONFIGDIR", str(runtime_cache_dir / "matplotlib"))
+    os.environ.setdefault("XDG_CACHE_HOME", str(runtime_cache_dir / "xdg"))
+
+    if bool(request.get("local_files_only", True)):
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
+    for key in ("HF_MODULES_CACHE", "NUMBA_CACHE_DIR", "MPLCONFIGDIR", "XDG_CACHE_HOME"):
+        Path(os.environ[key]).mkdir(parents=True, exist_ok=True)
+
+    maybe_add_repo_path(request.get("repo_path"))
 
 
 def import_runtime():
@@ -162,7 +195,7 @@ def import_runtime():
         import numpy as np
         import soundfile as sf
         import torch
-        import torch.nn.functional as F
+        import torch.nn.functional as functional
 
         import audiodit  # noqa: F401  # registers AudioDiT with Transformers
         from audiodit import AudioDiTModel
@@ -170,12 +203,11 @@ def import_runtime():
     except ImportError as exc:
         missing = getattr(exc, "name", None) or str(exc)
         raise RuntimeError(
-            "LongCat-AudioDiT runtime is not importable. Install the official "
-            "requirements in the LongCat-AudioDiT-3.5B-bf16 Conda environment, "
-            "make the official repository available through LONGCAT_AUDIODIT_REPO_PATH "
-            f"or PYTHONPATH, and retry. Missing import: {missing}"
+            "LongCat-AudioDiT runtime is not importable. Install the standalone "
+            "uv project dependencies and make LONGCAT_AUDIODIT_REPO_PATH point "
+            f"to the official repository. Missing import: {missing}"
         ) from exc
-    return AudioDiTModel, AutoTokenizer, F, librosa, np, sf, torch
+    return AudioDiTModel, AutoTokenizer, functional, librosa, np, sf, torch
 
 
 def load_tokenizer(auto_tokenizer: Any, source: str, local_files_only: bool):
@@ -265,7 +297,9 @@ def estimate_duration_frames(
     prompt_time = prompt_frames * full_hop / sample_rate
     available_duration = max(max_duration - prompt_time, full_hop / sample_rate)
     gen_duration = approx_duration_from_text(gen_text, max_duration=available_duration)
-    approx_prompt_duration = approx_duration_from_text(prompt_text, max_duration=max_duration)
+    approx_prompt_duration = approx_duration_from_text(
+        prompt_text, max_duration=max_duration
+    )
     if approx_prompt_duration > 0:
         ratio = float(np.clip(prompt_time / approx_prompt_duration, 1.0, 1.5))
         gen_duration *= ratio
@@ -289,6 +323,7 @@ def join_waveforms(waveforms: list[Any], sample_rate: int, pause_ms: int, np: An
     pause_samples = int(sample_rate * max(pause_ms, 0) / 1000)
     if pause_samples <= 0 or len(segments) == 1:
         return np.concatenate(segments)
+
     pause = np.zeros(pause_samples, dtype=np.float32)
     joined: list[Any] = []
     for index, segment in enumerate(segments):
@@ -305,7 +340,6 @@ def trim_generated_waveform(
     *,
     label: str,
 ) -> Any:
-    """Remove a model-generated silent prefix before a segment is joined."""
     trimmed_waveform, trimmed_samples = trim_leading_silence(
         waveform,
         sample_rate=sample_rate,
@@ -317,7 +351,7 @@ def trim_generated_waveform(
 
 
 def release_cuda_memory(torch: Any) -> None:
-    """Release allocator caches even when the worker is reused by a test harness."""
+    """Release allocator caches without masking an inference exception."""
     gc.collect()
     cuda = getattr(torch, "cuda", None)
     if cuda is None:
@@ -328,6 +362,7 @@ def release_cuda_memory(torch: Any) -> None:
     except Exception as exc:
         print(f"[LongCat] CUDA availability check failed during cleanup: {exc}")
         return
+
     for method_name in ("synchronize", "empty_cache", "ipc_collect"):
         method = getattr(cuda, method_name, None)
         if not callable(method):
@@ -335,15 +370,15 @@ def release_cuda_memory(torch: Any) -> None:
         try:
             method()
         except Exception as exc:
-            # Cleanup must never mask the original inference exception.
             print(f"[LongCat] CUDA cleanup {method_name} failed: {exc}")
 
 
 def synthesize(request: dict[str, Any], output_wav: Path) -> None:
     model = tokenizer = prompt_audio = inputs = output = None
     waveforms: list[Any] = []
-    maybe_add_repo_path(request.get("repo_path"))
+    prepare_environment(request)
     AudioDiTModel, AutoTokenizer, functional, librosa, np, sf, torch = import_runtime()
+
     try:
         model_path = require_model_path(request["model_path"])
         ref_audio = require_path(request["ref_audio_path"], "reference audio")
@@ -407,6 +442,7 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
                 "LongCat-AudioDiT-3.5B requires the official 24 kHz model configuration; "
                 f"received sampling_rate={sample_rate}"
             )
+
         prompt_audio = load_prompt_audio(ref_audio, sample_rate, librosa, torch)
         prompt_frames = prompt_latent_frames(
             model,
@@ -482,24 +518,28 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
         sf.write(str(output_wav), waveform, sample_rate)
         print(f"[LongCat] elapsed={time.perf_counter() - started:.2f}s output={output_wav}")
     finally:
-        # Explicit cleanup is useful for direct worker invocation and makes the
-        # lifecycle guarantee independent of Python's process-exit timing.
         del output, inputs, prompt_audio, tokenizer, model, waveforms
         release_cuda_memory(torch)
 
 
-def main() -> int:
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="LongCat-AudioDiT one-shot worker")
     parser.add_argument("--input-json", type=Path, required=True)
     parser.add_argument("--output-wav", type=Path, required=True)
-    args = parser.parse_args()
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
     try:
-        synthesize(load_request(args.input_json), args.output_wav)
+        synthesize(load_request(args.input_json), args.output_wav.expanduser().resolve())
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
+        traceback.print_exc()
         return 1
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

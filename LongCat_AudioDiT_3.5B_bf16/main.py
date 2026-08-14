@@ -1,8 +1,8 @@
-"""Legacy Conda HTTP wrapper for LongCat-AudioDiT-3.5B.
+"""Standalone uv HTTP service for LongCat-AudioDiT-3.5B voice cloning.
 
-The active service is now ``LongCat_AudioDiT_3.5B_bf16/main.py``. This module
-is intentionally retained as a commented rollback/reference implementation
-until the standalone uv service has passed the real GPU canary.
+The legacy implementation in api/longcat_audiodit_api.py remains available as a
+rollback reference until the uv service has passed the real GPU canary. This
+module owns the migrated API and launches worker.py with the current uv Python.
 """
 
 from __future__ import annotations
@@ -10,27 +10,32 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import importlib.util
+import json
 import os
 import re
+import shutil
+import subprocess
+import sys
+import tempfile
 import threading
 import time
 import traceback
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Literal, Optional
 
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from audio_output import persist_audio_bytes
-from gpu_runtime import cuda_status
-from local_worker import LocalWorkerConfig, resolve_conda_executable, run_local_worker
-from synthesis_request import CloneSynthesisRequest
+from runtime import cuda_status, terminate_process_group
 
 
-API_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_DIR = Path(__file__).resolve().parent
+REPOSITORY_DIR = PROJECT_DIR.parent
+API_DIR = REPOSITORY_DIR / "api"
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -40,32 +45,43 @@ def env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def expand_path(path: str) -> str:
-    return os.path.abspath(os.path.expandvars(os.path.expanduser(path)))
+def expand_path(path: str | os.PathLike[str]) -> str:
+    return os.path.abspath(os.path.expandvars(os.path.expanduser(str(path))))
+
+
+def module_available(module_name: str) -> bool:
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except (ImportError, ModuleNotFoundError, ValueError):
+        return False
+
+
+def normalize_optional_text(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
 
 
 HF_MIRROR_DIR = expand_path(os.getenv("HF_MIRROR_DIR", "~/hf-mirror"))
-PROMPTS_DIR = expand_path(os.getenv("PROMPTS_DIR", os.path.join(API_DIR, "prompts")))
+PROMPTS_DIR = expand_path(os.getenv("PROMPTS_DIR", str(API_DIR / "prompts")))
 RUNTIME_CACHE_DIR = expand_path(
-    os.getenv("RUNTIME_CACHE_DIR", os.path.join(API_DIR, ".cache/runtime"))
+    os.getenv("RUNTIME_CACHE_DIR", str(API_DIR / ".cache/runtime"))
 )
 GPU_LOCK_FILE = expand_path(
-    os.getenv("GPU_LOCK_FILE", os.path.join(RUNTIME_CACHE_DIR, "gpu-runtime.lock"))
+    os.getenv("GPU_LOCK_FILE", str(Path(RUNTIME_CACHE_DIR) / "gpu-runtime.lock"))
 )
 LOCAL_FILES_ONLY = env_bool("LOCAL_FILES_ONLY", True)
 CUDA_RELEASE_DELAY = float(os.getenv("CUDA_RELEASE_DELAY", "2.0"))
 API_HOST = os.getenv("HOST", "0.0.0.0")
 API_PORT = int(os.getenv("PORT", "8307"))
 
-LONGCAT_AUDIODIT_CONDA_ENV = os.getenv(
-    "LONGCAT_AUDIODIT_CONDA_ENV", "LongCat-AudioDiT-3.5B-bf16"
-)
 LONGCAT_AUDIODIT_MODEL_DIR = expand_path(
     os.getenv(
         "LONGCAT_AUDIODIT_MODEL_DIR",
         os.getenv(
             "LONGCAT_AUDIODIT_35B_BF16_MODEL_PATH",
-            os.path.join(HF_MIRROR_DIR, "drbaph/LongCat-AudioDiT-3.5B-bf16"),
+            str(Path(HF_MIRROR_DIR) / "drbaph/LongCat-AudioDiT-3.5B-bf16"),
         ),
     )
 )
@@ -75,30 +91,30 @@ LONGCAT_AUDIODIT_REPO_PATH = expand_path(
 LONGCAT_AUDIODIT_TOKENIZER_PATH = expand_path(
     os.getenv("LONGCAT_AUDIODIT_TOKENIZER_PATH", "~/hf-mirror/google/umt5-base")
 )
+LONGCAT_AUDIODIT_WORKER_SCRIPT = str(PROJECT_DIR / "worker.py")
+LONGCAT_AUDIODIT_WORKER_TMP_DIR = expand_path(
+    os.getenv(
+        "LONGCAT_AUDIODIT_WORKER_TMP_DIR",
+        str(Path(RUNTIME_CACHE_DIR) / "longcat_audiodit_worker"),
+    )
+)
+LONGCAT_AUDIODIT_OUTPUT_DIR = expand_path(
+    os.getenv(
+        "LONGCAT_AUDIODIT_OUTPUT_DIR",
+        os.getenv("TTS_OUTPUT_DIR", str(API_DIR / "tempAudio")),
+    )
+)
 
-# ============================================================================
-# LongCat-AudioDiT 克隆调试默认值
-#
-# 调试声音克隆效果时，优先直接修改下面带 _DEFAULT 后缀的值，然后重启
-# 服务即可生效。环境变量仍然可以覆盖这些默认值，方便部署时统一配置。
-# ============================================================================
-# 文本分片字符数：0 表示不分片；分片可以降低显存压力，但片段之间会有停顿。
+# LongCat clone defaults. Environment variables remain available for deployment
+# and canary experiments without changing the WebUI contract.
 LONGCAT_AUDIODIT_MAX_CHARS_PER_CHUNK_DEFAULT = 180
-# 分片之间的停顿时长，单位为毫秒；只有实际发生分片时才会使用。
 LONGCAT_AUDIODIT_PAUSE_MS_DEFAULT = 250
-# NFE/ODE 推理步数：步数越高通常越稳定，但推理时间也会增加。
 LONGCAT_AUDIODIT_NFE_DEFAULT = 16
-# 引导强度：提高通常能强化文本和音色条件，但过高可能降低自然度。
 LONGCAT_AUDIODIT_GUIDANCE_STRENGTH_DEFAULT = 4.0
-# 引导算法：官方示例使用 apg，也可以切换为 cfg。
 LONGCAT_AUDIODIT_GUIDANCE_METHOD_DEFAULT = "apg"
-# 随机种子：固定非负整数便于复现；修改为 -1 可使用随机种子。
 LONGCAT_AUDIODIT_SEED_DEFAULT = 20260614
-# 时长缩放：大于 1 会倾向生成更长语音，小于 1 会倾向生成更短语音。
 LONGCAT_AUDIODIT_DURATION_SCALE_DEFAULT = 1.0
-# VAE 精度：float16 更省显存；遇到精度兼容问题时可改为 float32。
 LONGCAT_AUDIODIT_VAE_DTYPE_DEFAULT = "float16"
-# 单次请求超时时间，单位为秒；包含 worker 启动、加载模型和完整合成。
 LONGCAT_AUDIODIT_REQUEST_TIMEOUT_DEFAULT = 900.0
 
 LONGCAT_AUDIODIT_MAX_CHARS_PER_CHUNK = int(
@@ -140,35 +156,28 @@ LONGCAT_AUDIODIT_REQUEST_TIMEOUT = float(
         str(LONGCAT_AUDIODIT_REQUEST_TIMEOUT_DEFAULT),
     )
 )
-LONGCAT_AUDIODIT_WORKER_SCRIPT = os.path.join(API_DIR, "longcat_audiodit_worker.py")
-LONGCAT_AUDIODIT_WORKER_TMP_DIR = os.path.join(
-    RUNTIME_CACHE_DIR, "longcat_audiodit_worker"
-)
-LONGCAT_AUDIODIT_OUTPUT_DIR = expand_path(
-    os.getenv(
-        "LONGCAT_AUDIODIT_OUTPUT_DIR",
-        os.getenv("TTS_OUTPUT_DIR", os.path.join(API_DIR, "tempAudio")),
-    )
-)
 
 os.environ.setdefault("HF_HOME", HF_MIRROR_DIR)
-os.environ.setdefault("HF_MODULES_CACHE", os.path.join(RUNTIME_CACHE_DIR, "hf_modules"))
-os.environ.setdefault("NUMBA_CACHE_DIR", os.path.join(RUNTIME_CACHE_DIR, "numba"))
-os.environ.setdefault("MPLCONFIGDIR", os.path.join(RUNTIME_CACHE_DIR, "matplotlib"))
-os.environ.setdefault("XDG_CACHE_HOME", os.path.join(RUNTIME_CACHE_DIR, "xdg"))
+os.environ.setdefault("HF_MODULES_CACHE", str(Path(RUNTIME_CACHE_DIR) / "hf_modules"))
+os.environ.setdefault("NUMBA_CACHE_DIR", str(Path(RUNTIME_CACHE_DIR) / "numba"))
+os.environ.setdefault("MPLCONFIGDIR", str(Path(RUNTIME_CACHE_DIR) / "matplotlib"))
+os.environ.setdefault("XDG_CACHE_HOME", str(Path(RUNTIME_CACHE_DIR) / "xdg"))
 if LOCAL_FILES_ONLY:
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
     os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
-os.makedirs(PROMPTS_DIR, exist_ok=True)
-os.makedirs(os.environ["HF_MODULES_CACHE"], exist_ok=True)
-os.makedirs(os.environ["NUMBA_CACHE_DIR"], exist_ok=True)
-os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
-os.makedirs(os.environ["XDG_CACHE_HOME"], exist_ok=True)
-os.makedirs(LONGCAT_AUDIODIT_WORKER_TMP_DIR, exist_ok=True)
-lock_dir = os.path.dirname(GPU_LOCK_FILE)
-if lock_dir:
-    os.makedirs(lock_dir, exist_ok=True)
+for directory in (
+    PROMPTS_DIR,
+    os.environ["HF_MODULES_CACHE"],
+    os.environ["NUMBA_CACHE_DIR"],
+    os.environ["MPLCONFIGDIR"],
+    os.environ["XDG_CACHE_HOME"],
+    LONGCAT_AUDIODIT_WORKER_TMP_DIR,
+    os.path.dirname(GPU_LOCK_FILE),
+):
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+
 
 app = FastAPI(title="Unitale LongCat-AudioDiT-3.5B Voice Clone API")
 
@@ -223,6 +232,41 @@ def save_prompt_text_sidecar(filename: str, prompt_text: Optional[str]) -> None:
         file.write(normalized)
 
 
+def persist_audio_bytes(audio_bytes: bytes, model_prefix: str, output_dir: str) -> Path:
+    if not audio_bytes:
+        raise ValueError("cannot persist empty audio")
+
+    output_directory = Path(output_dir)
+    output_directory.mkdir(parents=True, exist_ok=True)
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    output_fd, temporary_path = tempfile.mkstemp(
+        dir=output_directory,
+        prefix=f".{model_prefix}_{timestamp}_",
+        suffix=".tmp",
+    )
+    temporary_file = Path(temporary_path)
+    output_path = output_directory / f"{temporary_file.name[1:-4]}.wav"
+    try:
+        with os.fdopen(output_fd, "wb") as destination:
+            destination.write(audio_bytes)
+        os.replace(temporary_file, output_path)
+        return output_path
+    except Exception:
+        try:
+            os.close(output_fd)
+        except OSError:
+            pass
+        try:
+            temporary_file.unlink()
+        except OSError:
+            pass
+        try:
+            output_path.unlink()
+        except OSError:
+            pass
+        raise
+
+
 def sha256_file(path: str) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as file:
@@ -231,23 +275,12 @@ def sha256_file(path: str) -> str:
     return digest.hexdigest()
 
 
-def normalize_optional_text(value: Optional[str]) -> Optional[str]:
-    if value is None:
-        return None
-    normalized = value.strip()
-    return normalized or None
-
-
 def normalize_synthesis_text(text: str) -> str:
     normalized = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", (text or "").strip())
     normalized = re.sub(r"(?m)^\s*[-*+]\s+", "", normalized)
     if not normalized:
         raise HTTPException(status_code=400, detail="text 不能为空。")
     return normalized
-
-
-def module_available(module_name: str) -> bool:
-    return importlib.util.find_spec(module_name) is not None
 
 
 def assert_local_request(request: Request) -> None:
@@ -277,9 +310,22 @@ def wait_after_cuda_release(label: str = "") -> None:
     time.sleep(CUDA_RELEASE_DELAY)
 
 
-class LongCatAudioDitSynthesizeRequest(CloneSynthesisRequest):
-    """Official LongCat zero-shot voice-cloning request."""
+class CloneSynthesisRequest(BaseModel):
+    """Compatibility base for local reference-audio clone endpoints."""
 
+    model_config = ConfigDict(extra="ignore")
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_style_prompt(cls, value):
+        if isinstance(value, dict) and "style_prompt" in value:
+            raise ValueError(
+                "style_prompt 不适用于 /v2/synthesize；该接口仅用于参考音频克隆。"
+            )
+        return value
+
+
+class LongCatAudioDitSynthesizeRequest(CloneSynthesisRequest):
     text: str
     audio_path: str
     prompt_text: Optional[str] = None
@@ -293,23 +339,14 @@ class LongCatAudioDitSynthesizeRequest(CloneSynthesisRequest):
     vae_dtype: Optional[Literal["float16", "float32"]] = None
 
 
-LONGCAT_WORKER = LocalWorkerConfig(
-    conda_env=LONGCAT_AUDIODIT_CONDA_ENV,
-    worker_script=LONGCAT_AUDIODIT_WORKER_SCRIPT,
-    model_dir=LONGCAT_AUDIODIT_MODEL_DIR,
-    temp_dir=LONGCAT_AUDIODIT_WORKER_TMP_DIR,
-    timeout=LONGCAT_AUDIODIT_REQUEST_TIMEOUT,
-    label="LongCat-AudioDiT-3.5B",
-    file_prefix="longcat_audiodit",
-)
-
-
 class LongCatAudioDitWorkerManager:
     def __init__(self):
         self.lock = threading.RLock()
         self.last_error: Optional[str] = None
 
-    def build_worker_payload(self, request: LongCatAudioDitSynthesizeRequest) -> dict:
+    def build_worker_payload(
+        self, request: LongCatAudioDitSynthesizeRequest
+    ) -> dict[str, object]:
         ref_audio_path = os.path.join(PROMPTS_DIR, hash_filename(request.audio_path))
         if not os.path.isfile(ref_audio_path):
             raise HTTPException(status_code=404, detail="音频不存在")
@@ -337,7 +374,11 @@ class LongCatAudioDitWorkerManager:
                 if request.max_chars_per_chunk is not None
                 else LONGCAT_AUDIODIT_MAX_CHARS_PER_CHUNK
             ),
-            "pause_ms": request.pause_ms if request.pause_ms is not None else LONGCAT_AUDIODIT_PAUSE_MS,
+            "pause_ms": (
+                request.pause_ms
+                if request.pause_ms is not None
+                else LONGCAT_AUDIODIT_PAUSE_MS
+            ),
             "nfe": request.nfe if request.nfe is not None else LONGCAT_AUDIODIT_NFE,
             "guidance_strength": (
                 request.guidance_strength
@@ -361,20 +402,106 @@ class LongCatAudioDitWorkerManager:
             "hf_mirror_dir": HF_MIRROR_DIR,
         }
 
-    def run_worker(self, payload: dict) -> bytes:
+    def run_worker(self, payload: dict[str, object]) -> bytes:
+        python_executable = sys.executable
+        if not python_executable or not os.path.isfile(python_executable):
+            raise RuntimeError("未找到 LongCat uv 环境的 Python 解释器。")
+        if not os.path.isfile(LONGCAT_AUDIODIT_WORKER_SCRIPT):
+            raise RuntimeError(
+                f"LongCat worker 脚本不存在: {LONGCAT_AUDIODIT_WORKER_SCRIPT}"
+            )
+        if not os.path.isdir(LONGCAT_AUDIODIT_WORKER_TMP_DIR):
+            os.makedirs(LONGCAT_AUDIODIT_WORKER_TMP_DIR, exist_ok=True)
+
+        request_fd, request_path = tempfile.mkstemp(
+            dir=LONGCAT_AUDIODIT_WORKER_TMP_DIR,
+            prefix="longcat_audiodit_req_",
+            suffix=".json",
+        )
+        output_fd, output_path = tempfile.mkstemp(
+            dir=LONGCAT_AUDIODIT_WORKER_TMP_DIR,
+            prefix="longcat_audiodit_out_",
+            suffix=".wav",
+        )
+        os.close(request_fd)
+        os.close(output_fd)
+        process: Optional[subprocess.Popen] = None
+
         try:
-            audio = run_local_worker(payload, LONGCAT_WORKER)
+            with open(request_path, "w", encoding="utf-8") as file:
+                json.dump(payload, file, ensure_ascii=False)
+
+            command = [
+                python_executable,
+                LONGCAT_AUDIODIT_WORKER_SCRIPT,
+                "--input-json",
+                request_path,
+                "--output-wav",
+                output_path,
+            ]
+            print(f"[LongCat-AudioDiT] 启动 uv worker: python={python_executable}")
+            started = time.perf_counter()
+            worker_env = os.environ.copy()
+            worker_env.pop("PYTORCH_CUDA_ALLOC_CONF", None)
+            worker_env.pop("CUDA_MODULE_LOADING", None)
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+                env=worker_env,
+            )
+            try:
+                stdout, stderr = process.communicate(
+                    timeout=LONGCAT_AUDIODIT_REQUEST_TIMEOUT
+                )
+            except subprocess.TimeoutExpired:
+                terminate_process_group(process, "LongCat-AudioDiT")
+                process.communicate()
+                raise RuntimeError(
+                    f"LongCat-AudioDiT worker 超时（>{LONGCAT_AUDIODIT_REQUEST_TIMEOUT:.0f}s）"
+                )
+
+            if stdout.strip():
+                print(stdout.rstrip())
+            if stderr.strip():
+                print(stderr.rstrip())
+            print(
+                "[LongCat-AudioDiT] worker 退出码="
+                f"{process.returncode}，耗时 {time.perf_counter() - started:.2f}s"
+            )
+
+            if process.returncode != 0:
+                output = stderr or stdout
+                lines = [line.strip() for line in output.splitlines() if line.strip()]
+                detail = " | ".join(lines[-8:]) if lines else "worker 未输出错误信息"
+                raise RuntimeError(detail)
+            if not os.path.isfile(output_path) or os.path.getsize(output_path) == 0:
+                raise RuntimeError("LongCat-AudioDiT worker 未生成音频文件。")
+
+            with open(output_path, "rb") as file:
+                audio_bytes = file.read()
             saved_output_path = persist_audio_bytes(
-                audio,
+                audio_bytes,
                 "longcat_audiodit",
                 LONGCAT_AUDIODIT_OUTPUT_DIR,
             )
             print(f"[LongCat-AudioDiT] 已保存生成音频: {saved_output_path}")
             self.last_error = None
-            return audio
+            return audio_bytes
         except Exception as exc:
             self.last_error = str(exc)
             raise
+        finally:
+            terminate_process_group(process, "LongCat-AudioDiT")
+            for path in (request_path, output_path):
+                try:
+                    os.remove(path)
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    pass
 
 
 manager = LongCatAudioDitWorkerManager()
@@ -383,9 +510,9 @@ manager = LongCatAudioDitWorkerManager()
 @app.get("/v1/health")
 async def health():
     cuda = cuda_status()
-    model_required = (
-        os.path.isfile(os.path.join(LONGCAT_AUDIODIT_MODEL_DIR, "config.json"))
-        and os.path.isfile(os.path.join(LONGCAT_AUDIODIT_MODEL_DIR, "model.safetensors"))
+    model_required = all(
+        os.path.isfile(os.path.join(LONGCAT_AUDIODIT_MODEL_DIR, name))
+        for name in ("config.json", "model.safetensors")
     )
     return {
         "code": 200,
@@ -401,7 +528,8 @@ async def health():
             "worker_tmp_dir": LONGCAT_AUDIODIT_WORKER_TMP_DIR,
         },
         "available": {
-            "conda": bool(resolve_conda_executable()),
+            "python": sys.executable,
+            "conda": bool(shutil.which("conda")),
             "worker_script": os.path.isfile(LONGCAT_AUDIODIT_WORKER_SCRIPT),
             "model_dir": os.path.isdir(LONGCAT_AUDIODIT_MODEL_DIR),
             "model_required_files": model_required,
@@ -409,13 +537,18 @@ async def health():
             "tokenizer_path": os.path.isdir(LONGCAT_AUDIODIT_TOKENIZER_PATH),
             "torch": module_available("torch"),
             "cuda": cuda["available"],
+            "flash_attn": module_available("flash_attn"),
         },
         "cuda": cuda,
         "runtime": {
             "port": API_PORT,
-            "worker_env": LONGCAT_AUDIODIT_CONDA_ENV,
+            "worker_runtime": "uv",
+            "worker_python": sys.executable,
             "model": "LongCat-AudioDiT-3.5B-bf16",
-            "model_lifecycle": "one request -> one worker -> explicit CUDA cleanup -> process exit releases VRAM",
+            "model_lifecycle": (
+                "one request -> one worker -> explicit CUDA cleanup -> "
+                "process exit releases VRAM"
+            ),
             "local_files_only": LOCAL_FILES_ONLY,
             "request_timeout": LONGCAT_AUDIODIT_REQUEST_TIMEOUT,
             "sample_rate": 24000,
@@ -427,7 +560,14 @@ async def health():
             "seed": LONGCAT_AUDIODIT_SEED,
             "duration_scale": LONGCAT_AUDIODIT_DURATION_SCALE,
             "vae_dtype": LONGCAT_AUDIODIT_VAE_DTYPE,
-            "clone_contract": "accurate prompt_text + 24 kHz mono prompt_audio; model max_wav_duration applies",
+            "clone_contract": (
+                "accurate prompt_text + 24 kHz mono prompt_audio; "
+                "model max_wav_duration applies"
+            ),
+            "flash_attention_policy": (
+                "not required; official audiodit uses native "
+                "PyTorch/Transformers attention"
+            ),
         },
         "last_errors": {"longcat_audiodit": manager.last_error},
     }
@@ -452,6 +592,7 @@ async def upload_audio(
     save_path = os.path.join(PROMPTS_DIR, hash_filename(full_path))
     with open(save_path, "wb") as file:
         file.write(content)
+
     normalized_prompt_text = normalize_optional_text(prompt_text)
     save_prompt_text_sidecar(full_path, normalized_prompt_text)
     return {
@@ -496,12 +637,17 @@ async def synthesize_v2(request: LongCatAudioDitSynthesizeRequest):
 
 if __name__ == "__main__":
     print("==================================================")
-    print("   Unitale AI 本地后端 LongCat-AudioDiT-3.5B")
+    print("   Unitale AI 本地后端 LongCat-AudioDiT-3.5B uv")
     print("==================================================")
-    print(f"[配置] worker env: {LONGCAT_AUDIODIT_CONDA_ENV}")
+    print(f"[配置] project: {PROJECT_DIR}")
     print(f"[配置] model: {LONGCAT_AUDIODIT_MODEL_DIR}")
     print(f"[配置] official repo: {LONGCAT_AUDIODIT_REPO_PATH}")
     print(f"[配置] tokenizer: {LONGCAT_AUDIODIT_TOKENIZER_PATH}")
+    print(f"[配置] worker: {LONGCAT_AUDIODIT_WORKER_SCRIPT}")
     print(f"[配置] port: {API_PORT}")
-    print(f"[配置] local_files_only={LOCAL_FILES_ONLY}, request_timeout={LONGCAT_AUDIODIT_REQUEST_TIMEOUT}")
+    print(
+        f"[配置] local_files_only={LOCAL_FILES_ONLY}, "
+        f"request_timeout={LONGCAT_AUDIODIT_REQUEST_TIMEOUT}"
+    )
     uvicorn.run(app, host=API_HOST, port=API_PORT)
+

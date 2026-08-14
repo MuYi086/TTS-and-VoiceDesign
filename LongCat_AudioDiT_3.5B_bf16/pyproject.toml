@@ -1,0 +1,39 @@
+[project]
+name = "longcat-audiodit-service"
+version = "0.1.0"
+description = "Unitale LongCat-AudioDiT-3.5B voice cloning service"
+requires-python = "==3.12.13"
+dependencies = [
+    "fastapi==0.139.0",
+    "uvicorn==0.50.0",
+    "pydantic==2.13.4",
+    "python-multipart==0.0.32",
+    "torch==2.13.0",
+    "torchaudio==2.11.0",
+    "transformers==5.3.0",
+    "protobuf==7.35.1",
+    "safetensors==0.8.0",
+    "librosa==0.11.0",
+    "soundfile==0.14.0",
+    "numpy==2.2.6",
+    "einops==0.8.2",
+]
+
+[tool.uv]
+package = false
+index-strategy = "first-index"
+
+[[tool.uv.index]]
+name = "pypi-tuna"
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
+
+[[tool.uv.index]]
+name = "pytorch-cu130-aliyun"
+url = "https://mirrors.aliyun.com/pytorch-wheels/cu130/"
+format = "flat"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130-aliyun" }
+torchaudio = { index = "pytorch-cu130-aliyun" }
