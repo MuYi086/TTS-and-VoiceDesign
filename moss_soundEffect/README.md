@@ -1,9 +1,8 @@
 # MOSS-SoundEffect v2 uv 服务
 
-这个目录承载原 `api/soundeffect_api.py` 和
-`api/soundeffect_worker.py` 的 uv 迁移实现。HTTP 控制面和一次性模型 worker
-共用 `moss_soundEffect/.venv`，worker 退出后释放显存；旧 API 文件暂时保留，
-便于回退和对比。
+这个目录提供 MOSS-SoundEffect v2 的独立 uv HTTP 控制面和一次性模型 worker，
+共用 `moss_soundEffect/.venv`，worker 退出后释放显存。迁移已完成，8311 只由
+本目录的 uv 服务提供。
 
 ## 运行
 
@@ -51,11 +50,3 @@ curl -X POST http://127.0.0.1:8311/v1/generate \
 上游 MOSS-TTS 源码和模型权重不提交到本仓库。FlashAttention、SageAttention
 均为可选；当前代码在未安装时回退 PyTorch SDPA，首轮迁移不依赖本地
 `/home/muyi086/tts-depency/flash-attention`。
-
-## 回退
-
-迁移确认前可通过根目录 `start.sh` 使用：
-
-```bash
-MOSS_SOUNDEFFECT_RUNTIME=conda bash start.sh
-```

@@ -185,15 +185,39 @@ class MossSoundEffectMigrationTests(unittest.TestCase):
         self.assertTrue(audio_bytes.startswith(b"RIFF"))
         self.assertEqual(list((TEST_ROOT / "worker-tmp").iterdir()), [])
 
-    def test_start_script_routes_soundeffect_to_uv_with_conda_fallback(self) -> None:
+    def test_start_script_routes_soundeffect_to_uv_without_legacy_fallback(self) -> None:
         script = (REPOSITORY_DIR / "start.sh").read_text(encoding="utf-8")
         self.assertIn(
             'uv run --no-sync --project "$MOSS_SOUNDEFFECT_PROJECT_DIR"',
             script,
         )
-        self.assertIn("MOSS_SOUNDEFFECT_RUNTIME", script)
-        self.assertIn('elif [[ "$MOSS_SOUNDEFFECT_RUNTIME" == "conda" ]]', script)
-        self.assertIn('python "$API_DIR/soundeffect_api.py"', script)
+        self.assertNotIn("MOSS_SOUNDEFFECT_RUNTIME", script)
+        self.assertNotIn("MOSS_SOUNDEFFECT_CONDA_ENV", script)
+        self.assertNotIn('python "$API_DIR/soundeffect_api.py"', script)
+        self.assertIn(
+            'setsid uv run --no-sync --project "$QWEN3_TTS_PROJECT_DIR" python "$API_DIR/api.py"',
+            script,
+        )
+        self.assertIn(
+            'if [[ "$STABLE_AUDIO_3_MEDIUM_RUNTIME" == "uv" ]]',
+            script,
+        )
+        self.assertIn(
+            'python "$STABLE_AUDIO_3_MEDIUM_PROJECT_DIR/main.py"',
+            script,
+        )
+        self.assertIn(
+            'STABLE_AUDIO_3_MEDIUM_RUNTIME="${STABLE_AUDIO_3_MEDIUM_RUNTIME:-uv}"',
+            script,
+        )
+        self.assertIn(
+            'elif [[ "$STABLE_AUDIO_3_MEDIUM_RUNTIME" == "legacy" || "$STABLE_AUDIO_3_MEDIUM_RUNTIME" == "conda" ]]',
+            script,
+        )
+        self.assertIn('python "$API_DIR/stable_audio_3_medium_api.py"', script)
+        self.assertNotIn('CONDA_ENV="${CONDA_ENV:-moss-soundEffect}"', script)
+        self.assertFalse((REPOSITORY_DIR / "api/soundeffect_api.py").exists())
+        self.assertFalse((REPOSITORY_DIR / "api/soundeffect_worker.py").exists())
 
 
 if __name__ == "__main__":

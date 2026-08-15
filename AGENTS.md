@@ -19,7 +19,7 @@ uv run --project qwen3_tts python -m unittest discover -s tests -v
 curl http://127.0.0.1:8300/v1/health
 ```
 
-`start.sh` launches all seven HTTP wrappers and their dedicated workers; Qwen3-TTS 8305 runs from `qwen3_tts/.venv`, while the remaining lightweight wrappers use the shared `moss-soundEffect` Conda environment by default. Override ports, model locations, environments, and caches with environment variables (for example, `PORT=8400 bash start.sh`) rather than editing host-specific defaults. Use `soundEffect/run_moss_soundeffect_v2.sh` only for its CUDA/model smoke test.
+`start.sh` launches all HTTP wrappers and their dedicated workers; the main control plane and Qwen3-TTS 8305 use `qwen3_tts/.venv`, migrated services use their own uv projects, and remaining heavyweight workers use their model-specific Conda environments. The former `moss-soundEffect` Conda environment is removed. Override ports, model locations, environments, and caches with environment variables (for example, `PORT=8400 bash start.sh`) rather than editing host-specific defaults. Use `soundEffect/run_moss_soundeffect_v2.sh` only for its CUDA/model smoke test.
 
 ## Coding Style & Architecture
 

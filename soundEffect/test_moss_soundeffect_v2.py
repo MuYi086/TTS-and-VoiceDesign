@@ -3,7 +3,7 @@
 
 Edit the configuration constants below, then run:
 
-    conda run -n moss-soundEffect python soundEffect/test_moss_soundeffect_v2.py
+    uv run --project moss_soundEffect python soundEffect/test_moss_soundeffect_v2.py
 
 The first invocation downloads the model weights into the Hugging Face cache and
 may compile CUDA kernels.  It therefore takes substantially longer than later
@@ -23,6 +23,10 @@ from pathlib import Path
 # before launching to override it, or edit LOCAL_MODEL_DIR for another disk.
 LOCAL_MODEL_DIR = Path("/home/muyi086/hf-mirror/OpenMOSS-Team/MOSS-SoundEffect-v2.0")
 MODEL_ID = os.environ.get("MOSS_SOUNDEFFECT_MODEL_DIR", str(LOCAL_MODEL_DIR))
+LOCAL_CODE_DIR = Path.home() / "tts-depency/MOSS-TTS"
+CODE_DIR = Path(
+    os.environ.get("MOSS_SOUNDEFFECT_CODE_PATH", str(LOCAL_CODE_DIR))
+).expanduser()
 PROMPT = "门吱吱作响的声音，刺耳急促"
 SECONDS = 10.0
 NUM_INFERENCE_STEPS = 100
@@ -54,10 +58,15 @@ def validate_configuration() -> None:
         raise FileNotFoundError(
             f"Local MOSS-SoundEffect v2.0 model directory does not exist: {model_path}"
         )
+    if not (CODE_DIR / "moss_soundeffect_v2" / "__init__.py").is_file():
+        raise FileNotFoundError(
+            f"Local MOSS-TTS source checkout is incomplete: {CODE_DIR}"
+        )
 
 
 def main() -> None:
     validate_configuration()
+    sys.path.insert(0, str(CODE_DIR.resolve()))
 
     # Upstream recommends disabling TorchDynamo when Triton/CUDA graph
     # compilation is unstable. Keep it configurable with the other test knobs.
@@ -71,7 +80,7 @@ def main() -> None:
     except ImportError as exc:
         raise RuntimeError(
             "Could not import MOSS-SoundEffect v2.0 or one of its dependencies. "
-            "Run soundEffect/run_moss_soundeffect_v2.sh so the correct Conda "
+            "Run soundEffect/run_moss_soundeffect_v2.sh so the correct uv "
             f"environment is used. Active interpreter: {sys.executable}. "
             f"Original import error: {exc}"
         ) from exc

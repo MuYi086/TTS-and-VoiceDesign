@@ -18,13 +18,14 @@
 
 ## 本地环境
 
-主 API 和其它轻量 wrapper 默认使用 `moss-soundEffect` Conda 环境；Qwen3-TTS 8305、Qwen3-TTS VoiceDesign 8314、MOSS VoiceGenerator 8315、Step-Audio-EditX 8316、LongCat-AudioDiT 8307 和 dots.tts-soar 8308 服务使用各自目录内的 uv 环境，由 `uv run` 启动。MOSS-SoundEffect 8311 已迁移到 `moss_soundEffect/` uv 项目并默认由 uv 启动；确认迁移前仍可设置 `MOSS_SOUNDEFFECT_RUNTIME=conda` 回退到旧 `api/soundeffect_api.py`。如果部署环境另有共享 wrapper 环境，可通过 `CONDA_ENV` 覆盖：
+主 API、MOSS-SoundEffect 8311 和 Stable Audio 3 Medium 8313 分别使用
+`qwen3_tts/`、`moss_soundEffect/` 与 `stable_audio_3_medium/` uv 项目；
+Qwen3-TTS 8305、Qwen3-TTS VoiceDesign 8314、MOSS VoiceGenerator 8315、
+Step-Audio-EditX 8316、LongCat-AudioDiT 8307 和 dots.tts-soar 8308 服务也
+使用各自目录内的 uv 环境，由 `uv run` 启动。VoxCPM2 和旧 Stable Audio
+回退路径的 worker 继续使用各自 Conda 环境。
 
-```bash
-conda activate moss-soundEffect
-```
-
-Qwen3-TTS、MOSS-SoundEffect、MOSS VoiceGenerator、Step-Audio-EditX 和 LongCat-AudioDiT 在请求期间分别拉起一次性 worker；它们使用各自 uv 项目的 Python，其它模型使用对应 Conda 环境。模型在请求结束后由 worker 退出释放显存；主 API、各包装器和 worker 共享 `GPU_LOCK_FILE`，避免并发抢占 GPU。迁移期间可设置 `STEP_AUDIO_EDITX_RUNTIME=conda` 回退到旧 `api/step_audio_editx_worker.py`。
+Qwen3-TTS、MOSS-SoundEffect、MOSS VoiceGenerator、Step-Audio-EditX、LongCat-AudioDiT 和 Stable Audio 3 Medium 在请求期间分别拉起一次性 worker；它们使用各自 uv 项目的 Python，其它模型使用对应专用 Conda 环境。模型在请求结束后由 worker 退出释放显存；主 API、各包装器和 worker 共享 `GPU_LOCK_FILE`，避免并发抢占 GPU。Step-Audio-EditX 仍可通过 `STEP_AUDIO_EDITX_RUNTIME=conda` 回退到旧 worker，Stable Audio 仍可通过 `STABLE_AUDIO_3_MEDIUM_RUNTIME=legacy` 回退到旧 wrapper。
 
 ```bash
 uv run --project qwen3_tts python qwen3_tts/worker.py ...
@@ -35,14 +36,16 @@ uv run --project Step_Audio_EditX python Step_Audio_EditX/worker.py ...
 uv run --project LongCat_AudioDiT_3.5B_bf16 python LongCat_AudioDiT_3.5B_bf16/worker.py ...
 uv run --project dots_tts_soar python dots_tts_soar/worker.py ...
 uv run --project moss_soundEffect python moss_soundEffect/worker.py ...
+uv run --project stable_audio_3_medium python stable_audio_3_medium/worker.py ...
 ```
 
 MOSS-SoundEffect 的 uv 项目使用 Python 3.12.13、锁定的 CUDA PyTorch 依赖和外置
 `MOSS_SOUNDEFFECT_CODE_PATH` 上游源码；默认源码目录为 `$HOME/tts-depency/MOSS-TTS`，模型目录为
 `$HOME/hf-mirror/OpenMOSS-Team/MOSS-SoundEffect-v2.0`。该模型当前不需要安装 FlashAttention：上游会使用
 PyTorch SDPA 回退；本机 `/home/muyi086/tts-depency/flash-attention` 是面向更新 GPU 架构的开发源码，不能作为
-RTX 4070 Ti SUPER 的必要依赖。Stable Audio 3 Medium 使用独立的
-`stable_audio_3_medium` 环境，并通过本机 `stable-audio-3` 官方源码运行。MiMo 是云端 API，须通过环境变量提供密钥：
+RTX 4070 Ti SUPER 的必要依赖。Stable Audio 3 Medium 的 uv 项目使用 Python 3.12.13 和本机
+`stable-audio-3` 官方源码；默认允许上游的 flex-attention/SDPA 回退，也可通过
+`STABLE_AUDIO_3_MEDIUM_REQUIRE_FLASH_ATTN=1` 启用严格 FlashAttention 模式。MiMo 是云端 API，须通过环境变量提供密钥：
 
 ```bash
 export MIMO_API_KEY=...
@@ -120,18 +123,21 @@ curl -X POST http://127.0.0.1:8313/v1/generate \
   -o stable-medium-sfx.wav
 ```
 
-`8313` Medium 支持 `steps`（默认 `8`）、`cfg_scale`（默认 `1.0`）和 `seed`（默认 `-1`，每次随机），最大时长为 380 秒。它要求 CUDA GPU、Ampere 或更新架构和 Flash Attention 2，不能退回 CPU；输出为 44.1 kHz、32-bit float、立体声 WAV，可生成音乐和音效，不用于语音或声音克隆。
+`8313` Medium 支持 `steps`（默认 `8`）、`cfg_scale`（默认 `1.0`）和 `seed`（默认 `-1`，每次随机），最大时长为 380 秒。它要求 CUDA GPU、Ampere 或更新架构，默认使用官方源码的 FlashAttention 优先、flex-attention/SDPA 回退路径；输出为 44.1 kHz、32-bit float、立体声 WAV，可生成音乐和音效，不用于语音或声音克隆。
 官方模型以英文描述训练，英文提示词效果最佳；WebUI 会在剧本分析时同时生成中文 MOSS 提示词和英文
 Stable Audio 提示词。短而具体的音效应使用与实际声音相符的短时长；`TrackType: SFX` 通常可帮助模型
 保持音效语义。
 
-`8313` Medium 也采用一请求一个 worker；worker 在 `stable_audio_3_medium` 环境中载入本地
+`8313` Medium 也采用一请求一个 worker；worker 在 `stable_audio_3_medium/.venv` 中载入本地
 `stabilityai/stable-audio-3-medium` 权重，完成后显式清理 CUDA allocator 并退出。可通过
-`STABLE_AUDIO_3_MEDIUM_CONDA_ENV`、`STABLE_AUDIO_3_MEDIUM_MODEL_DIR`、`STABLE_AUDIO_3_MEDIUM_DEVICE`、
-`STABLE_AUDIO_3_MEDIUM_DTYPE`、`STABLE_AUDIO_3_MEDIUM_DEFAULT_SECONDS`、
-`STABLE_AUDIO_3_MEDIUM_DEFAULT_STEPS`、`STABLE_AUDIO_3_MEDIUM_DEFAULT_CFG_SCALE`、
-`STABLE_AUDIO_3_MEDIUM_DEFAULT_SEED` 和 `STABLE_AUDIO_3_MEDIUM_REQUEST_TIMEOUT` 覆盖配置；
-输出目录可由 `STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR` 或 `TTS_OUTPUT_DIR` 覆盖。
+`STABLE_AUDIO_3_MEDIUM_PROJECT_DIR`、`STABLE_AUDIO_3_MEDIUM_RUNTIME`、
+`STABLE_AUDIO_3_MEDIUM_REQUIRE_FLASH_ATTN`、`STABLE_AUDIO_3_MEDIUM_MODEL_DIR`、
+`STABLE_AUDIO_3_REPO_PATH`、`STABLE_AUDIO_3_MEDIUM_DEVICE`、`STABLE_AUDIO_3_MEDIUM_DTYPE`、
+`STABLE_AUDIO_3_MEDIUM_DEFAULT_SECONDS`、`STABLE_AUDIO_3_MEDIUM_DEFAULT_STEPS`、
+`STABLE_AUDIO_3_MEDIUM_DEFAULT_CFG_SCALE`、`STABLE_AUDIO_3_MEDIUM_DEFAULT_SEED` 和
+`STABLE_AUDIO_3_MEDIUM_REQUEST_TIMEOUT` 覆盖配置；输出目录可由
+`STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR` 或 `TTS_OUTPUT_DIR` 覆盖。设置
+`STABLE_AUDIO_3_MEDIUM_RUNTIME=legacy` 可回退到原 `api/stable_audio_3_medium_api.py`。
 
 ## 语音合成接口
 

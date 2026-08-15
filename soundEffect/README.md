@@ -5,8 +5,8 @@
 ## 当前环境
 
 ```text
-Conda 环境：moss-soundEffect
-Python：3.12
+uv 项目：moss_soundEffect
+Python：3.12.13
 模型包：moss-soundeffect-v2 0.1.0
 Torch：2.9.0+cu128
 Torchaudio：2.9.0+cu128
@@ -24,7 +24,7 @@ Diffusers：0.37.1
 bash soundEffect/run_moss_soundeffect_v2.sh
 ```
 
-启动脚本会自动使用 `/home/muyi086/hf-mirror/OpenMOSS-Team/MOSS-SoundEffect-v2.0` 的本地完整权重，**不会**访问 Hugging Face 或重复下载。它也会自动进入 `moss-soundEffect` Conda 环境；默认输出文件为 `soundEffect/outputs/dog_barking_park.wav`。
+启动脚本会通过 `moss_soundEffect` uv 项目使用 `/home/muyi086/hf-mirror/OpenMOSS-Team/MOSS-SoundEffect-v2.0` 的本地完整权重，**不会**访问 Hugging Face 或重复下载；默认源码目录为 `$HOME/tts-depency/MOSS-TTS`，默认输出文件为 `soundEffect/outputs/dog_barking_park.wav`。
 
 如需换一套本地权重，可在执行前临时指定目录：
 
@@ -76,6 +76,6 @@ curl -X POST http://127.0.0.1:8311/v1/generate \
 
 ### 显存生命周期
 
-8311 本身不导入 MOSS-SoundEffect 模型。每次生成都在 `moss-soundEffect` 环境中启动一个独立 worker：加载模型、生成 WAV、写入临时文件、退出进程。HTTP 包装器确认 worker 已退出并等待短暂的 CUDA 释放间隔后，才释放和其他 TTS 服务共用的 `GPU_LOCK_FILE`。因此模型、CUDA 上下文和显存不会跨请求常驻，也不会与现有 TTS worker 并发抢占显存。
+8311 本身不导入 MOSS-SoundEffect 模型。每次生成都在 `moss_soundEffect` uv 项目中启动一个独立 worker：加载模型、生成 WAV、写入临时文件、退出进程。HTTP 包装器确认 worker 已退出并等待短暂的 CUDA 释放间隔后，才释放和其他 TTS 服务共用的 `GPU_LOCK_FILE`。因此模型、CUDA 上下文和显存不会跨请求常驻，也不会与现有 TTS worker 并发抢占显存。
 
-可选环境变量包括 `MOSS_SOUNDEFFECT_CONDA_ENV`、`MOSS_SOUNDEFFECT_MODEL_DIR`、`MOSS_SOUNDEFFECT_DEVICE`、`MOSS_SOUNDEFFECT_DTYPE`、`MOSS_SOUNDEFFECT_REQUEST_TIMEOUT` 与所有 `MOSS_SOUNDEFFECT_DEFAULT_*` 参数。
+可选环境变量包括 `MOSS_SOUNDEFFECT_PROJECT_DIR`、`MOSS_SOUNDEFFECT_CODE_PATH`、`MOSS_SOUNDEFFECT_MODEL_DIR`、`MOSS_SOUNDEFFECT_DEVICE`、`MOSS_SOUNDEFFECT_DTYPE`、`MOSS_SOUNDEFFECT_REQUEST_TIMEOUT` 与所有 `MOSS_SOUNDEFFECT_DEFAULT_*` 参数。

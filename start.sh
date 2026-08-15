@@ -3,12 +3,8 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 API_DIR="$PROJECT_DIR/api"
-# The existing HTTP wrappers continue to run in their configured Conda
-# environments. Qwen3-TTS has migrated to its standalone uv project below;
-# its one-shot worker uses the same uv interpreter as the HTTP service.
-# The remaining lightweight wrappers use this shared web/runtime environment;
-# heavyweight workers use their model-specific Conda environments below.
-CONDA_ENV="${CONDA_ENV:-moss-soundEffect}"
+# The control-plane wrappers use the Qwen3-TTS uv environment, while
+# heavyweight workers use their model-specific environments below.
 MOSS_SOUNDEFFECT_PROJECT_DIR="${MOSS_SOUNDEFFECT_PROJECT_DIR:-$PROJECT_DIR/moss_soundEffect}"
 QWEN3_TTS_PROJECT_DIR="${QWEN3_TTS_PROJECT_DIR:-$PROJECT_DIR/qwen3_tts}"
 QWEN3_VOICEDESIGN_PROJECT_DIR="${QWEN3_VOICEDESIGN_PROJECT_DIR:-$PROJECT_DIR/qwen3_voiceDesign}"
@@ -16,6 +12,7 @@ MOSS_VOICEGENERATOR_PROJECT_DIR="${MOSS_VOICEGENERATOR_PROJECT_DIR:-$PROJECT_DIR
 STEP_AUDIO_EDITX_PROJECT_DIR="${STEP_AUDIO_EDITX_PROJECT_DIR:-$PROJECT_DIR/Step_Audio_EditX}"
 LONGCAT_AUDIODIT_PROJECT_DIR="${LONGCAT_AUDIODIT_PROJECT_DIR:-$PROJECT_DIR/LongCat_AudioDiT_3.5B_bf16}"
 DOTS_TTS_SOAR_PROJECT_DIR="${DOTS_TTS_SOAR_PROJECT_DIR:-$PROJECT_DIR/dots_tts_soar}"
+STABLE_AUDIO_3_MEDIUM_PROJECT_DIR="${STABLE_AUDIO_3_MEDIUM_PROJECT_DIR:-$PROJECT_DIR/stable_audio_3_medium}"
 
 export HF_MIRROR_DIR="${HF_MIRROR_DIR:-$HOME/hf-mirror}"
 export QWEN_VOICEDESIGN_MODEL_DIR="${QWEN_VOICEDESIGN_MODEL_DIR:-$HF_MIRROR_DIR/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign}"
@@ -35,8 +32,6 @@ export STEP_AUDIO_EDITX_MAX_NUM_SEQS="${STEP_AUDIO_EDITX_MAX_NUM_SEQS:-1}"
 export STEP_AUDIO_EDITX_COSYVOICE_DTYPE="${STEP_AUDIO_EDITX_COSYVOICE_DTYPE:-bfloat16}"
 export STEP_AUDIO_EDITX_ENFORCE_EAGER="${STEP_AUDIO_EDITX_ENFORCE_EAGER:-1}"
 export STEP_AUDIO_EDITX_COSYVOICE_CUDA_GRAPH="${STEP_AUDIO_EDITX_COSYVOICE_CUDA_GRAPH:-0}"
-export MOSS_SOUNDEFFECT_CONDA_ENV="${MOSS_SOUNDEFFECT_CONDA_ENV:-moss-soundEffect}"
-export MOSS_SOUNDEFFECT_RUNTIME="${MOSS_SOUNDEFFECT_RUNTIME:-uv}"
 export MOSS_SOUNDEFFECT_CODE_PATH="${MOSS_SOUNDEFFECT_CODE_PATH:-$HOME/tts-depency/MOSS-TTS}"
 export MOSS_SOUNDEFFECT_MODEL_DIR="${MOSS_SOUNDEFFECT_MODEL_DIR:-$HF_MIRROR_DIR/OpenMOSS-Team/MOSS-SoundEffect-v2.0}"
 export MOSS_SOUNDEFFECT_DEVICE="${MOSS_SOUNDEFFECT_DEVICE:-cuda}"
@@ -57,6 +52,8 @@ export STABLE_AUDIO_3_MEDIUM_DEFAULT_STEPS="${STABLE_AUDIO_3_MEDIUM_DEFAULT_STEP
 export STABLE_AUDIO_3_MEDIUM_DEFAULT_CFG_SCALE="${STABLE_AUDIO_3_MEDIUM_DEFAULT_CFG_SCALE:-1.0}"
 export STABLE_AUDIO_3_MEDIUM_DEFAULT_SEED="${STABLE_AUDIO_3_MEDIUM_DEFAULT_SEED:--1}"
 export STABLE_AUDIO_3_MEDIUM_REQUEST_TIMEOUT="${STABLE_AUDIO_3_MEDIUM_REQUEST_TIMEOUT:-900}"
+export STABLE_AUDIO_3_MEDIUM_RUNTIME="${STABLE_AUDIO_3_MEDIUM_RUNTIME:-uv}"
+export STABLE_AUDIO_3_MEDIUM_REQUIRE_FLASH_ATTN="${STABLE_AUDIO_3_MEDIUM_REQUIRE_FLASH_ATTN:-0}"
 export QWEN3_TTS_MODEL_DIR="${QWEN3_TTS_MODEL_DIR:-$HF_MIRROR_DIR/Qwen/Qwen3-TTS-12Hz-1.7B-Base}"
 export VOXCPM2_MODEL_DIR="${VOXCPM2_MODEL_DIR:-$HF_MIRROR_DIR/openbmb/VoxCPM2}"
 export QWEN_LIBS="${QWEN_LIBS:-$API_DIR/vendor/qwen_libs}"
@@ -121,7 +118,7 @@ mkdir -p "$PROMPTS_DIR" "$HF_MODULES_CACHE" "$NUMBA_CACHE_DIR" "$MPLCONFIGDIR" "
 echo "=================================================="
 echo "   Unitale AI local backend"
 echo "=================================================="
-echo "Main conda env:      $CONDA_ENV"
+echo "Control-plane uv project: $QWEN3_TTS_PROJECT_DIR"
 echo "MOSS VoiceGenerator:  $MOSS_VOICEGENERATOR_MODEL_DIR"
 echo "Step-Audio-EditX env: $STEP_AUDIO_EDITX_CONDA_ENV"
 echo "Step-Audio-EditX runtime: $STEP_AUDIO_EDITX_RUNTIME"
@@ -130,13 +127,13 @@ echo "Step-Audio-EditX API: http://$STEP_AUDIO_EDITX_HOST:$STEP_AUDIO_EDITX_PORT
 echo "Step-Audio-EditX model: $STEP_AUDIO_EDITX_MODEL_DIR"
 echo "Step-Audio tokenizer: $STEP_AUDIO_TOKENIZER_PATH"
 echo "Step-Audio-EditX code: $STEP_AUDIO_EDITX_CODE_PATH"
-echo "SoundEffect env:     $MOSS_SOUNDEFFECT_CONDA_ENV"
-echo "SoundEffect runtime: $MOSS_SOUNDEFFECT_RUNTIME"
 echo "SoundEffect uv project: $MOSS_SOUNDEFFECT_PROJECT_DIR"
 echo "SoundEffect source:  $MOSS_SOUNDEFFECT_CODE_PATH"
 echo "SoundEffect model:   $MOSS_SOUNDEFFECT_MODEL_DIR"
 echo "SoundEffect device:  $MOSS_SOUNDEFFECT_DEVICE ($MOSS_SOUNDEFFECT_DTYPE)"
 echo "Stable Audio 3 Medium env:    $STABLE_AUDIO_3_MEDIUM_CONDA_ENV"
+echo "Stable Audio 3 Medium runtime: $STABLE_AUDIO_3_MEDIUM_RUNTIME"
+echo "Stable Audio 3 Medium project: $STABLE_AUDIO_3_MEDIUM_PROJECT_DIR"
 echo "Stable Audio 3 Medium model:  $STABLE_AUDIO_3_MEDIUM_MODEL_DIR"
 echo "Stable Audio 3 source:        $STABLE_AUDIO_3_REPO_PATH"
 echo "Stable Audio 3 Medium device: $STABLE_AUDIO_3_MEDIUM_DEVICE ($STABLE_AUDIO_3_MEDIUM_DTYPE)"
@@ -241,25 +238,31 @@ cleanup() {
 
 trap cleanup INT TERM EXIT
 
-setsid conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/api.py" &
+# Main API keeps its existing 8300 routes and uses the Qwen3-TTS uv
+# control-plane environment.
+setsid uv run --no-sync --project "$QWEN3_TTS_PROJECT_DIR" python "$API_DIR/api.py" &
 main_pid=$!
-if [[ "$MOSS_SOUNDEFFECT_RUNTIME" == "uv" ]]; then
-  # MOSS-SoundEffect uv 服务：8311 保持原有路由、端口和请求契约。
-  HOST="$SOUNDEFFECT_HOST" PORT="$SOUNDEFFECT_PORT" \
-    setsid uv run --no-sync --project "$MOSS_SOUNDEFFECT_PROJECT_DIR" \
-    python "$MOSS_SOUNDEFFECT_PROJECT_DIR/main.py" &
-  soundeffect_pid=$!
-elif [[ "$MOSS_SOUNDEFFECT_RUNTIME" == "conda" ]]; then
-  # 迁移确认前保留旧 api/soundeffect_api.py 的 Conda 回退路径。
-  HOST="$SOUNDEFFECT_HOST" PORT="$SOUNDEFFECT_PORT" \
-    setsid conda run --no-capture-output -n "$CONDA_ENV" \
-    python "$API_DIR/soundeffect_api.py" &
-  soundeffect_pid=$!
+# MOSS-SoundEffect uv 服务：8311 保持原有路由、端口和请求契约。
+HOST="$SOUNDEFFECT_HOST" PORT="$SOUNDEFFECT_PORT" \
+  setsid uv run --no-sync --project "$MOSS_SOUNDEFFECT_PROJECT_DIR" \
+  python "$MOSS_SOUNDEFFECT_PROJECT_DIR/main.py" &
+soundeffect_pid=$!
+# Stable Audio 3 Medium migrated uv service.  Keep the old API wrapper as an
+# explicit rollback path until the new project has passed the user's canary.
+if [[ "$STABLE_AUDIO_3_MEDIUM_RUNTIME" == "uv" ]]; then
+  HOST="$STABLE_AUDIO_3_MEDIUM_HOST" PORT="$STABLE_AUDIO_3_MEDIUM_PORT" \
+    setsid uv run --no-sync --project "$STABLE_AUDIO_3_MEDIUM_PROJECT_DIR" \
+    python "$STABLE_AUDIO_3_MEDIUM_PROJECT_DIR/main.py" &
+elif [[ "$STABLE_AUDIO_3_MEDIUM_RUNTIME" == "legacy" || "$STABLE_AUDIO_3_MEDIUM_RUNTIME" == "conda" ]]; then
+  # Legacy rollback: api/stable_audio_3_medium_api.py remains the old control
+  # plane and launches api/stable_audio_3_medium_worker.py in Conda.
+  HOST="$STABLE_AUDIO_3_MEDIUM_HOST" PORT="$STABLE_AUDIO_3_MEDIUM_PORT" \
+    setsid uv run --no-sync --project "$QWEN3_TTS_PROJECT_DIR" \
+    python "$API_DIR/stable_audio_3_medium_api.py" &
 else
-  echo "Unsupported MOSS_SOUNDEFFECT_RUNTIME: $MOSS_SOUNDEFFECT_RUNTIME" >&2
+  echo "Unsupported STABLE_AUDIO_3_MEDIUM_RUNTIME: $STABLE_AUDIO_3_MEDIUM_RUNTIME" >&2
   exit 2
 fi
-HOST="$STABLE_AUDIO_3_MEDIUM_HOST" PORT="$STABLE_AUDIO_3_MEDIUM_PORT" setsid conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/stable_audio_3_medium_api.py" &
 stable_audio_3_medium_pid=$!
 # Qwen3-TTS uv 服务：保持原端口 8305、环境变量和 API 路由。
 HOST="$QWEN3_TTS_HOST" PORT="$QWEN3_TTS_PORT" setsid uv run --project "$QWEN3_TTS_PROJECT_DIR" python "$QWEN3_TTS_PROJECT_DIR/main.py" &
