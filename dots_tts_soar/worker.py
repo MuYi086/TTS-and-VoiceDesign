@@ -120,7 +120,7 @@ def import_runtime():
         from dots_tts.utils.util import seed_everything
     except ImportError as exc:
         raise RuntimeError(
-            "dots.tts-soar runtime 无法导入。请确认 dots_tts_soar Conda 环境已安装官方 "
+            "dots.tts-soar runtime 无法导入。请确认 dots_tts_soar uv 环境已安装官方 "
             f"dots.tts 包。缺少导入：{exc.name or exc}"
         ) from exc
     return DotsTtsRuntime, configure_logging, np, seed_everything, sf, torch

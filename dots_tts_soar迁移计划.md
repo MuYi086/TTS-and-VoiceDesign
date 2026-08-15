@@ -1,5 +1,10 @@
 # dots.tts-soar → `dots_tts_soar` 迁移计划
 
+> **task30 完成状态（2026-08-15）**：独立 uv 服务已确认接管 8308，旧
+> `api/dots_tts_soar_api.py`、旧 worker 及 `dots_tts_soar` Conda 环境已删除。
+> 本文保留迁移过程中的基线、验证记录和历史回滚方案；当前启动链路不再提供
+> Conda 回退入口。
+
 > 原始模型/环境：`dots.tts-soar` / `dots_tts_soar`
 >
 > 目标 uv 项目：`TTS-and-VoiceDesign/dots_tts_soar/`
@@ -58,31 +63,29 @@ TTS-and-VoiceDesign/
 │   ├── runtime.py           # worker 启动、超时、进程组和临时文件边界
 │   ├── audio_trim.py        # 现有 dots worker 使用的前导静音处理
 │   └── README.md            # 项目运行、资产和 GPU 验证说明
-├── api/dots_tts_soar_api.py     # 第一阶段保留，作为 Conda 回退入口
-├── api/dots_tts_soar_worker.py  # 第一阶段保留，作为旧 worker 回退入口
-└── start.sh                     # 增加 uv/Conda 显式切换
+└── start.sh                     # 固定通过 uv 项目启动 8308
 ```
 
 建议新项目自包含 `main.py`、`worker.py` 所需的轻量共享逻辑，或者将其整理到
 `runtime.py`；不要让新项目运行时依赖当前仓库根目录的偶然 `sys.path` 顺序。
-原 `api/` 文件在 canary 完成前不删除，便于逐服务回退。
+迁移完成后旧 `api/dots_tts_soar_*` 文件和独立 Conda 环境不再属于运行闭包，
+已按 task30 删除。
 
 ## 2. 当前运行链路与必须保留的功能
 
 ### 2.1 当前链路
 
-当前 `start.sh` 的 dots 服务是：
+迁移后的 `start.sh` dots 服务是：
 
 ```text
 start.sh
-  └─ conda run -n "$CONDA_ENV" python api/dots_tts_soar_api.py
-       └─ conda run -n "$DOTS_TTS_SOAR_CONDA_ENV" python api/dots_tts_soar_worker.py
+  └─ uv run --no-sync --project "$DOTS_TTS_SOAR_PROJECT_DIR" \
+       python "$DOTS_TTS_SOAR_PROJECT_DIR/main.py"
+       └─ sys.executable dots_tts_soar/worker.py
 ```
 
-当前 `CONDA_ENV` 默认是 `moss-soundEffect`，而 worker 环境默认是
-`dots_tts_soar`。这说明 HTTP 包装器和模型推理环境目前是分开的：迁移后
-`dots_tts_soar/main.py` 和它启动的 worker 应共用目标 uv 项目的 Python，
-不再依赖 `moss-soundEffect` 中恰好存在的 API 包。
+HTTP 控制面和模型推理 worker 共用目标 uv 项目的 Python，不再依赖共享
+Conda 环境中恰好存在的 API 包。
 
 ### 2.2 端口、路由和响应契约
 
@@ -138,7 +141,7 @@ start.sh
 
 ## 3. 本机环境和资产审计
 
-### 3.1 当前 Conda 基线
+### 3.1 迁移前 Conda 基线（已删除）
 
 本机实际检查结果如下，不能把当前版本直接当成 Python 3.12 的已验证结果：
 
@@ -495,33 +498,16 @@ uv run --project dots_tts_soar python dots_tts_soar/main.py
        └─ import dots_tts.runtime（只在 worker 子进程内）
 ```
 
-### 7.2 `start.sh` 分阶段切换
-
-第一阶段只增加变量和分支，不删除旧启动方式：
+### 7.2 `start.sh` 当前启动方式
 
 ```bash
 export DOTS_TTS_SOAR_PROJECT_DIR="${DOTS_TTS_SOAR_PROJECT_DIR:-$PROJECT_DIR/dots_tts_soar}"
-export DOTS_TTS_SOAR_RUNTIME="${DOTS_TTS_SOAR_RUNTIME:-conda}"
+HOST="$DOTS_TTS_SOAR_HOST" PORT="$DOTS_TTS_SOAR_PORT" \
+  setsid uv run --no-sync --project "$DOTS_TTS_SOAR_PROJECT_DIR" \
+    python "$DOTS_TTS_SOAR_PROJECT_DIR/main.py" &
 ```
 
-启动逻辑应保持两个明确分支：
-
-```bash
-if [[ "$DOTS_TTS_SOAR_RUNTIME" == "uv" ]]; then
-  HOST="$DOTS_TTS_SOAR_HOST" PORT="$DOTS_TTS_SOAR_PORT" \
-    setsid uv run --no-sync --project "$DOTS_TTS_SOAR_PROJECT_DIR" \
-      python "$DOTS_TTS_SOAR_PROJECT_DIR/main.py" &
-else
-  HOST="$DOTS_TTS_SOAR_HOST" PORT="$DOTS_TTS_SOAR_PORT" \
-    setsid conda run --no-capture-output -n "$CONDA_ENV" \
-      python "$API_DIR/dots_tts_soar_api.py" &
-fi
-```
-
-只有 `uv lock`、`uv sync --locked`、无模型测试、health 和真实 canary 全部通过
-后，才把 `DOTS_TTS_SOAR_RUNTIME` 的默认值切换为 `uv`。即使切换默认值，也
-保留 `DOTS_TTS_SOAR_RUNTIME=conda bash start.sh` 作为回退路径；端口、变量名、
-PID cleanup 和共享 GPU 锁逻辑不能同时重写。
+端口、变量名、PID cleanup 和共享 GPU 锁逻辑均已保持；旧 Conda 分支不再存在。
 
 ## 8. 测试计划
 
@@ -571,30 +557,20 @@ CUDA/模型验证。
 - 真实 canary 输出非空、48 kHz、单声道 WAV；长文本分片和 `prompt_text` sidecar
   都至少验证一次。
 - worker 的成功、异常、超时和取消路径都不会残留进程，也不会永久持有 GPU 锁。
-- `bash start.sh` 仍可启动；`DOTS_TTS_SOAR_RUNTIME=conda` 可回退旧逻辑。
+- `bash start.sh` 仍以独立 uv 项目启动 8308；旧 Conda 回退入口已删除。
 - `uv.lock`、`pyproject.toml`、代码和测试可提交；`.venv`、权重、音频、缓存、
   本地官方源码副本和机器绝对路径不提交。
 
 ### 9.2 回滚方式
 
-1. 在 canary 前保持 `DOTS_TTS_SOAR_RUNTIME=conda` 默认值。
-2. uv 服务导入失败时，先执行 `DOTS_TTS_SOAR_RUNTIME=conda bash start.sh`，不
-   删除旧 `api` 文件和 `dots_tts_soar` Conda 环境。
-3. uv API 成功但真实 worker 失败时，只回退 dots 服务；不回滚其他已经迁移的
-   Qwen、LongCat 或 Step 服务。
-4. 只有新入口在连续 canary 和 WebUI 契约测试中通过后，才考虑清理旧 Conda
-   worker；本任务阶段不删除历史入口。
+1. 当前不保留旧 Conda 回退；如需回滚，应先审阅 Git 历史并恢复完整的旧代码
+   和环境方案，不通过启动参数隐式切换。
+2. uv API 或 worker 失败时，保留现有日志、health 和测试输出，修复独立 uv
+   项目本身；不重新把旧 `api` 入口接回启动链路。
 
 ## 10. 当前判断的边界
 
-本计划可以证明“迁移路径可行、依赖和外部资产已查清”，但在真正执行
-`uv init`、`uv lock`、Python 3.12.13 安装和真实 GPU canary 之前，不能宣称
-`dots_tts_soar` 已完成迁移。尤其需要实际验证：
-
-- `pynini==2.1.7` 在目标 Python 3.12.13 和当前 Linux 架构上的 wheel；
-- cu128 PyTorch wheel 在所选镜像的可解析性及 NVIDIA 驱动兼容性；
-- 官方 dots.tts commit 在 Python 3.12 的 `flex_attention`、bfloat16 和模型
-  初始化行为；
-- 4.9G 模型在实际显存下的 `max_generate_length=500` 和长文本分片耗时。
-
-这些是迁移执行阶段的验收项，不是通过复制当前 Conda 包列表就能推断的结果。
+task29 的迁移验收已完成：目标 uv 项目、锁文件、无模型契约测试、8308 health
+和 WebUI 兼容性均已验证；task30 进一步删除了旧 API 文件和 `dots_tts_soar`
+Conda 环境。当前项目的 dots.tts-soar 运行闭包只包含 `dots_tts_soar/`、外置
+模型权重和宿主机 CUDA，不再包含旧 `api` 入口或该 Conda 环境。

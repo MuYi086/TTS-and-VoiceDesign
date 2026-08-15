@@ -18,13 +18,13 @@
 
 ## 本地环境
 
-主 API 和其它轻量 wrapper 默认使用 `moss-soundEffect` Conda 环境；Qwen3-TTS 8305、Qwen3-TTS VoiceDesign 8314、MOSS VoiceGenerator 8315、Step-Audio-EditX 8316、LongCat-AudioDiT 8307 和 dots.tts-soar 8308 服务使用各自目录内的 uv 环境，由 `uv run` 启动。如果部署环境另有共享 wrapper 环境，可通过 `CONDA_ENV` 覆盖；dots.tts-soar 可设置 `DOTS_TTS_SOAR_RUNTIME=conda` 回退旧 `api/dots_tts_soar_api.py`：
+主 API 和其它轻量 wrapper 默认使用 `moss-soundEffect` Conda 环境；Qwen3-TTS 8305、Qwen3-TTS VoiceDesign 8314、MOSS VoiceGenerator 8315、Step-Audio-EditX 8316、LongCat-AudioDiT 8307 和 dots.tts-soar 8308 服务使用各自目录内的 uv 环境，由 `uv run` 启动。MOSS-SoundEffect 8311 已迁移到 `moss_soundEffect/` uv 项目并默认由 uv 启动；确认迁移前仍可设置 `MOSS_SOUNDEFFECT_RUNTIME=conda` 回退到旧 `api/soundeffect_api.py`。如果部署环境另有共享 wrapper 环境，可通过 `CONDA_ENV` 覆盖：
 
 ```bash
 conda activate moss-soundEffect
 ```
 
-Qwen3-TTS、MOSS VoiceGenerator、Step-Audio-EditX 和 LongCat-AudioDiT 在请求期间分别拉起一次性 worker；它们使用各自 uv 项目的 Python，其它模型使用对应 Conda 环境。模型在请求结束后由 worker 退出释放显存；主 API、各包装器和 worker 共享 `GPU_LOCK_FILE`，避免并发抢占 GPU。迁移期间可设置 `STEP_AUDIO_EDITX_RUNTIME=conda` 回退到旧 `api/step_audio_editx_worker.py`。
+Qwen3-TTS、MOSS-SoundEffect、MOSS VoiceGenerator、Step-Audio-EditX 和 LongCat-AudioDiT 在请求期间分别拉起一次性 worker；它们使用各自 uv 项目的 Python，其它模型使用对应 Conda 环境。模型在请求结束后由 worker 退出释放显存；主 API、各包装器和 worker 共享 `GPU_LOCK_FILE`，避免并发抢占 GPU。迁移期间可设置 `STEP_AUDIO_EDITX_RUNTIME=conda` 回退到旧 `api/step_audio_editx_worker.py`。
 
 ```bash
 uv run --project qwen3_tts python qwen3_tts/worker.py ...
@@ -34,9 +34,14 @@ uv run --project moss_voiceGenerator python moss_voiceGenerator/worker.py ...
 uv run --project Step_Audio_EditX python Step_Audio_EditX/worker.py ...
 uv run --project LongCat_AudioDiT_3.5B_bf16 python LongCat_AudioDiT_3.5B_bf16/worker.py ...
 uv run --project dots_tts_soar python dots_tts_soar/worker.py ...
+uv run --project moss_soundEffect python moss_soundEffect/worker.py ...
 ```
 
-MOSS-SoundEffect 使用独立的 `moss-soundEffect` 环境；Stable Audio 3 Medium 使用独立的
+MOSS-SoundEffect 的 uv 项目使用 Python 3.12.13、锁定的 CUDA PyTorch 依赖和外置
+`MOSS_SOUNDEFFECT_CODE_PATH` 上游源码；默认源码目录为 `$HOME/tts-depency/MOSS-TTS`，模型目录为
+`$HOME/hf-mirror/OpenMOSS-Team/MOSS-SoundEffect-v2.0`。该模型当前不需要安装 FlashAttention：上游会使用
+PyTorch SDPA 回退；本机 `/home/muyi086/tts-depency/flash-attention` 是面向更新 GPU 架构的开发源码，不能作为
+RTX 4070 Ti SUPER 的必要依赖。Stable Audio 3 Medium 使用独立的
 `stable_audio_3_medium` 环境，并通过本机 `stable-audio-3` 官方源码运行。MiMo 是云端 API，须通过环境变量提供密钥：
 
 ```bash
@@ -153,7 +158,7 @@ LongCat、dots.tts-soar 和 Qwen3-TTS 的克隆调试默认值都集中在对应
 
 LongCat-AudioDiT 和 dots.tts-soar 的 worker 会在每个生成分段拼接前裁掉明显的前导静音，并在完整音频拼接后再次兜底检查；裁剪保留 40 毫秒起音保护，分段之间通过 `pause_ms` 配置的停顿仍会保留。
 
-dots.tts-soar 同样采用“一次请求一个 worker”生命周期；worker 完成或报错时显式清理 CUDA allocator，随后进程退出释放模型显存。默认由 `dots_tts_soar/` uv 项目启动，可通过 `DOTS_TTS_SOAR_PROJECT_DIR` 覆盖项目位置，通过 `DOTS_TTS_SOAR_RUNTIME=conda` 回退旧 `api/dots_tts_soar_api.py`。可通过 `DOTS_TTS_SOAR_CONDA_ENV`、`DOTS_TTS_SOAR_MODEL_DIR`、`DOTS_TTS_SOAR_PRECISION`、`DOTS_TTS_SOAR_LANGUAGE`、`DOTS_TTS_SOAR_NUM_STEPS`、`DOTS_TTS_SOAR_GUIDANCE_SCALE`、`DOTS_TTS_SOAR_SPEAKER_SCALE`、`DOTS_TTS_SOAR_MAX_GENERATE_LENGTH`、`DOTS_TTS_SOAR_MAX_CHARS_PER_CHUNK`、`DOTS_TTS_SOAR_PAUSE_MS`、`DOTS_TTS_SOAR_SEED` 和 `DOTS_TTS_SOAR_REQUEST_TIMEOUT` 覆盖默认配置。SOAR 的 continuation cloning 要求 `prompt_text` 与参考音频实际内容一致；省略时才使用 x-vector-only 模式。
+dots.tts-soar 同样采用“一次请求一个 worker”生命周期；worker 完成或报错时显式清理 CUDA allocator，随后进程退出释放模型显存。服务固定由 `dots_tts_soar/` uv 项目启动，可通过 `DOTS_TTS_SOAR_PROJECT_DIR` 覆盖项目位置。可通过 `DOTS_TTS_SOAR_MODEL_DIR`、`DOTS_TTS_SOAR_PRECISION`、`DOTS_TTS_SOAR_LANGUAGE`、`DOTS_TTS_SOAR_NUM_STEPS`、`DOTS_TTS_SOAR_GUIDANCE_SCALE`、`DOTS_TTS_SOAR_SPEAKER_SCALE`、`DOTS_TTS_SOAR_MAX_GENERATE_LENGTH`、`DOTS_TTS_SOAR_MAX_CHARS_PER_CHUNK`、`DOTS_TTS_SOAR_PAUSE_MS`、`DOTS_TTS_SOAR_SEED` 和 `DOTS_TTS_SOAR_REQUEST_TIMEOUT` 覆盖默认配置。SOAR 的 continuation cloning 要求 `prompt_text` 与参考音频实际内容一致；省略时才使用 x-vector-only 模式。
 
 dots.tts-soar 不需要 `flash_attn`：官方 runtime 使用 PyTorch 原生 `torch.nn.attention.flex_attention`，新项目没有添加 `flash-attn` 依赖。`GET /v1/health` 会报告 `available.flash_attn` 和 `runtime.flash_attention_policy`。当前 `/home/muyi086/tts-depency/flash-attention` checkout 不能替代已安装扩展，且不应为本模型编译；只有后续性能 canary 明确需要时才单独评估。
 

@@ -41,8 +41,7 @@ x-vector-only cloning 行为。
 当前机器是 RTX 4070 Ti SUPER；即使未来需要性能优化，也应先针对实际 Torch、
 CUDA 和 GPU 架构单独编译并做 canary，不要在默认迁移路径中编译它。
 
-## 旧入口回退
+## 迁移状态
 
-迁移确认前，原始 `api/dots_tts_soar_api.py` 和
-`api/dots_tts_soar_worker.py` 保留。使用 `start.sh` 时设置
-`DOTS_TTS_SOAR_RUNTIME=conda` 可回退旧 Conda 路径；默认值为 `uv`。
+dots.tts-soar 已完成迁移，`start.sh` 固定使用本目录的 uv 项目启动 8308
+服务。旧 `api/dots_tts_soar_api.py`、旧 worker 和对应 Conda 环境均已移除。

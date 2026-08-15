@@ -6,7 +6,6 @@ import hashlib
 import importlib.util
 import os
 import re
-import shutil
 import sys
 import threading
 import traceback
@@ -70,7 +69,6 @@ CUDA_RELEASE_DELAY = float(os.getenv("CUDA_RELEASE_DELAY", "2.0"))
 API_HOST = os.getenv("HOST", "0.0.0.0")
 API_PORT = int(os.getenv("PORT", "8308"))
 
-DOTS_TTS_SOAR_CONDA_ENV = os.getenv("DOTS_TTS_SOAR_CONDA_ENV", "dots_tts_soar")
 DOTS_TTS_SOAR_MODEL_DIR = expand_path(
     os.getenv("DOTS_TTS_SOAR_MODEL_DIR", os.path.join(HF_MIRROR_DIR, "rednote-hilab/dots.tts-soar"))
 )
@@ -408,7 +406,6 @@ async def health():
             "worker_tmp_dir": DOTS_TTS_SOAR_WORKER_TMP_DIR,
         },
         "available": {
-            "conda": bool(shutil.which("conda")),
             "python": sys.executable,
             "worker_runtime": "uv",
             "worker_script": os.path.isfile(DOTS_TTS_SOAR_WORKER_SCRIPT),
@@ -422,7 +419,6 @@ async def health():
         "cuda": cuda,
         "runtime": {
             "port": API_PORT,
-            "worker_env": DOTS_TTS_SOAR_CONDA_ENV,
             "worker_runtime": "uv",
             "worker_python": sys.executable,
             "model": "rednote-hilab/dots.tts-soar",
@@ -518,7 +514,6 @@ if __name__ == "__main__":
     print("==================================================")
     print(f"[配置] worker runtime: uv")
     print(f"[配置] worker python: {sys.executable}")
-    print(f"[配置] legacy worker env: {DOTS_TTS_SOAR_CONDA_ENV}")
     print(f"[配置] model: {DOTS_TTS_SOAR_MODEL_DIR}")
     print(f"[配置] port: {API_PORT}")
     print(f"[配置] local_files_only={LOCAL_FILES_ONLY}, request_timeout={DOTS_TTS_SOAR_REQUEST_TIMEOUT}")

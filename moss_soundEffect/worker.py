@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""One-shot MOSS-SoundEffect v2.0 inference worker.
-
-This process deliberately owns the model lifecycle.  The HTTP wrapper creates
-it for one request and waits for it to exit, which guarantees the model is no
-longer resident in GPU memory after the request completes.
-
-Migration note: this legacy worker is retained for the explicit Conda
-fallback while the moss_soundEffect uv service is being verified.
-"""
+"""One-shot MOSS-SoundEffect v2 inference worker."""
 
 from __future__ import annotations
 
@@ -15,6 +7,7 @@ import argparse
 import gc
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +16,7 @@ MAX_SECONDS = 30.0
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run one MOSS-SoundEffect v2.0 request")
+    parser = argparse.ArgumentParser(description="Run one MOSS-SoundEffect v2 request")
     parser.add_argument("--input-json", required=True)
     parser.add_argument("--output-wav", required=True)
     return parser.parse_args()
@@ -44,12 +37,31 @@ def required_text(payload: dict[str, Any], key: str) -> str:
     return value.strip()
 
 
-def positive_float(payload: dict[str, Any], key: str, *, maximum: float | None = None) -> float:
+def positive_float(
+    payload: dict[str, Any],
+    key: str,
+    *,
+    maximum: float | None = None,
+) -> float:
     value = float(payload[key])
     if value <= 0 or (maximum is not None and value > maximum):
         bound = f" and <= {maximum}" if maximum is not None else ""
         raise ValueError(f"{key} must be > 0{bound}.")
     return value
+
+
+def add_upstream_source(code_path: Path) -> None:
+    """Make the audited local MOSS-TTS checkout importable without machine paths."""
+    package_dir = code_path / "moss_soundeffect_v2"
+    if package_dir.is_dir():
+        import_root = code_path
+    elif code_path.name == "moss_soundeffect_v2" and code_path.is_dir():
+        import_root = code_path.parent
+    else:
+        raise FileNotFoundError(
+            f"上游源码目录中没有 moss_soundeffect_v2 包: {code_path}"
+        )
+    sys.path.insert(0, str(import_root))
 
 
 def cleanup_cuda(torch: Any) -> None:
@@ -58,7 +70,7 @@ def cleanup_cuda(torch: Any) -> None:
         return
     try:
         torch.cuda.synchronize()
-    except Exception as exc:  # Cleanup must not hide the inference result.
+    except Exception as exc:
         print(f"[SoundEffect] CUDA synchronize skipped: {exc}")
     try:
         torch.cuda.empty_cache()
@@ -72,14 +84,16 @@ def main() -> None:
     payload = read_payload(args.input_json)
 
     if payload.get("disable_torchdynamo", True):
-        # Upstream recommends this opt-out when Triton/CUDA-graph compilation
-        # is unstable.  Preserve an explicit caller setting if one already
-        # exists in the service environment.
         os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
 
-    model_path = Path(required_text(payload, "model_path")).expanduser()
+    model_path = Path(required_text(payload, "model_path")).expanduser().resolve()
     if not model_path.is_dir():
         raise FileNotFoundError(f"Local MOSS-SoundEffect model directory is missing: {model_path}")
+
+    code_path = Path(required_text(payload, "code_path")).expanduser().resolve()
+    if not (code_path / "moss_soundeffect_v2").is_dir() and code_path.name != "moss_soundeffect_v2":
+        raise FileNotFoundError(f"MOSS-TTS source checkout is missing: {code_path}")
+    add_upstream_source(code_path)
 
     prompt = required_text(payload, "prompt")
     seconds = positive_float(payload, "seconds", maximum=MAX_SECONDS)
@@ -106,7 +120,7 @@ def main() -> None:
     except AttributeError as exc:
         raise ValueError(f"Unknown TORCH_DTYPE: {torch_dtype_name!r}") from exc
 
-    output_path = Path(args.output_wav)
+    output_path = Path(args.output_wav).expanduser().resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     pipe = None
     audio = None
@@ -133,8 +147,6 @@ def main() -> None:
         sf.write(str(output_path), waveform, pipe.sample_rate)
         print(f"[SoundEffect] Saved {output_path}")
     finally:
-        # The wrapper also waits for this process to terminate.  These explicit
-        # releases reduce the handover delay to the next GPU workload.
         if pipe is not None:
             del pipe
         if audio is not None:
@@ -144,3 +156,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

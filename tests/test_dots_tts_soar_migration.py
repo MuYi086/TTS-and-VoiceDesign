@@ -219,20 +219,17 @@ class DotsTtsSoarMigrationTests(unittest.TestCase):
         self.assertNotIn("\nimport flash_attn", source_text)
         self.assertNotIn("\nfrom flash_attn", source_text)
 
-    def test_start_script_uses_uv_and_keeps_legacy_api_fallback(self) -> None:
+    def test_start_script_uses_uv_without_legacy_api_fallback(self) -> None:
         script = (REPOSITORY_DIR / "start.sh").read_text(encoding="utf-8")
         self.assertIn(
             'uv run --no-sync --project "$DOTS_TTS_SOAR_PROJECT_DIR"',
             script,
         )
-        self.assertIn(
-            'export DOTS_TTS_SOAR_RUNTIME="${DOTS_TTS_SOAR_RUNTIME:-uv}"',
-            script,
-        )
-        self.assertIn("旧 Conda API/worker 入口保留为迁移回退路径", script)
-        self.assertIn('python "$API_DIR/dots_tts_soar_api.py"', script)
-        self.assertTrue((REPOSITORY_DIR / "api/dots_tts_soar_api.py").exists())
-        self.assertTrue((REPOSITORY_DIR / "api/dots_tts_soar_worker.py").exists())
+        self.assertNotIn("DOTS_TTS_SOAR_RUNTIME", script)
+        self.assertNotIn("DOTS_TTS_SOAR_CONDA_ENV", script)
+        self.assertNotIn('python "$API_DIR/dots_tts_soar_api.py"', script)
+        self.assertFalse((REPOSITORY_DIR / "api/dots_tts_soar_api.py").exists())
+        self.assertFalse((REPOSITORY_DIR / "api/dots_tts_soar_worker.py").exists())
 
 
 if __name__ == "__main__":

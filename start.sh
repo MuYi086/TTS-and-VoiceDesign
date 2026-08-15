@@ -9,6 +9,7 @@ API_DIR="$PROJECT_DIR/api"
 # The remaining lightweight wrappers use this shared web/runtime environment;
 # heavyweight workers use their model-specific Conda environments below.
 CONDA_ENV="${CONDA_ENV:-moss-soundEffect}"
+MOSS_SOUNDEFFECT_PROJECT_DIR="${MOSS_SOUNDEFFECT_PROJECT_DIR:-$PROJECT_DIR/moss_soundEffect}"
 QWEN3_TTS_PROJECT_DIR="${QWEN3_TTS_PROJECT_DIR:-$PROJECT_DIR/qwen3_tts}"
 QWEN3_VOICEDESIGN_PROJECT_DIR="${QWEN3_VOICEDESIGN_PROJECT_DIR:-$PROJECT_DIR/qwen3_voiceDesign}"
 MOSS_VOICEGENERATOR_PROJECT_DIR="${MOSS_VOICEGENERATOR_PROJECT_DIR:-$PROJECT_DIR/moss_voiceGenerator}"
@@ -35,6 +36,8 @@ export STEP_AUDIO_EDITX_COSYVOICE_DTYPE="${STEP_AUDIO_EDITX_COSYVOICE_DTYPE:-bfl
 export STEP_AUDIO_EDITX_ENFORCE_EAGER="${STEP_AUDIO_EDITX_ENFORCE_EAGER:-1}"
 export STEP_AUDIO_EDITX_COSYVOICE_CUDA_GRAPH="${STEP_AUDIO_EDITX_COSYVOICE_CUDA_GRAPH:-0}"
 export MOSS_SOUNDEFFECT_CONDA_ENV="${MOSS_SOUNDEFFECT_CONDA_ENV:-moss-soundEffect}"
+export MOSS_SOUNDEFFECT_RUNTIME="${MOSS_SOUNDEFFECT_RUNTIME:-uv}"
+export MOSS_SOUNDEFFECT_CODE_PATH="${MOSS_SOUNDEFFECT_CODE_PATH:-$HOME/tts-depency/MOSS-TTS}"
 export MOSS_SOUNDEFFECT_MODEL_DIR="${MOSS_SOUNDEFFECT_MODEL_DIR:-$HF_MIRROR_DIR/OpenMOSS-Team/MOSS-SoundEffect-v2.0}"
 export MOSS_SOUNDEFFECT_DEVICE="${MOSS_SOUNDEFFECT_DEVICE:-cuda}"
 export MOSS_SOUNDEFFECT_DTYPE="${MOSS_SOUNDEFFECT_DTYPE:-bfloat16}"
@@ -61,7 +64,7 @@ export PROMPTS_DIR="${PROMPTS_DIR:-$API_DIR/prompts}"
 export RUNTIME_CACHE_DIR="${RUNTIME_CACHE_DIR:-$API_DIR/.cache/runtime}"
 export GPU_LOCK_FILE="${GPU_LOCK_FILE:-$RUNTIME_CACHE_DIR/gpu-runtime.lock}"
 export LOCAL_FILES_ONLY="${LOCAL_FILES_ONLY:-1}"
-# LongCat、dots.tts-soar 的克隆默认值集中在各自 API 顶部；Qwen3-TTS 的默认值
+# LongCat 的克隆默认值集中在对应 API 顶部；Qwen3-TTS 的默认值
 # 集中在 qwen3_tts/main.py；
 # 此处只保留环境、模型路径等启动路由配置，避免覆盖 API 内可直接调试的值。
 # VoxCPM2 的默认生成参数集中在 api/voxcpm2_api.py；此处不再写入默认值，
@@ -72,9 +75,7 @@ export VOXCPM2_CONDA_ENV="${VOXCPM2_CONDA_ENV:-voxcpm2}"
 export LONGCAT_AUDIODIT_MODEL_DIR="${LONGCAT_AUDIODIT_MODEL_DIR:-$HF_MIRROR_DIR/drbaph/LongCat-AudioDiT-3.5B-bf16}"
 export LONGCAT_AUDIODIT_REPO_PATH="${LONGCAT_AUDIODIT_REPO_PATH:-$HOME/tts-depency/LongCat-AudioDiT}"
 export LONGCAT_AUDIODIT_TOKENIZER_PATH="${LONGCAT_AUDIODIT_TOKENIZER_PATH:-$HF_MIRROR_DIR/google/umt5-base}"
-export DOTS_TTS_SOAR_CONDA_ENV="${DOTS_TTS_SOAR_CONDA_ENV:-dots_tts_soar}"
 export DOTS_TTS_SOAR_MODEL_DIR="${DOTS_TTS_SOAR_MODEL_DIR:-$HF_MIRROR_DIR/rednote-hilab/dots.tts-soar}"
-export DOTS_TTS_SOAR_RUNTIME="${DOTS_TTS_SOAR_RUNTIME:-uv}"
 export QWEN3_TTS_USE_QWEN_LIBS="${QWEN3_TTS_USE_QWEN_LIBS:-0}"
 export MOSS_SOUNDEFFECT_REQUEST_TIMEOUT="${MOSS_SOUNDEFFECT_REQUEST_TIMEOUT:-600}"
 export CUDA_RELEASE_DELAY="${CUDA_RELEASE_DELAY:-2.0}"
@@ -130,6 +131,9 @@ echo "Step-Audio-EditX model: $STEP_AUDIO_EDITX_MODEL_DIR"
 echo "Step-Audio tokenizer: $STEP_AUDIO_TOKENIZER_PATH"
 echo "Step-Audio-EditX code: $STEP_AUDIO_EDITX_CODE_PATH"
 echo "SoundEffect env:     $MOSS_SOUNDEFFECT_CONDA_ENV"
+echo "SoundEffect runtime: $MOSS_SOUNDEFFECT_RUNTIME"
+echo "SoundEffect uv project: $MOSS_SOUNDEFFECT_PROJECT_DIR"
+echo "SoundEffect source:  $MOSS_SOUNDEFFECT_CODE_PATH"
 echo "SoundEffect model:   $MOSS_SOUNDEFFECT_MODEL_DIR"
 echo "SoundEffect device:  $MOSS_SOUNDEFFECT_DEVICE ($MOSS_SOUNDEFFECT_DTYPE)"
 echo "Stable Audio 3 Medium env:    $STABLE_AUDIO_3_MEDIUM_CONDA_ENV"
@@ -150,9 +154,7 @@ echo "LongCat model:       $LONGCAT_AUDIODIT_MODEL_DIR"
 echo "LongCat repo:        $LONGCAT_AUDIODIT_REPO_PATH"
 echo "LongCat tokenizer:   $LONGCAT_AUDIODIT_TOKENIZER_PATH"
 echo "LongCat config:      managed by $LONGCAT_AUDIODIT_PROJECT_DIR/main.py"
-echo "dots.tts-soar runtime: $DOTS_TTS_SOAR_RUNTIME"
 echo "dots.tts-soar uv project: $DOTS_TTS_SOAR_PROJECT_DIR"
-echo "dots.tts-soar legacy env: $DOTS_TTS_SOAR_CONDA_ENV"
 echo "dots.tts-soar model: $DOTS_TTS_SOAR_MODEL_DIR"
 echo "dots.tts-soar config: managed by $DOTS_TTS_SOAR_PROJECT_DIR/main.py"
 echo "VoxCPM2 config:      managed by api/voxcpm2_api.py"
@@ -241,8 +243,22 @@ trap cleanup INT TERM EXIT
 
 setsid conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/api.py" &
 main_pid=$!
-HOST="$SOUNDEFFECT_HOST" PORT="$SOUNDEFFECT_PORT" setsid conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/soundeffect_api.py" &
-soundeffect_pid=$!
+if [[ "$MOSS_SOUNDEFFECT_RUNTIME" == "uv" ]]; then
+  # MOSS-SoundEffect uv 服务：8311 保持原有路由、端口和请求契约。
+  HOST="$SOUNDEFFECT_HOST" PORT="$SOUNDEFFECT_PORT" \
+    setsid uv run --no-sync --project "$MOSS_SOUNDEFFECT_PROJECT_DIR" \
+    python "$MOSS_SOUNDEFFECT_PROJECT_DIR/main.py" &
+  soundeffect_pid=$!
+elif [[ "$MOSS_SOUNDEFFECT_RUNTIME" == "conda" ]]; then
+  # 迁移确认前保留旧 api/soundeffect_api.py 的 Conda 回退路径。
+  HOST="$SOUNDEFFECT_HOST" PORT="$SOUNDEFFECT_PORT" \
+    setsid conda run --no-capture-output -n "$CONDA_ENV" \
+    python "$API_DIR/soundeffect_api.py" &
+  soundeffect_pid=$!
+else
+  echo "Unsupported MOSS_SOUNDEFFECT_RUNTIME: $MOSS_SOUNDEFFECT_RUNTIME" >&2
+  exit 2
+fi
 HOST="$STABLE_AUDIO_3_MEDIUM_HOST" PORT="$STABLE_AUDIO_3_MEDIUM_PORT" setsid conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/stable_audio_3_medium_api.py" &
 stable_audio_3_medium_pid=$!
 # Qwen3-TTS uv 服务：保持原端口 8305、环境变量和 API 路由。
@@ -274,19 +290,10 @@ HOST="$LONGCAT_AUDIODIT_HOST" PORT="$LONGCAT_AUDIODIT_PORT" \
   setsid uv run --no-sync --project "$LONGCAT_AUDIODIT_PROJECT_DIR" \
   python "$LONGCAT_AUDIODIT_PROJECT_DIR/main.py" &
 longcat_audiodit_pid=$!
-# dots.tts-soar 已迁移到独立 uv 项目；保持 8308 和 WebUI 请求契约不变。
-if [[ "$DOTS_TTS_SOAR_RUNTIME" == "uv" ]]; then
-  HOST="$DOTS_TTS_SOAR_HOST" PORT="$DOTS_TTS_SOAR_PORT" \
-    setsid uv run --no-sync --project "$DOTS_TTS_SOAR_PROJECT_DIR" \
-      python "$DOTS_TTS_SOAR_PROJECT_DIR/main.py" &
-  dots_tts_soar_pid=$!
-else
-  # 旧 Conda API/worker 入口保留为迁移回退路径，确认迁移稳定后再删除：
-  # HOST="$DOTS_TTS_SOAR_HOST" PORT="$DOTS_TTS_SOAR_PORT" setsid conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/dots_tts_soar_api.py" &
-  HOST="$DOTS_TTS_SOAR_HOST" PORT="$DOTS_TTS_SOAR_PORT" \
-    setsid conda run --no-capture-output -n "$CONDA_ENV" \
-      python "$API_DIR/dots_tts_soar_api.py" &
-  dots_tts_soar_pid=$!
-fi
+# dots.tts-soar 使用独立 uv 项目，保持 8308 和 WebUI 请求契约不变。
+HOST="$DOTS_TTS_SOAR_HOST" PORT="$DOTS_TTS_SOAR_PORT" \
+  setsid uv run --no-sync --project "$DOTS_TTS_SOAR_PROJECT_DIR" \
+    python "$DOTS_TTS_SOAR_PROJECT_DIR/main.py" &
+dots_tts_soar_pid=$!
 
 wait -n "$main_pid" "$soundeffect_pid" "$stable_audio_3_medium_pid" "$qwen3_tts_pid" "$qwen_voicedesign_pid" "$moss_voicegenerator_pid" "$step_audio_editx_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid"
