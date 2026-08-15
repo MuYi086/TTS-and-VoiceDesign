@@ -198,23 +198,6 @@ class MossSoundEffectMigrationTests(unittest.TestCase):
             'setsid uv run --no-sync --project "$QWEN3_TTS_PROJECT_DIR" python "$API_DIR/api.py"',
             script,
         )
-        self.assertIn(
-            'if [[ "$STABLE_AUDIO_3_MEDIUM_RUNTIME" == "uv" ]]',
-            script,
-        )
-        self.assertIn(
-            'python "$STABLE_AUDIO_3_MEDIUM_PROJECT_DIR/main.py"',
-            script,
-        )
-        self.assertIn(
-            'STABLE_AUDIO_3_MEDIUM_RUNTIME="${STABLE_AUDIO_3_MEDIUM_RUNTIME:-uv}"',
-            script,
-        )
-        self.assertIn(
-            'elif [[ "$STABLE_AUDIO_3_MEDIUM_RUNTIME" == "legacy" || "$STABLE_AUDIO_3_MEDIUM_RUNTIME" == "conda" ]]',
-            script,
-        )
-        self.assertIn('python "$API_DIR/stable_audio_3_medium_api.py"', script)
         self.assertNotIn('CONDA_ENV="${CONDA_ENV:-moss-soundEffect}"', script)
         self.assertFalse((REPOSITORY_DIR / "api/soundeffect_api.py").exists())
         self.assertFalse((REPOSITORY_DIR / "api/soundeffect_worker.py").exists())

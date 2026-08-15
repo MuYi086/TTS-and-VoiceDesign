@@ -14,22 +14,22 @@
 - MiMo TTS VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/mimo/design`
 - VoxCPM2 VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/voxcpm2/design`
 
-主 API、其它模型 wrapper/worker 和共享运行时模块位于 `api/`；Qwen3-TTS Base、Qwen3-TTS VoiceDesign、MOSS VoiceGenerator、Step-Audio-EditX、LongCat-AudioDiT 和 dots.tts-soar 分别使用各自的 uv 项目。上传资源、缓存和供应商代码位于 `api/prompts/`、`api/.cache/` 与 `api/vendor/`。所有本地 TTS 模型成功合成的 WAV 都会额外保留在 `api/tempAudio/`，文件名前缀用于区分模型；可通过 `TTS_OUTPUT_DIR` 统一覆盖，也可通过对应模型的 `*_OUTPUT_DIR` 覆盖。不要把生成音频或模型权重提交到 Git。
+主 API、旧版兼容 wrapper/worker 和共享运行时模块位于 `api/`；Qwen3-TTS Base、Qwen3-TTS VoiceDesign、MOSS VoiceGenerator、Step-Audio-EditX、VoxCPM2、LongCat-AudioDiT 和 dots.tts-soar 分别使用各自的 uv 项目。上传资源、缓存和供应商代码位于 `api/prompts/`、`api/.cache/` 与 `api/vendor/`。所有本地 TTS 模型成功合成的 WAV 都会额外保留在 `api/tempAudio/`，文件名前缀用于区分模型；可通过 `TTS_OUTPUT_DIR` 统一覆盖，也可通过对应模型的 `*_OUTPUT_DIR` 覆盖。不要把生成音频或模型权重提交到 Git。
 
 ## 本地环境
 
 主 API、MOSS-SoundEffect 8311 和 Stable Audio 3 Medium 8313 分别使用
 `qwen3_tts/`、`moss_soundEffect/` 与 `stable_audio_3_medium/` uv 项目；
 Qwen3-TTS 8305、Qwen3-TTS VoiceDesign 8314、MOSS VoiceGenerator 8315、
-Step-Audio-EditX 8316、LongCat-AudioDiT 8307 和 dots.tts-soar 8308 服务也
+Step-Audio-EditX 8316、VoxCPM2 8306、LongCat-AudioDiT 8307 和 dots.tts-soar 8308 服务也
 使用各自目录内的 uv 环境，由 `uv run` 启动。VoxCPM2 和旧 Stable Audio
-回退路径的 worker 继续使用各自 Conda 环境。
+回退路径的 worker 继续保留各自 Conda 环境；VoxCPM2 可通过 `VOXCPM2_RUNTIME=conda` 暂时回退到 `api/voxcpm2_api.py`。
 
-Qwen3-TTS、MOSS-SoundEffect、MOSS VoiceGenerator、Step-Audio-EditX、LongCat-AudioDiT 和 Stable Audio 3 Medium 在请求期间分别拉起一次性 worker；它们使用各自 uv 项目的 Python，其它模型使用对应专用 Conda 环境。模型在请求结束后由 worker 退出释放显存；主 API、各包装器和 worker 共享 `GPU_LOCK_FILE`，避免并发抢占 GPU。Step-Audio-EditX 仍可通过 `STEP_AUDIO_EDITX_RUNTIME=conda` 回退到旧 worker，Stable Audio 仍可通过 `STABLE_AUDIO_3_MEDIUM_RUNTIME=legacy` 回退到旧 wrapper。
+Qwen3-TTS、MOSS-SoundEffect、MOSS VoiceGenerator、Step-Audio-EditX、VoxCPM2、LongCat-AudioDiT 和 Stable Audio 3 Medium 在请求期间分别拉起一次性 worker；它们使用各自 uv 项目的 Python，其它模型使用对应专用 Conda 环境。模型在请求结束后由 worker 退出释放显存；主 API、各包装器和 worker 共享 `GPU_LOCK_FILE`，避免并发抢占 GPU。Step-Audio-EditX 仍可通过 `STEP_AUDIO_EDITX_RUNTIME=conda` 回退到旧 worker，VoxCPM2 仍可通过 `VOXCPM2_RUNTIME=conda` 回退到旧 worker，Stable Audio 3 Medium 已完全迁移到独立 uv 项目，不再依赖专用 Conda 环境。
 
 ```bash
 uv run --project qwen3_tts python qwen3_tts/worker.py ...
-conda run -n voxcpm2 python api/voxcpm2_worker.py ...
+uv run --project voxcpm2 python voxcpm2/worker.py ...
 uv run --project qwen3_voiceDesign python qwen3_voiceDesign/worker.py ...
 uv run --project moss_voiceGenerator python moss_voiceGenerator/worker.py ...
 uv run --project Step_Audio_EditX python Step_Audio_EditX/worker.py ...
@@ -70,7 +70,7 @@ MiMo 是云端服务，运行后端的机器必须能连接 `https://api.xiaomim
 /home/muyi086/hf-mirror/google/umt5-base
 /home/muyi086/tts-depency/LongCat-AudioDiT
 /home/muyi086/tts-depency/stable-audio-3
-/home/muyi086/github/TTS-and-VoiceDesign/api/voxcpm2_helpers.py
+/home/muyi086/github/TTS-and-VoiceDesign/voxcpm2/voxcpm2_helpers.py
 /home/muyi086/hf-mirror/stepfun-ai/Step-Audio-EditX
 /home/muyi086/hf-mirror/stepfun-ai/Step-Audio-Tokenizer
 /home/muyi086/tts-depency/Step-Audio-EditX
@@ -130,14 +130,15 @@ Stable Audio 提示词。短而具体的音效应使用与实际声音相符的�
 
 `8313` Medium 也采用一请求一个 worker；worker 在 `stable_audio_3_medium/.venv` 中载入本地
 `stabilityai/stable-audio-3-medium` 权重，完成后显式清理 CUDA allocator 并退出。可通过
-`STABLE_AUDIO_3_MEDIUM_PROJECT_DIR`、`STABLE_AUDIO_3_MEDIUM_RUNTIME`、
-`STABLE_AUDIO_3_MEDIUM_REQUIRE_FLASH_ATTN`、`STABLE_AUDIO_3_MEDIUM_MODEL_DIR`、
+`STABLE_AUDIO_3_MEDIUM_PROJECT_DIR`、`STABLE_AUDIO_3_MEDIUM_REQUIRE_FLASH_ATTN`、
+`STABLE_AUDIO_3_MEDIUM_MODEL_DIR`、
 `STABLE_AUDIO_3_REPO_PATH`、`STABLE_AUDIO_3_MEDIUM_DEVICE`、`STABLE_AUDIO_3_MEDIUM_DTYPE`、
 `STABLE_AUDIO_3_MEDIUM_DEFAULT_SECONDS`、`STABLE_AUDIO_3_MEDIUM_DEFAULT_STEPS`、
 `STABLE_AUDIO_3_MEDIUM_DEFAULT_CFG_SCALE`、`STABLE_AUDIO_3_MEDIUM_DEFAULT_SEED` 和
 `STABLE_AUDIO_3_MEDIUM_REQUEST_TIMEOUT` 覆盖配置；输出目录可由
 `STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR` 或 `TTS_OUTPUT_DIR` 覆盖。设置
-`STABLE_AUDIO_3_MEDIUM_RUNTIME=legacy` 可回退到原 `api/stable_audio_3_medium_api.py`。
+旧 `api/stable_audio_3_medium_api.py` 和 worker 已在迁移确认后移除；8313
+现在只由 `stable_audio_3_medium/` uv 项目提供服务。
 
 ## 语音合成接口
 
@@ -174,7 +175,7 @@ VoxCPM2 的 `ultimate` 与 `controllable` 请求路径严格互斥：前者用�
 
 参考音频上传按内容 `sha256` 校验，不再只按文件名判断是否存在；同名音频更新后会自动覆盖服务端旧缓存。`GET /v1/check/audio` 返回 `sha256` 和 `size_bytes`，供 WebUI 判断是否需要重新上传。
 
-VoxCPM2 可直接在 [`api/voxcpm2_api.py`](api/voxcpm2_api.py) 顶部修改集中默认值：`cfg_value`、`inference_timesteps`、`normalize`、`denoise`、`retry_badcase`、`load_denoiser`、`optimize`、`device`、`seed`、分片长度、分片停顿和超时。`start.sh` 不再写入这些默认值；如启动前显式设置同名 `VOXCPM2_*` 环境变量，环境变量仍会覆盖代码默认值。`denoise=true` 时会自动启用 `load_denoiser`。
+VoxCPM2 可直接在 [`voxcpm2/main.py`](voxcpm2/main.py) 顶部修改集中默认值：`cfg_value`、`inference_timesteps`、`normalize`、`denoise`、`retry_badcase`、`load_denoiser`、`optimize`、`device`、`seed`、分片长度、分片停顿和超时。`start.sh` 默认启动 `voxcpm2/` uv 服务；如启动前设置 `VOXCPM2_RUNTIME=conda`，则回退到注释保留的 `api/voxcpm2_api.py`。`denoise=true` 时会自动启用 `load_denoiser`。
 
 每个本地 TTS 与 Stable Audio 3 Medium 端点成功后都会保留一份原始 WAV 到输出目录，接口响应内容不变。默认目录为 `api/tempAudio/`，文件名前缀示例为 `qwen3_tts`、`voxcpm2`、`longcat_audiodit`、`dots_tts_soar` 或 `stable_audio_3_medium`。此目录不会自动清理，完成后请按需要转移或删除文件；`VOXCPM2_OUTPUT_DIR` 继续兼容旧版 VoxCPM2 专用配置。
 
@@ -253,7 +254,7 @@ HF_ENDPOINT=https://hf-mirror.com hf download OpenMOSS-Team/MOSS-Audio-Tokenizer
 
 下载完成后，`GET http://127.0.0.1:8315/v1/health` 中的 `available.moss_audio_tokenizer` 应为 `true`，再重启 `bash start.sh`。worker 现在会在加载 Transformers 前检查 codec 的 `model_type`、24 kHz 单声道配置和权重完整性，并对不完整目录给出明确错误。
 
-VoxCPM2 音色设计由独立的 `api/voxcpm2_voice_design.py` 和 `api/voxcpm2_voice_design_worker.py` 处理，不与克隆 worker 或 Qwen / MiMo 逻辑混用。它按照官方文档将音色描述编码为 `(音色描述)正文` 后调用 `model.generate()`。官方示例中的 `seed=42` 是可复现示例值，不是质量专用值；本项目克隆与音色设计默认不固定随机种子，需要复现实例时可通过请求显式传入 `seed=42`。
+VoxCPM2 音色设计由 `voxcpm2/main.py` 与 `voxcpm2/voice_design_worker.py` 处理，不与克隆 worker 或 Qwen / MiMo 逻辑混用；8300 的 `api/voxcpm2_voice_design.py` 仅保留兼容代理和 Conda 回退。它按照官方文档将音色描述编码为 `(音色描述)正文` 后调用 `model.generate()`。官方示例中的 `seed=42` 是可复现示例值，不是质量专用值；本项目克隆与音色设计默认不固定随机种子，需要复现实例时可通过请求显式传入 `seed=42`。
 
 ## 本地回归测试
 

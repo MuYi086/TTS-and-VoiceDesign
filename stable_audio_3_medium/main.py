@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Unitale Stable Audio 3 Medium HTTP service.
 
-This is the uv replacement for ``api/stable_audio_3_medium_api.py``.  The API
-process validates requests and owns the GPU lock, while a fresh worker process
-loads the heavyweight model for each request and exits before the response is
-returned.
+The API process validates requests and owns the GPU lock, while a fresh worker
+process loads the heavyweight model for each request and exits before the
+response is returned.
 """
 
 from __future__ import annotations

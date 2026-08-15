@@ -1,6 +1,6 @@
 # Stable Audio 3 Medium uv service
 
-这是 `api/stable_audio_3_medium_api.py` 的 uv 迁移实现，默认监听 `8313`。
+这是独立的 Stable Audio 3 Medium uv 服务，默认监听 `8313`。
 HTTP 进程只负责校验请求、持有共享 GPU 锁和返回 WAV；每个请求由当前项目的
 Python 3.12.13 启动一次性 `worker.py`，worker 退出后释放模型显存。
 
@@ -41,7 +41,7 @@ FlashAttention 仍是官方 Medium 的推荐高性能路径，能够降低长音
 export STABLE_AUDIO_3_MEDIUM_REQUIRE_FLASH_ATTN=1
 ```
 
-当前旧 Conda 环境里的 `cp310` wheel 不能安装到 Python 3.12。目标环境需要
+迁移前 Conda 环境里的 `cp310` wheel 不能安装到 Python 3.12。目标环境需要
 匹配 `cp312`、Torch 2.7、CUDA 12.6 的 wheel，或在有 `nvcc`、`ninja` 和
 CUDA devel toolkit 的环境中从固定版本的 `/home/muyi086/tts-depency/flash-attention`
 源码构建。当前本机 checkout 缺少 `csrc/cutlass` 子模块且没有 `nvcc`，不能

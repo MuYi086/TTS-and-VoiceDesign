@@ -25,6 +25,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from gpu_runtime import cuda_status
 from voxcpm2_voice_design import (
     VOXCPM2_MODEL_DIR,
+    VOXCPM2_RUNTIME,
     VOXCPM2_VOICE_DESIGN_WORKER_SCRIPT,
     VoxCpm2VoiceDesignRequest,
     run_voxcpm2_voice_design,
@@ -605,6 +606,16 @@ async def check_audio_exists(file_name: str):
 @app.post("/v1/voxcpm2/design")
 async def voxcpm2_design(request: VoxCpm2VoiceDesignRequest):
     """独立的 VoxCPM2 音色设计接口，不与 Qwen 音色设计路由混用。"""
+    if VOXCPM2_RUNTIME == "uv":
+        try:
+            audio_bytes = run_voxcpm2_voice_design(request)
+            return Response(content=audio_bytes, media_type="audio/wav")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
     with gpu_runtime_lock("voxcpm2/design"):
         try:
             audio_bytes = run_voxcpm2_voice_design(request)

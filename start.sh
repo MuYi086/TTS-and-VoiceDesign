@@ -13,6 +13,7 @@ STEP_AUDIO_EDITX_PROJECT_DIR="${STEP_AUDIO_EDITX_PROJECT_DIR:-$PROJECT_DIR/Step_
 LONGCAT_AUDIODIT_PROJECT_DIR="${LONGCAT_AUDIODIT_PROJECT_DIR:-$PROJECT_DIR/LongCat_AudioDiT_3.5B_bf16}"
 DOTS_TTS_SOAR_PROJECT_DIR="${DOTS_TTS_SOAR_PROJECT_DIR:-$PROJECT_DIR/dots_tts_soar}"
 STABLE_AUDIO_3_MEDIUM_PROJECT_DIR="${STABLE_AUDIO_3_MEDIUM_PROJECT_DIR:-$PROJECT_DIR/stable_audio_3_medium}"
+VOXCPM2_PROJECT_DIR="${VOXCPM2_PROJECT_DIR:-$PROJECT_DIR/voxcpm2}"
 
 export HF_MIRROR_DIR="${HF_MIRROR_DIR:-$HOME/hf-mirror}"
 export QWEN_VOICEDESIGN_MODEL_DIR="${QWEN_VOICEDESIGN_MODEL_DIR:-$HF_MIRROR_DIR/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign}"
@@ -43,7 +44,6 @@ export MOSS_SOUNDEFFECT_DEFAULT_SIGMA_SHIFT="${MOSS_SOUNDEFFECT_DEFAULT_SIGMA_SH
 export MOSS_SOUNDEFFECT_DEFAULT_SEED="${MOSS_SOUNDEFFECT_DEFAULT_SEED:-0}"
 export MOSS_SOUNDEFFECT_DISABLE_TORCHDYNAMO="${MOSS_SOUNDEFFECT_DISABLE_TORCHDYNAMO:-1}"
 export STABLE_AUDIO_3_REPO_PATH="${STABLE_AUDIO_3_REPO_PATH:-$HOME/tts-depency/stable-audio-3}"
-export STABLE_AUDIO_3_MEDIUM_CONDA_ENV="${STABLE_AUDIO_3_MEDIUM_CONDA_ENV:-stable_audio_3_medium}"
 export STABLE_AUDIO_3_MEDIUM_MODEL_DIR="${STABLE_AUDIO_3_MEDIUM_MODEL_DIR:-$HF_MIRROR_DIR/stabilityai/stable-audio-3-medium}"
 export STABLE_AUDIO_3_MEDIUM_DEVICE="${STABLE_AUDIO_3_MEDIUM_DEVICE:-cuda}"
 export STABLE_AUDIO_3_MEDIUM_DTYPE="${STABLE_AUDIO_3_MEDIUM_DTYPE:-float16}"
@@ -52,7 +52,6 @@ export STABLE_AUDIO_3_MEDIUM_DEFAULT_STEPS="${STABLE_AUDIO_3_MEDIUM_DEFAULT_STEP
 export STABLE_AUDIO_3_MEDIUM_DEFAULT_CFG_SCALE="${STABLE_AUDIO_3_MEDIUM_DEFAULT_CFG_SCALE:-1.0}"
 export STABLE_AUDIO_3_MEDIUM_DEFAULT_SEED="${STABLE_AUDIO_3_MEDIUM_DEFAULT_SEED:--1}"
 export STABLE_AUDIO_3_MEDIUM_REQUEST_TIMEOUT="${STABLE_AUDIO_3_MEDIUM_REQUEST_TIMEOUT:-900}"
-export STABLE_AUDIO_3_MEDIUM_RUNTIME="${STABLE_AUDIO_3_MEDIUM_RUNTIME:-uv}"
 export STABLE_AUDIO_3_MEDIUM_REQUIRE_FLASH_ATTN="${STABLE_AUDIO_3_MEDIUM_REQUIRE_FLASH_ATTN:-0}"
 export QWEN3_TTS_MODEL_DIR="${QWEN3_TTS_MODEL_DIR:-$HF_MIRROR_DIR/Qwen/Qwen3-TTS-12Hz-1.7B-Base}"
 export VOXCPM2_MODEL_DIR="${VOXCPM2_MODEL_DIR:-$HF_MIRROR_DIR/openbmb/VoxCPM2}"
@@ -64,11 +63,11 @@ export LOCAL_FILES_ONLY="${LOCAL_FILES_ONLY:-1}"
 # LongCat 的克隆默认值集中在对应 API 顶部；Qwen3-TTS 的默认值
 # 集中在 qwen3_tts/main.py；
 # 此处只保留环境、模型路径等启动路由配置，避免覆盖 API 内可直接调试的值。
-# VoxCPM2 的默认生成参数集中在 api/voxcpm2_api.py；此处不再写入默认值，
+# VoxCPM2 的默认生成参数集中在 voxcpm2/main.py；此处不再写入默认值，
 # 因此直接修改 API 顶部常量即可生效。外部显式设置的 VOXCPM2_* 环境变量会原样继承并覆盖 API 默认值。
-# 该变量决定启动 8306 服务所使用的 Conda 环境，必须在脚本内解析；其余
-# VoxCPM2 配置由 voxcpm2_api.py 在服务进程内统一处理。
+# 默认使用已安装的独立 uv 项目；设置 VOXCPM2_RUNTIME=conda 可回退到旧实现。
 export VOXCPM2_CONDA_ENV="${VOXCPM2_CONDA_ENV:-voxcpm2}"
+export VOXCPM2_RUNTIME="${VOXCPM2_RUNTIME:-uv}"
 export LONGCAT_AUDIODIT_MODEL_DIR="${LONGCAT_AUDIODIT_MODEL_DIR:-$HF_MIRROR_DIR/drbaph/LongCat-AudioDiT-3.5B-bf16}"
 export LONGCAT_AUDIODIT_REPO_PATH="${LONGCAT_AUDIODIT_REPO_PATH:-$HOME/tts-depency/LongCat-AudioDiT}"
 export LONGCAT_AUDIODIT_TOKENIZER_PATH="${LONGCAT_AUDIODIT_TOKENIZER_PATH:-$HF_MIRROR_DIR/google/umt5-base}"
@@ -100,6 +99,7 @@ export QWEN3_TTS_HOST="${QWEN3_TTS_HOST:-$HOST}"
 export QWEN3_TTS_PORT="${QWEN3_TTS_PORT:-8305}"
 export VOXCPM2_HOST="${VOXCPM2_HOST:-$HOST}"
 export VOXCPM2_PORT="${VOXCPM2_PORT:-8306}"
+export VOXCPM2_UV_BASE_URL="${VOXCPM2_UV_BASE_URL:-http://127.0.0.1:$VOXCPM2_PORT}"
 export LONGCAT_AUDIODIT_HOST="${LONGCAT_AUDIODIT_HOST:-$HOST}"
 export LONGCAT_AUDIODIT_PORT="${LONGCAT_AUDIODIT_PORT:-8307}"
 export DOTS_TTS_SOAR_HOST="${DOTS_TTS_SOAR_HOST:-$HOST}"
@@ -131,8 +131,6 @@ echo "SoundEffect uv project: $MOSS_SOUNDEFFECT_PROJECT_DIR"
 echo "SoundEffect source:  $MOSS_SOUNDEFFECT_CODE_PATH"
 echo "SoundEffect model:   $MOSS_SOUNDEFFECT_MODEL_DIR"
 echo "SoundEffect device:  $MOSS_SOUNDEFFECT_DEVICE ($MOSS_SOUNDEFFECT_DTYPE)"
-echo "Stable Audio 3 Medium env:    $STABLE_AUDIO_3_MEDIUM_CONDA_ENV"
-echo "Stable Audio 3 Medium runtime: $STABLE_AUDIO_3_MEDIUM_RUNTIME"
 echo "Stable Audio 3 Medium project: $STABLE_AUDIO_3_MEDIUM_PROJECT_DIR"
 echo "Stable Audio 3 Medium model:  $STABLE_AUDIO_3_MEDIUM_MODEL_DIR"
 echo "Stable Audio 3 source:        $STABLE_AUDIO_3_REPO_PATH"
@@ -144,7 +142,9 @@ echo "Qwen VoiceDesign model:      $QWEN_VOICEDESIGN_MODEL_DIR"
 echo "MOSS VoiceGenerator uv project: $MOSS_VOICEGENERATOR_PROJECT_DIR"
 echo "MOSS VoiceGenerator model:      $MOSS_VOICEGENERATOR_MODEL_DIR"
 echo "MOSS Audio tokenizer:           $MOSS_AUDIO_TOKENIZER_PATH"
-echo "VoxCPM2 worker env:  $VOXCPM2_CONDA_ENV"
+echo "VoxCPM2 runtime:     $VOXCPM2_RUNTIME"
+echo "VoxCPM2 uv project:  $VOXCPM2_PROJECT_DIR"
+echo "VoxCPM2 legacy env:  $VOXCPM2_CONDA_ENV"
 echo "VoxCPM2 model:       $VOXCPM2_MODEL_DIR"
 echo "LongCat uv project:  $LONGCAT_AUDIODIT_PROJECT_DIR"
 echo "LongCat model:       $LONGCAT_AUDIODIT_MODEL_DIR"
@@ -154,7 +154,7 @@ echo "LongCat config:      managed by $LONGCAT_AUDIODIT_PROJECT_DIR/main.py"
 echo "dots.tts-soar uv project: $DOTS_TTS_SOAR_PROJECT_DIR"
 echo "dots.tts-soar model: $DOTS_TTS_SOAR_MODEL_DIR"
 echo "dots.tts-soar config: managed by $DOTS_TTS_SOAR_PROJECT_DIR/main.py"
-echo "VoxCPM2 config:      managed by api/voxcpm2_api.py"
+echo "VoxCPM2 config:      managed by $VOXCPM2_PROJECT_DIR/main.py"
 echo "Qwen3-TTS config:    managed by qwen3_tts/main.py"
 echo "Qwen sidecar libs:   $QWEN_LIBS"
 echo "MiMo base URL:       $MIMO_BASE_URL"
@@ -247,22 +247,10 @@ HOST="$SOUNDEFFECT_HOST" PORT="$SOUNDEFFECT_PORT" \
   setsid uv run --no-sync --project "$MOSS_SOUNDEFFECT_PROJECT_DIR" \
   python "$MOSS_SOUNDEFFECT_PROJECT_DIR/main.py" &
 soundeffect_pid=$!
-# Stable Audio 3 Medium migrated uv service.  Keep the old API wrapper as an
-# explicit rollback path until the new project has passed the user's canary.
-if [[ "$STABLE_AUDIO_3_MEDIUM_RUNTIME" == "uv" ]]; then
-  HOST="$STABLE_AUDIO_3_MEDIUM_HOST" PORT="$STABLE_AUDIO_3_MEDIUM_PORT" \
-    setsid uv run --no-sync --project "$STABLE_AUDIO_3_MEDIUM_PROJECT_DIR" \
-    python "$STABLE_AUDIO_3_MEDIUM_PROJECT_DIR/main.py" &
-elif [[ "$STABLE_AUDIO_3_MEDIUM_RUNTIME" == "legacy" || "$STABLE_AUDIO_3_MEDIUM_RUNTIME" == "conda" ]]; then
-  # Legacy rollback: api/stable_audio_3_medium_api.py remains the old control
-  # plane and launches api/stable_audio_3_medium_worker.py in Conda.
-  HOST="$STABLE_AUDIO_3_MEDIUM_HOST" PORT="$STABLE_AUDIO_3_MEDIUM_PORT" \
-    setsid uv run --no-sync --project "$QWEN3_TTS_PROJECT_DIR" \
-    python "$API_DIR/stable_audio_3_medium_api.py" &
-else
-  echo "Unsupported STABLE_AUDIO_3_MEDIUM_RUNTIME: $STABLE_AUDIO_3_MEDIUM_RUNTIME" >&2
-  exit 2
-fi
+# Stable Audio 3 Medium is fully migrated to its standalone uv project.
+HOST="$STABLE_AUDIO_3_MEDIUM_HOST" PORT="$STABLE_AUDIO_3_MEDIUM_PORT" \
+  setsid uv run --no-sync --project "$STABLE_AUDIO_3_MEDIUM_PROJECT_DIR" \
+  python "$STABLE_AUDIO_3_MEDIUM_PROJECT_DIR/main.py" &
 stable_audio_3_medium_pid=$!
 # Qwen3-TTS uv 服务：保持原端口 8305、环境变量和 API 路由。
 HOST="$QWEN3_TTS_HOST" PORT="$QWEN3_TTS_PORT" setsid uv run --project "$QWEN3_TTS_PROJECT_DIR" python "$QWEN3_TTS_PROJECT_DIR/main.py" &
@@ -286,7 +274,17 @@ STEP_AUDIO_EDITX_HOST="$STEP_AUDIO_EDITX_HOST" STEP_AUDIO_EDITX_PORT="$STEP_AUDI
   setsid uv run --no-sync --project "$STEP_AUDIO_EDITX_PROJECT_DIR" \
   python "$STEP_AUDIO_EDITX_PROJECT_DIR/main.py" &
 step_audio_editx_pid=$!
-HOST="$VOXCPM2_HOST" PORT="$VOXCPM2_PORT" setsid conda run --no-capture-output -n "$VOXCPM2_CONDA_ENV" python "$API_DIR/voxcpm2_api.py" &
+if [[ "$VOXCPM2_RUNTIME" == "uv" ]]; then
+  # VoxCPM2 standalone uv service: preserves 8306 clone/upload/health routes.
+  HOST="$VOXCPM2_HOST" PORT="$VOXCPM2_PORT" \
+    setsid uv run --no-sync --project "$VOXCPM2_PROJECT_DIR" \
+    python "$VOXCPM2_PROJECT_DIR/main.py" &
+else
+  # Migration fallback: retain the original Conda wrapper until final removal approval.
+  HOST="$VOXCPM2_HOST" PORT="$VOXCPM2_PORT" \
+    setsid conda run --no-capture-output -n "$VOXCPM2_CONDA_ENV" \
+    python "$API_DIR/voxcpm2_api.py" &
+fi
 voxcpm2_pid=$!
 # LongCat-AudioDiT uv 服务保持原 8307 端口和 WebUI 路由/字段兼容。
 HOST="$LONGCAT_AUDIODIT_HOST" PORT="$LONGCAT_AUDIODIT_PORT" \

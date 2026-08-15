@@ -1,0 +1,247 @@
+"""No-model regression tests for the standalone VoxCPM2 uv service."""
+
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import io
+import os
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+
+REPOSITORY_DIR = Path(__file__).resolve().parents[1]
+SERVICE_DIR = REPOSITORY_DIR / "voxcpm2"
+TEST_RUNTIME = tempfile.TemporaryDirectory(prefix="voxcpm2-tests-")
+TEST_ROOT = Path(TEST_RUNTIME.name)
+MODEL_DIR = TEST_ROOT / "model"
+PROMPTS_DIR = TEST_ROOT / "prompts"
+MODEL_DIR.mkdir(parents=True, exist_ok=True)
+PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
+
+os.environ.update(
+    {
+        "HF_MIRROR_DIR": str(TEST_ROOT / "hf-mirror"),
+        "VOXCPM2_MODEL_DIR": str(MODEL_DIR),
+        "PROMPTS_DIR": str(PROMPTS_DIR),
+        "RUNTIME_CACHE_DIR": str(TEST_ROOT / "cache"),
+        "GPU_LOCK_FILE": str(TEST_ROOT / "cache" / "gpu.lock"),
+        "VOXCPM2_OUTPUT_DIR": str(TEST_ROOT / "output"),
+        "LOCAL_FILES_ONLY": "1",
+        "CUDA_RELEASE_DELAY": "0",
+        "VOXCPM2_REQUEST_TIMEOUT": "5",
+        "VOXCPM2_RUNTIME": "uv",
+    }
+)
+
+# Ensure flat local imports resolve to this service rather than another
+# standalone project's same-named helper modules.
+sys.path.insert(0, str(SERVICE_DIR))
+for module_name in (
+    "audio_output",
+    "audio_trim",
+    "gpu_runtime",
+    "local_worker",
+    "synthesis_request",
+):
+    sys.modules.pop(module_name, None)
+spec = importlib.util.spec_from_file_location(
+    "voxcpm2_service_main_for_test",
+    SERVICE_DIR / "main.py",
+)
+assert spec and spec.loader
+main = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = main
+spec.loader.exec_module(main)
+
+
+class VoxCpm2MigrationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.filename = "migration-reference.wav"
+        content = b"RIFF" + b"\0" * 40
+        (PROMPTS_DIR / main.hash_filename(self.filename)).write_bytes(content)
+        main.save_prompt_text_sidecar(self.filename, "准确的参考转写。")
+
+    def test_routes_and_health_report_uv_runtime(self) -> None:
+        from fastapi.testclient import TestClient
+
+        expected_routes = {
+            ("GET", "/v1/health"),
+            ("POST", "/internal/unload_all"),
+            ("POST", "/v1/upload_audio"),
+            ("GET", "/v1/check/audio"),
+            ("POST", "/v2/synthesize"),
+            ("POST", "/v1/voxcpm2/design"),
+        }
+        actual_routes = {
+            (method, route.path)
+            for route in main.app.routes
+            if hasattr(route, "methods")
+            for method in route.methods
+            if method in {"GET", "POST"}
+        }
+        self.assertTrue(expected_routes.issubset(actual_routes))
+
+        with patch.object(
+            main, "cuda_status", return_value={"available": False, "source": "test"}
+        ):
+            response = TestClient(main.app).get("/v1/health")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(
+            set(payload), {"code", "paths", "available", "cuda", "runtime", "last_errors"}
+        )
+        self.assertEqual(payload["runtime"]["worker_runtime"], "uv")
+        self.assertEqual(payload["runtime"]["worker_python"], sys.executable)
+        self.assertEqual(payload["available"]["python"], sys.executable)
+        self.assertTrue(payload["available"]["worker_script"])
+        self.assertTrue(payload["available"]["voice_design_worker_script"])
+        self.assertIn("not required", payload["runtime"]["flash_attention_policy"])
+
+    def test_upload_and_check_audio_keep_webui_contract(self) -> None:
+        from fastapi.testclient import TestClient
+
+        filename = "uploaded-reference.wav"
+        content = b"RIFF" + b"\x01\x02" * 32
+        client = TestClient(main.app)
+        response = client.post(
+            "/v1/upload_audio",
+            files={"audio": (filename, io.BytesIO(content), "audio/wav")},
+            data={"full_path": filename, "prompt_text": "参考转写"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["sha256"], hashlib.sha256(content).hexdigest())
+        self.assertEqual(response.json()["size_bytes"], len(content))
+
+        checked = client.get("/v1/check/audio", params={"file_name": filename})
+        self.assertEqual(checked.status_code, 200)
+        self.assertEqual(checked.json()["sha256"], hashlib.sha256(content).hexdigest())
+        self.assertEqual(checked.json()["size_bytes"], len(content))
+        self.assertTrue(checked.json()["has_prompt_text"])
+
+    def test_clone_and_voice_design_payloads_keep_contract(self) -> None:
+        clone_request = main.VoxCpm2SynthesizeRequest(
+            text="# 要合成的台词",
+            audio_path=self.filename,
+            prompt_text="准确的参考转写。",
+            clone_mode="ultimate",
+            cfg_value=1.5,
+        )
+        clone_payload = main.manager.build_worker_payload(clone_request)
+        self.assertEqual(clone_payload["text"], "要合成的台词")
+        self.assertEqual(clone_payload["prompt_text"], "准确的参考转写。")
+        self.assertEqual(clone_payload["cfg_value"], 1.5)
+
+        controllable = main.VoxCpm2SynthesizeRequest(
+            text="台词",
+            audio_path=self.filename,
+            clone_mode="controllable",
+            control_instruction="轻快地说",
+            nonverbal_tags=["laughing"],
+        )
+        controllable_payload = main.manager.build_worker_payload(controllable)
+        self.assertIsNone(controllable_payload["prompt_text"])
+        self.assertEqual(controllable_payload["nonverbal_tags"], ["laughing"])
+
+        with self.assertRaises(ValueError):
+            main.VoxCpm2SynthesizeRequest(
+                text="台词",
+                audio_path=self.filename,
+                clone_mode="controllable",
+                control_instruction="轻快地说",
+                prompt_text="不应同时出现",
+            )
+
+        design = main.VoxCpm2VoiceDesignRequest(voice_description="温柔、清晰的成年女性")
+        design_payload = main.build_voice_design_worker_payload(design)
+        self.assertEqual(design_payload["operation"], "voice_design")
+        self.assertEqual(design_payload["voice_description"], "温柔、清晰的成年女性")
+        self.assertEqual(design_payload["text"], "这是生成的参考音频预览。")
+
+    def test_synthesize_and_design_routes_return_wav_without_model(self) -> None:
+        from fastapi.testclient import TestClient
+
+        wav = b"RIFF" + b"\0" * 40
+        client = TestClient(main.app)
+        with patch.object(main.manager, "run_worker", return_value=wav) as run_worker:
+            response = client.post(
+                "/v2/synthesize",
+                json={
+                    "text": "你好。",
+                    "audio_path": self.filename,
+                    "prompt_text": "准确的参考转写。",
+                },
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["content-type"], "audio/wav")
+        self.assertEqual(response.content, wav)
+        run_worker.assert_called_once()
+
+        with patch.object(main.manager, "run_worker", return_value=wav) as run_worker:
+            response = client.post(
+                "/v1/voxcpm2/design",
+                json={"voice_description": "自然、温柔", "text": "你好。"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, wav)
+        self.assertEqual(
+            run_worker.call_args.kwargs["worker_script"],
+            main.VOXCPM2_VOICE_DESIGN_WORKER_SCRIPT,
+        )
+
+    def test_worker_uses_current_uv_interpreter_and_cleans_temp_files(self) -> None:
+        captured: dict[str, object] = {}
+
+        class FakeProcess:
+            returncode = 0
+            pid = None
+
+            def poll(self):
+                return self.returncode
+
+            def communicate(self, timeout=None):
+                command = captured["command"]
+                output_path = Path(command[command.index("--output-wav") + 1])
+                output_path.write_bytes(b"RIFF" + b"\0" * 40)
+                return "worker ok", ""
+
+        def fake_popen(command, **kwargs):
+            captured["command"] = command
+            captured["kwargs"] = kwargs
+            return FakeProcess()
+
+        with patch.object(main.subprocess, "Popen", side_effect=fake_popen):
+            audio_bytes = main.manager.run_worker({"operation": "clone"})
+
+        command = captured["command"]
+        self.assertEqual(command[0], sys.executable)
+        self.assertEqual(command[1], main.VOXCPM2_WORKER_SCRIPT)
+        self.assertNotIn("conda", command)
+        self.assertTrue(audio_bytes.startswith(b"RIFF"))
+        self.assertEqual(list(Path(main.VOXCPM2_WORKER_TMP_DIR).iterdir()), [])
+
+    def test_flash_attention_is_not_a_project_dependency(self) -> None:
+        project_text = (SERVICE_DIR / "pyproject.toml").read_text(encoding="utf-8")
+        source_text = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (SERVICE_DIR / "main.py", SERVICE_DIR / "worker.py")
+        )
+        self.assertNotIn("flash-attn", project_text)
+        self.assertNotIn("flash_attn", project_text)
+        self.assertNotIn("\nimport flash_attn", source_text)
+        self.assertNotIn("\nfrom flash_attn", source_text)
+
+    def test_start_script_defaults_to_uv_and_keeps_conda_fallback(self) -> None:
+        script = (REPOSITORY_DIR / "start.sh").read_text(encoding="utf-8")
+        self.assertIn('export VOXCPM2_RUNTIME="${VOXCPM2_RUNTIME:-uv}"', script)
+        self.assertIn('uv run --no-sync --project "$VOXCPM2_PROJECT_DIR"', script)
+        self.assertIn('python "$VOXCPM2_PROJECT_DIR/main.py"', script)
+        self.assertIn('python "$API_DIR/voxcpm2_api.py"', script)
+        self.assertIn('VOXCPM2_RUNTIME=conda', (REPOSITORY_DIR / "README.md").read_text(encoding="utf-8"))
+
+
+if __name__ == "__main__":
+    unittest.main()

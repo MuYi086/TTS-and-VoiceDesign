@@ -1,12 +1,15 @@
 """VoxCPM2 无参考音频音色设计的独立请求与 worker 调度。
 
-该模块只服务主 API 的 ``/v1/voxcpm2/design`` 路由。克隆协议仍由
-``voxcpm2_api.py`` 维护，避免两种 VoxCPM2 调用方式互相干扰。
+该模块只服务主 API 的 ``/v1/voxcpm2/design`` 路由。默认把请求转发到
+``voxcpm2/main.py``；旧 ``voxcpm2_api.py`` 仅作为显式 Conda 回退实现。
 """
 
 from __future__ import annotations
 
+import json
 import os
+import urllib.error
+import urllib.request
 from typing import Optional
 
 from fastapi import HTTPException
@@ -18,6 +21,17 @@ from voxcpm2_api import (
     manager,
     normalize_optional_text,
     normalize_synthesis_text,
+)
+
+
+# 新版默认由仓库内 voxcpm2 uv 服务承载；保留 conda 选项用于迁移期间回退。
+VOXCPM2_RUNTIME = os.getenv("VOXCPM2_RUNTIME", "conda").strip().lower()
+VOXCPM2_UV_BASE_URL = os.getenv(
+    "VOXCPM2_UV_BASE_URL",
+    f"http://127.0.0.1:{os.getenv('VOXCPM2_PORT', '8306')}",
+).rstrip("/")
+VOXCPM2_UV_REQUEST_TIMEOUT = float(
+    os.getenv("VOXCPM2_UV_REQUEST_TIMEOUT", os.getenv("VOXCPM2_REQUEST_TIMEOUT", "600"))
 )
 
 
@@ -61,12 +75,39 @@ def build_voice_design_worker_payload(request: VoxCpm2VoiceDesignRequest) -> dic
 
 def run_voxcpm2_voice_design(request: VoxCpm2VoiceDesignRequest) -> bytes:
     """串行执行独立音色设计 worker，并在请求结束后释放其模型显存。"""
+    if VOXCPM2_RUNTIME == "uv":
+        return run_uv_voxcpm2_voice_design(request)
+
     payload = build_voice_design_worker_payload(request)
     with manager.lock:
         return manager.run_worker(
             payload,
             worker_script=VOXCPM2_VOICE_DESIGN_WORKER_SCRIPT,
         )
+
+
+def run_uv_voxcpm2_voice_design(request: VoxCpm2VoiceDesignRequest) -> bytes:
+    """通过 8306 的 uv 服务转发旧 8300 VoiceDesign 请求。"""
+    payload = json.dumps(request.model_dump(), ensure_ascii=False).encode("utf-8")
+    url = f"{VOXCPM2_UV_BASE_URL}/v1/voxcpm2/design"
+    http_request = urllib.request.Request(
+        url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(http_request, timeout=VOXCPM2_UV_REQUEST_TIMEOUT) as response:
+            return response.read()
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        try:
+            detail = json.loads(body).get("detail", body)
+        except json.JSONDecodeError:
+            detail = body or str(exc)
+        raise HTTPException(status_code=exc.code, detail=detail) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"VoxCPM2 uv 服务不可用: {exc.reason}") from exc
 
 
 def voice_design_is_ready() -> bool:
