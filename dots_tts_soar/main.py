@@ -1,9 +1,4 @@
-"""Legacy Conda HTTP wrapper for one-shot dots.tts-soar voice cloning.
-
-The primary implementation now lives in ``dots_tts_soar/main.py``. Keep this
-module and its worker as the explicit ``DOTS_TTS_SOAR_RUNTIME=conda`` rollback
-path until the migration is confirmed in production; do not delete yet.
-"""
+"""HTTP wrapper for one-shot dots.tts-soar voice cloning."""
 
 from __future__ import annotations
 
@@ -11,6 +6,8 @@ import hashlib
 import importlib.util
 import os
 import re
+import shutil
+import sys
 import threading
 import traceback
 from contextlib import contextmanager
@@ -23,13 +20,13 @@ from fastapi.responses import JSONResponse
 from pydantic import Field
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from audio_output import persist_audio_bytes
-from gpu_runtime import cuda_status
-from local_worker import LocalWorkerConfig, resolve_conda_executable, run_local_worker
+from runtime import UvWorkerConfig, cuda_status, persist_audio_bytes, run_uv_worker
 from synthesis_request import CloneSynthesisRequest
 
 
-API_DIR = os.path.dirname(os.path.abspath(__file__))
+SERVICE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_DIR = os.path.dirname(SERVICE_DIR)
+API_DIR = os.path.join(PROJECT_DIR, "api")
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -161,7 +158,7 @@ DOTS_TTS_SOAR_REQUEST_TIMEOUT = float(
         "DOTS_TTS_SOAR_REQUEST_TIMEOUT", str(DOTS_TTS_SOAR_REQUEST_TIMEOUT_DEFAULT)
     )
 )
-DOTS_TTS_SOAR_WORKER_SCRIPT = os.path.join(API_DIR, "dots_tts_soar_worker.py")
+DOTS_TTS_SOAR_WORKER_SCRIPT = os.path.join(SERVICE_DIR, "worker.py")
 DOTS_TTS_SOAR_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "dots_tts_soar_worker")
 DOTS_TTS_SOAR_OUTPUT_DIR = expand_path(
     os.getenv(
@@ -296,8 +293,8 @@ class DotsTtsSoarSynthesizeRequest(CloneSynthesisRequest):
     profile_inference: Optional[bool] = None
 
 
-DOTS_TTS_SOAR_WORKER = LocalWorkerConfig(
-    conda_env=DOTS_TTS_SOAR_CONDA_ENV,
+DOTS_TTS_SOAR_WORKER = UvWorkerConfig(
+    python_executable=sys.executable,
     worker_script=DOTS_TTS_SOAR_WORKER_SCRIPT,
     model_dir=DOTS_TTS_SOAR_MODEL_DIR,
     temp_dir=DOTS_TTS_SOAR_WORKER_TMP_DIR,
@@ -375,7 +372,7 @@ class DotsTtsSoarWorkerManager:
 
     def run_worker(self, payload: dict) -> bytes:
         try:
-            audio = run_local_worker(payload, DOTS_TTS_SOAR_WORKER)
+            audio = run_uv_worker(payload, DOTS_TTS_SOAR_WORKER)
             saved_output_path = persist_audio_bytes(
                 audio,
                 "dots_tts_soar",
@@ -411,18 +408,23 @@ async def health():
             "worker_tmp_dir": DOTS_TTS_SOAR_WORKER_TMP_DIR,
         },
         "available": {
-            "conda": bool(resolve_conda_executable()),
+            "conda": bool(shutil.which("conda")),
+            "python": sys.executable,
+            "worker_runtime": "uv",
             "worker_script": os.path.isfile(DOTS_TTS_SOAR_WORKER_SCRIPT),
             "model_dir": os.path.isdir(DOTS_TTS_SOAR_MODEL_DIR),
             "model_required_files": all(required_files.values()),
             "model_required_files_detail": required_files,
             "torch": module_available("torch"),
             "cuda": cuda["available"],
+            "flash_attn": module_available("flash_attn"),
         },
         "cuda": cuda,
         "runtime": {
             "port": API_PORT,
             "worker_env": DOTS_TTS_SOAR_CONDA_ENV,
+            "worker_runtime": "uv",
+            "worker_python": sys.executable,
             "model": "rednote-hilab/dots.tts-soar",
             "model_lifecycle": "one request -> one worker -> explicit CUDA cleanup -> process exit releases VRAM",
             "local_files_only": LOCAL_FILES_ONLY,
@@ -440,6 +442,9 @@ async def health():
             "pause_ms": DOTS_TTS_SOAR_PAUSE_MS,
             "normalize_text": DOTS_TTS_SOAR_NORMALIZE_TEXT,
             "profile_inference": DOTS_TTS_SOAR_PROFILE_INFERENCE,
+            "flash_attention_policy": (
+                "not required; dots.tts uses native PyTorch flex_attention and does not import flash_attn"
+            ),
             "clone_contract": "prompt_audio + optional exact prompt_text; 48 kHz mono output",
         },
         "last_errors": {"dots_tts_soar": manager.last_error},
@@ -511,7 +516,9 @@ if __name__ == "__main__":
     print("==================================================")
     print("   Unitale AI 本地后端 dots.tts-soar Voice Clone")
     print("==================================================")
-    print(f"[配置] worker env: {DOTS_TTS_SOAR_CONDA_ENV}")
+    print(f"[配置] worker runtime: uv")
+    print(f"[配置] worker python: {sys.executable}")
+    print(f"[配置] legacy worker env: {DOTS_TTS_SOAR_CONDA_ENV}")
     print(f"[配置] model: {DOTS_TTS_SOAR_MODEL_DIR}")
     print(f"[配置] port: {API_PORT}")
     print(f"[配置] local_files_only={LOCAL_FILES_ONLY}, request_timeout={DOTS_TTS_SOAR_REQUEST_TIMEOUT}")

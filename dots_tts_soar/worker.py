@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
-"""Legacy Conda one-shot dots.tts-soar voice-cloning worker.
+"""One-shot dots.tts-soar voice-cloning worker.
 
 The HTTP service deliberately does not import the heavyweight dots.tts
-runtime. It serializes one request into this worker's Conda environment and
+runtime.  It serializes one request into this project's uv environment and
 the process exits after the request, which releases the model's CUDA context.
-
-The uv replacement is ``dots_tts_soar/worker.py``. This file remains only for
-the explicit migration rollback path and should be removed after confirmation.
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""No-model regression tests for the standalone LongCat uv service."""
+"""No-model regression tests for the standalone dots.tts-soar uv service."""
 
 from __future__ import annotations
 
@@ -14,44 +14,44 @@ from unittest.mock import patch
 
 
 REPOSITORY_DIR = Path(__file__).resolve().parents[1]
-SERVICE_DIR = REPOSITORY_DIR / "LongCat_AudioDiT_3.5B_bf16"
-TEST_RUNTIME = tempfile.TemporaryDirectory(prefix="longcat-audiodit-tests-")
+SERVICE_DIR = REPOSITORY_DIR / "dots_tts_soar"
+TEST_RUNTIME = tempfile.TemporaryDirectory(prefix="dots-tts-soar-tests-")
 TEST_ROOT = Path(TEST_RUNTIME.name)
 MODEL_DIR = TEST_ROOT / "model"
 PROMPTS_DIR = TEST_ROOT / "prompts"
-REPO_DIR = TEST_ROOT / "repo"
-TOKENIZER_DIR = TEST_ROOT / "tokenizer"
-for directory in (MODEL_DIR, PROMPTS_DIR, REPO_DIR, TOKENIZER_DIR):
+for directory in (MODEL_DIR, PROMPTS_DIR):
     directory.mkdir(parents=True, exist_ok=True)
 
 os.environ.update(
     {
         "HF_MIRROR_DIR": str(TEST_ROOT / "hf-mirror"),
-        "LONGCAT_AUDIODIT_MODEL_DIR": str(MODEL_DIR),
-        "LONGCAT_AUDIODIT_REPO_PATH": str(REPO_DIR),
-        "LONGCAT_AUDIODIT_TOKENIZER_PATH": str(TOKENIZER_DIR),
+        "DOTS_TTS_SOAR_MODEL_DIR": str(MODEL_DIR),
         "PROMPTS_DIR": str(PROMPTS_DIR),
         "RUNTIME_CACHE_DIR": str(TEST_ROOT / "cache"),
         "GPU_LOCK_FILE": str(TEST_ROOT / "cache" / "gpu.lock"),
-        "LONGCAT_AUDIODIT_OUTPUT_DIR": str(TEST_ROOT / "output"),
-        "LONGCAT_AUDIODIT_WORKER_TMP_DIR": str(TEST_ROOT / "worker-tmp"),
+        "DOTS_TTS_SOAR_OUTPUT_DIR": str(TEST_ROOT / "output"),
         "LOCAL_FILES_ONLY": "1",
         "CUDA_RELEASE_DELAY": "0",
-        "LONGCAT_AUDIODIT_REQUEST_TIMEOUT": "5",
+        "DOTS_TTS_SOAR_REQUEST_TIMEOUT": "5",
     }
 )
-sys.path.insert(0, str(SERVICE_DIR))
 
+# The service is intentionally a flat uv application.  Load its local helper
+# modules before the similarly named modules from another standalone service.
+sys.path.insert(0, str(SERVICE_DIR))
+for module_name in ("runtime", "synthesis_request", "audio_trim"):
+    sys.modules.pop(module_name, None)
 spec = importlib.util.spec_from_file_location(
-    "longcat_audiodit_service_main_for_test", SERVICE_DIR / "main.py"
+    "dots_tts_soar_service_main_for_test", SERVICE_DIR / "main.py"
 )
 assert spec and spec.loader
 main = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = main
 spec.loader.exec_module(main)
+runtime = sys.modules["runtime"]
 
 
-class LongCatAudioDitMigrationTests(unittest.TestCase):
+class DotsTtsSoarMigrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.filename = "migration-test.wav"
         self.prompt_text = "这是一条准确的参考文本。"
@@ -88,20 +88,21 @@ class LongCatAudioDitMigrationTests(unittest.TestCase):
         self.assertEqual(
             set(payload), {"code", "paths", "available", "cuda", "runtime", "last_errors"}
         )
-        self.assertEqual(payload["runtime"]["worker_runtime"], "uv")
         self.assertEqual(payload["available"]["python"], sys.executable)
+        self.assertEqual(payload["runtime"]["worker_runtime"], "uv")
         self.assertEqual(
             payload["runtime"]["flash_attention_policy"].split(";")[0],
             "not required",
         )
         self.assertFalse(payload["available"]["flash_attn"])
 
-    def test_upload_and_check_audio_preserve_webui_hash_contract(self) -> None:
+    def test_upload_and_check_audio_preserve_webui_contract(self) -> None:
         from fastapi.testclient import TestClient
 
         filename = "upload-test.wav"
         content = b"RIFF" + b"\x01\x02" * 32
-        response = TestClient(main.app).post(
+        client = TestClient(main.app)
+        response = client.post(
             "/v1/upload_audio",
             files={"audio": (filename, io.BytesIO(content), "audio/wav")},
             data={"full_path": filename, "prompt_text": self.prompt_text},
@@ -110,31 +111,39 @@ class LongCatAudioDitMigrationTests(unittest.TestCase):
         self.assertEqual(response.json()["sha256"], hashlib.sha256(content).hexdigest())
         self.assertEqual(response.json()["size_bytes"], len(content))
 
-        check = TestClient(main.app).get(
-            "/v1/check/audio", params={"file_name": filename}
-        )
+        check = client.get("/v1/check/audio", params={"file_name": filename})
         self.assertEqual(check.status_code, 200)
         self.assertEqual(check.json()["sha256"], hashlib.sha256(content).hexdigest())
         self.assertEqual(check.json()["size_bytes"], len(content))
         self.assertTrue(check.json()["has_prompt_text"])
 
-    def test_request_contract_and_payload_preserve_longcat_fields(self) -> None:
-        request = main.LongCatAudioDitSynthesizeRequest(
+    def test_request_contract_and_payload_preserve_dots_fields(self) -> None:
+        request = main.DotsTtsSoarSynthesizeRequest(
             text="# 目标台词",
             audio_path=self.filename,
-            guidance_method="apg",
-            nfe=20,
-            vae_dtype="float16",
+            prompt_text=None,
+            num_steps=12,
+            guidance_scale=1.4,
+            max_chars_per_chunk=80,
         )
         payload = main.manager.build_worker_payload(request)
         self.assertEqual(payload["text"], "目标台词")
         self.assertEqual(payload["prompt_text"], self.prompt_text)
-        self.assertEqual(payload["guidance_method"], "apg")
-        self.assertEqual(payload["nfe"], 20)
-        self.assertEqual(payload["vae_dtype"], "float16")
+        self.assertEqual(payload["num_steps"], 12)
+        self.assertEqual(payload["guidance_scale"], 1.4)
+        self.assertEqual(payload["max_chars_per_chunk"], 80)
+
+        webui_compatible = main.DotsTtsSoarSynthesizeRequest.model_validate(
+            {
+                "text": "目标台词",
+                "audio_path": self.filename,
+                "backend": "dots-tts-soar",
+            }
+        )
+        self.assertEqual(webui_compatible.audio_path, self.filename)
 
         with self.assertRaises(ValueError):
-            main.LongCatAudioDitSynthesizeRequest.model_validate(
+            main.DotsTtsSoarSynthesizeRequest.model_validate(
                 {
                     "text": "台词",
                     "audio_path": self.filename,
@@ -182,33 +191,48 @@ class LongCatAudioDitMigrationTests(unittest.TestCase):
             return FakeProcess()
 
         payload = main.manager.build_worker_payload(
-            main.LongCatAudioDitSynthesizeRequest(
+            main.DotsTtsSoarSynthesizeRequest(
                 text="目标台词",
                 audio_path=self.filename,
                 prompt_text=self.prompt_text,
             )
         )
-        with patch.object(main.subprocess, "Popen", side_effect=fake_popen):
+        with patch.object(runtime.subprocess, "Popen", side_effect=fake_popen):
             audio_bytes = main.manager.run_worker(payload)
 
         command = captured["command"]
         self.assertEqual(command[0], sys.executable)
-        self.assertEqual(command[1], main.LONGCAT_AUDIODIT_WORKER_SCRIPT)
+        self.assertEqual(command[1], main.DOTS_TTS_SOAR_WORKER_SCRIPT)
         self.assertNotIn("conda", command)
         self.assertTrue(audio_bytes.startswith(b"RIFF"))
-        self.assertTrue(list((TEST_ROOT / "output").glob("longcat_audiodit_*.wav")))
-        self.assertEqual(list((TEST_ROOT / "worker-tmp").iterdir()), [])
+        self.assertTrue(list((TEST_ROOT / "output").glob("dots_tts_soar_*.wav")))
+        self.assertEqual(list((TEST_ROOT / "cache" / "dots_tts_soar_worker").iterdir()), [])
 
-    def test_start_script_routes_longcat_only_to_uv(self) -> None:
+    def test_flash_attn_is_not_a_project_dependency(self) -> None:
+        project_text = (SERVICE_DIR / "pyproject.toml").read_text(encoding="utf-8")
+        source_text = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (SERVICE_DIR / "main.py", SERVICE_DIR / "worker.py")
+        )
+        self.assertNotIn("flash-attn", project_text)
+        self.assertNotIn("flash_attn", project_text)
+        self.assertNotIn("\nimport flash_attn", source_text)
+        self.assertNotIn("\nfrom flash_attn", source_text)
+
+    def test_start_script_uses_uv_and_keeps_legacy_api_fallback(self) -> None:
         script = (REPOSITORY_DIR / "start.sh").read_text(encoding="utf-8")
         self.assertIn(
-            'uv run --no-sync --project "$LONGCAT_AUDIODIT_PROJECT_DIR"',
+            'uv run --no-sync --project "$DOTS_TTS_SOAR_PROJECT_DIR"',
             script,
         )
-        self.assertNotIn("api/longcat_audiodit_api.py", script)
-        self.assertNotIn("LONGCAT_AUDIODIT_CONDA_ENV", script)
-        self.assertFalse((REPOSITORY_DIR / "api/longcat_audiodit_api.py").exists())
-        self.assertFalse((REPOSITORY_DIR / "api/longcat_audiodit_worker.py").exists())
+        self.assertIn(
+            'export DOTS_TTS_SOAR_RUNTIME="${DOTS_TTS_SOAR_RUNTIME:-uv}"',
+            script,
+        )
+        self.assertIn("旧 Conda API/worker 入口保留为迁移回退路径", script)
+        self.assertIn('python "$API_DIR/dots_tts_soar_api.py"', script)
+        self.assertTrue((REPOSITORY_DIR / "api/dots_tts_soar_api.py").exists())
+        self.assertTrue((REPOSITORY_DIR / "api/dots_tts_soar_worker.py").exists())
 
 
 if __name__ == "__main__":

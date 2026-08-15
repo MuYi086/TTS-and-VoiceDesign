@@ -1,8 +1,8 @@
 """Standalone uv HTTP service for LongCat-AudioDiT-3.5B voice cloning.
 
-The legacy implementation in api/longcat_audiodit_api.py remains available as a
-rollback reference until the uv service has passed the real GPU canary. This
-module owns the migrated API and launches worker.py with the current uv Python.
+This module owns the LongCat API and launches worker.py with the current uv
+Python. The former Conda API/worker implementation has been removed after the
+uv migration was confirmed by the real GPU and HTTP canaries.
 """
 
 from __future__ import annotations
@@ -650,4 +650,3 @@ if __name__ == "__main__":
         f"request_timeout={LONGCAT_AUDIODIT_REQUEST_TIMEOUT}"
     )
     uvicorn.run(app, host=API_HOST, port=API_PORT)
-

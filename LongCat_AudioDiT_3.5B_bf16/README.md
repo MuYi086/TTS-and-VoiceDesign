@@ -1,7 +1,8 @@
 # LongCat-AudioDiT-3.5B uv service
 
-This directory is the migrated implementation of the legacy
+This directory is the migrated implementation of the former
 `api/longcat_audiodit_api.py` and `api/longcat_audiodit_worker.py`.
+Those legacy Conda files have been removed after the uv migration was verified.
 
 ## Run
 

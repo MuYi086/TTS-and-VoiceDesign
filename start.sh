@@ -14,6 +14,7 @@ QWEN3_VOICEDESIGN_PROJECT_DIR="${QWEN3_VOICEDESIGN_PROJECT_DIR:-$PROJECT_DIR/qwe
 MOSS_VOICEGENERATOR_PROJECT_DIR="${MOSS_VOICEGENERATOR_PROJECT_DIR:-$PROJECT_DIR/moss_voiceGenerator}"
 STEP_AUDIO_EDITX_PROJECT_DIR="${STEP_AUDIO_EDITX_PROJECT_DIR:-$PROJECT_DIR/Step_Audio_EditX}"
 LONGCAT_AUDIODIT_PROJECT_DIR="${LONGCAT_AUDIODIT_PROJECT_DIR:-$PROJECT_DIR/LongCat_AudioDiT_3.5B_bf16}"
+DOTS_TTS_SOAR_PROJECT_DIR="${DOTS_TTS_SOAR_PROJECT_DIR:-$PROJECT_DIR/dots_tts_soar}"
 
 export HF_MIRROR_DIR="${HF_MIRROR_DIR:-$HOME/hf-mirror}"
 export QWEN_VOICEDESIGN_MODEL_DIR="${QWEN_VOICEDESIGN_MODEL_DIR:-$HF_MIRROR_DIR/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign}"
@@ -68,13 +69,12 @@ export LOCAL_FILES_ONLY="${LOCAL_FILES_ONLY:-1}"
 # 该变量决定启动 8306 服务所使用的 Conda 环境，必须在脚本内解析；其余
 # VoxCPM2 配置由 voxcpm2_api.py 在服务进程内统一处理。
 export VOXCPM2_CONDA_ENV="${VOXCPM2_CONDA_ENV:-voxcpm2}"
-export LONGCAT_AUDIODIT_CONDA_ENV="${LONGCAT_AUDIODIT_CONDA_ENV:-LongCat-AudioDiT-3.5B-bf16}"
-export LONGCAT_AUDIODIT_RUNTIME="${LONGCAT_AUDIODIT_RUNTIME:-uv}"
 export LONGCAT_AUDIODIT_MODEL_DIR="${LONGCAT_AUDIODIT_MODEL_DIR:-$HF_MIRROR_DIR/drbaph/LongCat-AudioDiT-3.5B-bf16}"
 export LONGCAT_AUDIODIT_REPO_PATH="${LONGCAT_AUDIODIT_REPO_PATH:-$HOME/tts-depency/LongCat-AudioDiT}"
 export LONGCAT_AUDIODIT_TOKENIZER_PATH="${LONGCAT_AUDIODIT_TOKENIZER_PATH:-$HF_MIRROR_DIR/google/umt5-base}"
 export DOTS_TTS_SOAR_CONDA_ENV="${DOTS_TTS_SOAR_CONDA_ENV:-dots_tts_soar}"
 export DOTS_TTS_SOAR_MODEL_DIR="${DOTS_TTS_SOAR_MODEL_DIR:-$HF_MIRROR_DIR/rednote-hilab/dots.tts-soar}"
+export DOTS_TTS_SOAR_RUNTIME="${DOTS_TTS_SOAR_RUNTIME:-uv}"
 export QWEN3_TTS_USE_QWEN_LIBS="${QWEN3_TTS_USE_QWEN_LIBS:-0}"
 export MOSS_SOUNDEFFECT_REQUEST_TIMEOUT="${MOSS_SOUNDEFFECT_REQUEST_TIMEOUT:-600}"
 export CUDA_RELEASE_DELAY="${CUDA_RELEASE_DELAY:-2.0}"
@@ -145,16 +145,16 @@ echo "MOSS VoiceGenerator model:      $MOSS_VOICEGENERATOR_MODEL_DIR"
 echo "MOSS Audio tokenizer:           $MOSS_AUDIO_TOKENIZER_PATH"
 echo "VoxCPM2 worker env:  $VOXCPM2_CONDA_ENV"
 echo "VoxCPM2 model:       $VOXCPM2_MODEL_DIR"
-echo "LongCat worker env:  $LONGCAT_AUDIODIT_CONDA_ENV"
 echo "LongCat uv project:  $LONGCAT_AUDIODIT_PROJECT_DIR"
-echo "LongCat runtime:     $LONGCAT_AUDIODIT_RUNTIME"
 echo "LongCat model:       $LONGCAT_AUDIODIT_MODEL_DIR"
 echo "LongCat repo:        $LONGCAT_AUDIODIT_REPO_PATH"
 echo "LongCat tokenizer:   $LONGCAT_AUDIODIT_TOKENIZER_PATH"
 echo "LongCat config:      managed by $LONGCAT_AUDIODIT_PROJECT_DIR/main.py"
-echo "dots.tts-soar env:   $DOTS_TTS_SOAR_CONDA_ENV"
+echo "dots.tts-soar runtime: $DOTS_TTS_SOAR_RUNTIME"
+echo "dots.tts-soar uv project: $DOTS_TTS_SOAR_PROJECT_DIR"
+echo "dots.tts-soar legacy env: $DOTS_TTS_SOAR_CONDA_ENV"
 echo "dots.tts-soar model: $DOTS_TTS_SOAR_MODEL_DIR"
-echo "dots.tts-soar config: managed by api/dots_tts_soar_api.py"
+echo "dots.tts-soar config: managed by $DOTS_TTS_SOAR_PROJECT_DIR/main.py"
 echo "VoxCPM2 config:      managed by api/voxcpm2_api.py"
 echo "Qwen3-TTS config:    managed by qwen3_tts/main.py"
 echo "Qwen sidecar libs:   $QWEN_LIBS"
@@ -239,11 +239,6 @@ cleanup() {
 
 trap cleanup INT TERM EXIT
 
-if [[ "$LONGCAT_AUDIODIT_RUNTIME" != "uv" ]]; then
-  echo "[错误] LongCat-AudioDiT 迁移服务仅支持 uv runtime；旧 Conda 命令仍保留在上方注释中供人工回滚。" >&2
-  exit 1
-fi
-
 setsid conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/api.py" &
 main_pid=$!
 HOST="$SOUNDEFFECT_HOST" PORT="$SOUNDEFFECT_PORT" setsid conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/soundeffect_api.py" &
@@ -274,15 +269,24 @@ STEP_AUDIO_EDITX_HOST="$STEP_AUDIO_EDITX_HOST" STEP_AUDIO_EDITX_PORT="$STEP_AUDI
 step_audio_editx_pid=$!
 HOST="$VOXCPM2_HOST" PORT="$VOXCPM2_PORT" setsid conda run --no-capture-output -n "$VOXCPM2_CONDA_ENV" python "$API_DIR/voxcpm2_api.py" &
 voxcpm2_pid=$!
-# Legacy LongCat Conda API is intentionally retained for rollback and comparison;
-# remove this commented command only after the uv migration is confirmed complete.
-# HOST="$LONGCAT_AUDIODIT_HOST" PORT="$LONGCAT_AUDIODIT_PORT" setsid conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/longcat_audiodit_api.py" &
-# The migrated service keeps port 8307 and all WebUI routes/fields unchanged.
+# LongCat-AudioDiT uv 服务保持原 8307 端口和 WebUI 路由/字段兼容。
 HOST="$LONGCAT_AUDIODIT_HOST" PORT="$LONGCAT_AUDIODIT_PORT" \
   setsid uv run --no-sync --project "$LONGCAT_AUDIODIT_PROJECT_DIR" \
   python "$LONGCAT_AUDIODIT_PROJECT_DIR/main.py" &
 longcat_audiodit_pid=$!
-HOST="$DOTS_TTS_SOAR_HOST" PORT="$DOTS_TTS_SOAR_PORT" setsid conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/dots_tts_soar_api.py" &
-dots_tts_soar_pid=$!
+# dots.tts-soar 已迁移到独立 uv 项目；保持 8308 和 WebUI 请求契约不变。
+if [[ "$DOTS_TTS_SOAR_RUNTIME" == "uv" ]]; then
+  HOST="$DOTS_TTS_SOAR_HOST" PORT="$DOTS_TTS_SOAR_PORT" \
+    setsid uv run --no-sync --project "$DOTS_TTS_SOAR_PROJECT_DIR" \
+      python "$DOTS_TTS_SOAR_PROJECT_DIR/main.py" &
+  dots_tts_soar_pid=$!
+else
+  # 旧 Conda API/worker 入口保留为迁移回退路径，确认迁移稳定后再删除：
+  # HOST="$DOTS_TTS_SOAR_HOST" PORT="$DOTS_TTS_SOAR_PORT" setsid conda run --no-capture-output -n "$CONDA_ENV" python "$API_DIR/dots_tts_soar_api.py" &
+  HOST="$DOTS_TTS_SOAR_HOST" PORT="$DOTS_TTS_SOAR_PORT" \
+    setsid conda run --no-capture-output -n "$CONDA_ENV" \
+      python "$API_DIR/dots_tts_soar_api.py" &
+  dots_tts_soar_pid=$!
+fi
 
 wait -n "$main_pid" "$soundeffect_pid" "$stable_audio_3_medium_pid" "$qwen3_tts_pid" "$qwen_voicedesign_pid" "$moss_voicegenerator_pid" "$step_audio_editx_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid"

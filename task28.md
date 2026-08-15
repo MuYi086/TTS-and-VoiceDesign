@@ -1,8 +1,8 @@
 你先阅读`项目升级评估.md`
 我打算将`~/github/TTS-and-VoiceDesign`和`~/github/scoring-for-TTS`
 改造成现代化的python项目，并且python环境版本统一为3.12.13,tts模型运行所需的conda环境要做对应处理。要求保证升级后原有功能完整可用，具体交互参考`~/github/TTS-Studio-WebUI`前端的处理
-原始tts模型名称 a = `LongCat-AudioDiT-3.5B-bf16`
-即将创建的uv环境 b = `LongCat_AudioDiT_3.5B_bf16`
+原始tts模型名称 a = `dots_tts_soar`
+即将创建的uv环境 b = `dots_tts_soar`
 我准备第一步先将 ${a} 的conda环境完全复刻到uv创建的${b}环境。
 
 你帮我评估是否可以按模型建立目录，然后使用uv init ${b}，然后逐个将tts模型对应的conda环境安装的软件依赖再${b}目录内安装，然后增加对应的main.py实现原来`api`目录内该模型实现的功能，最后再start.sh暴露替换原来的${b}逻辑
