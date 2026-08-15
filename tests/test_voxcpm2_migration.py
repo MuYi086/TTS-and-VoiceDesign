@@ -33,7 +33,6 @@ os.environ.update(
         "LOCAL_FILES_ONLY": "1",
         "CUDA_RELEASE_DELAY": "0",
         "VOXCPM2_REQUEST_TIMEOUT": "5",
-        "VOXCPM2_RUNTIME": "uv",
     }
 )
 
@@ -234,13 +233,30 @@ class VoxCpm2MigrationTests(unittest.TestCase):
         self.assertNotIn("\nimport flash_attn", source_text)
         self.assertNotIn("\nfrom flash_attn", source_text)
 
-    def test_start_script_defaults_to_uv_and_keeps_conda_fallback(self) -> None:
+    def test_start_script_uses_uv_without_legacy_voxcpm2_fallback(self) -> None:
         script = (REPOSITORY_DIR / "start.sh").read_text(encoding="utf-8")
-        self.assertIn('export VOXCPM2_RUNTIME="${VOXCPM2_RUNTIME:-uv}"', script)
         self.assertIn('uv run --no-sync --project "$VOXCPM2_PROJECT_DIR"', script)
         self.assertIn('python "$VOXCPM2_PROJECT_DIR/main.py"', script)
-        self.assertIn('python "$API_DIR/voxcpm2_api.py"', script)
-        self.assertIn('VOXCPM2_RUNTIME=conda', (REPOSITORY_DIR / "README.md").read_text(encoding="utf-8"))
+        self.assertNotIn("VOXCPM2_RUNTIME", script)
+        self.assertNotIn("VOXCPM2_CONDA_ENV", script)
+        self.assertNotIn("main/voxcpm2_api.py", script)
+        self.assertNotIn("VOXCPM2_UV_BASE_URL", script)
+        self.assertIn(
+            'http://127.0.0.1:$VOXCPM2_PORT/v1/voxcpm2/design',
+            script,
+        )
+        control_plane = (REPOSITORY_DIR / "main/main.py").read_text(encoding="utf-8")
+        self.assertNotIn("voxcpm2_voice_design", control_plane)
+        self.assertNotIn("/v1/voxcpm2/design", control_plane)
+        self.assertNotIn("VOXCPM2_RUNTIME", control_plane)
+        for filename in (
+            "voxcpm2_api.py",
+            "voxcpm2_helpers.py",
+            "voxcpm2_voice_design.py",
+            "voxcpm2_voice_design_worker.py",
+            "voxcpm2_worker.py",
+        ):
+            self.assertFalse((REPOSITORY_DIR / "main" / filename).exists())
 
 
 if __name__ == "__main__":

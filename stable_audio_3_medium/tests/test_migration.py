@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -10,6 +11,17 @@ from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
+
+TEST_RUNTIME = tempfile.TemporaryDirectory(prefix="stable-audio-3-medium-tests-")
+TEST_ROOT = Path(TEST_RUNTIME.name)
+os.environ.update(
+    {
+        "STORAGE_DIR": str(TEST_ROOT / "storage"),
+        "SOUNDEFFECT_STORAGE_DIR": str(TEST_ROOT / "storage" / "soundEffect"),
+        "TTS_OUTPUT_DIR": str(TEST_ROOT / "legacy-clone"),
+    }
+)
+os.environ.pop("STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR", None)
 
 import main
 import runtime
@@ -52,6 +64,7 @@ class StableAudioApiContractTests(unittest.TestCase):
             main.StableAudio3MediumGenerateRequest(prompt="sound", seconds=1, duration=2)
 
     def test_generate_routes_return_audio_wav(self):
+        self.assertEqual(main.STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR, main.SOUNDEFFECT_STORAGE_DIR)
         with (
             patch.object(main.manager, "run_worker", return_value=FAKE_WAV) as run_worker,
             patch.object(main, "wait_after_cuda_release"),
@@ -72,6 +85,11 @@ class StableAudioApiContractTests(unittest.TestCase):
         self.assertEqual(alias_response.headers["content-type"], "audio/wav")
         self.assertEqual(run_worker.call_count, 2)
         self.assertEqual(run_worker.call_args.args[0]["prompt"], "a short glass shatter")
+        saved_files = list(main.STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR.glob("stable_audio_3_medium_*.wav"))
+        self.assertEqual(len(saved_files), 2)
+        self.assertTrue(
+            all(path.parent == main.SOUNDEFFECT_STORAGE_DIR for path in saved_files)
+        )
 
     def test_internal_unload_route_is_kept(self):
         with (

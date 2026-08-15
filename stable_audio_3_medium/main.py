@@ -63,9 +63,12 @@ def local_model_is_complete(model_dir: Path) -> bool:
 
 
 HF_MIRROR_DIR = expand_path(os.getenv("HF_MIRROR_DIR", "~/hf-mirror"))
+STORAGE_DIR = expand_path(os.getenv("STORAGE_DIR", str(PROJECT_ROOT / "storage")))
+SOUNDEFFECT_STORAGE_DIR = expand_path(
+    os.getenv("SOUNDEFFECT_STORAGE_DIR", str(STORAGE_DIR / "soundEffect"))
+)
 RUNTIME_CACHE_DIR = expand_path(os.getenv("RUNTIME_CACHE_DIR", str(PROJECT_DIR / ".cache/runtime")))
 GPU_LOCK_FILE = expand_path(os.getenv("GPU_LOCK_FILE", str(RUNTIME_CACHE_DIR / "gpu-runtime.lock")))
-TTS_OUTPUT_DIR = expand_path(os.getenv("TTS_OUTPUT_DIR", str(PROJECT_ROOT / "api/tempAudio")))
 LOCAL_FILES_ONLY = env_bool("LOCAL_FILES_ONLY", True)
 CUDA_RELEASE_DELAY = float(os.getenv("CUDA_RELEASE_DELAY", "2.0"))
 API_HOST = os.getenv("HOST", "0.0.0.0")
@@ -94,7 +97,7 @@ STABLE_AUDIO_3_MEDIUM_REQUEST_TIMEOUT = float(
     os.getenv("STABLE_AUDIO_3_MEDIUM_REQUEST_TIMEOUT", "900")
 )
 STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR = expand_path(
-    os.getenv("STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR", str(TTS_OUTPUT_DIR))
+    os.getenv("STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR", str(SOUNDEFFECT_STORAGE_DIR))
 )
 # The upstream runtime has a tested SDPA/flex-attention fallback.  Keep it as
 # the uv default because the old cp310 FlashAttention wheel cannot be reused by
@@ -249,12 +252,6 @@ class StableAudio3MediumWorkerManager:
 
         try:
             audio = run_local_worker(payload, STABLE_AUDIO_3_MEDIUM_WORKER)
-            saved_output_path = persist_audio_bytes(
-                audio,
-                "stable_audio_3_medium",
-                STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR,
-            )
-            print(f"[Stable Audio 3 Medium] 已保存生成音频: {saved_output_path}")
             self.last_error = None
             return audio
         except Exception as exc:
@@ -350,6 +347,12 @@ async def generate(request: StableAudio3MediumGenerateRequest) -> Response:
         with manager.lock:
             try:
                 audio = manager.run_worker(manager.build_worker_payload(request))
+                saved_output_path = persist_audio_bytes(
+                    audio,
+                    "stable_audio_3_medium",
+                    STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR,
+                )
+                print(f"[Stable Audio 3 Medium] 已保存生成音频: {saved_output_path}")
                 return Response(content=audio, media_type="audio/wav")
             except HTTPException:
                 raise

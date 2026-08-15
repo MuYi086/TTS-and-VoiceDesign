@@ -35,9 +35,6 @@ from runtime import cuda_status, terminate_process_group
 
 PROJECT_DIR = Path(__file__).resolve().parent
 REPOSITORY_DIR = PROJECT_DIR.parent
-API_DIR = REPOSITORY_DIR / "api"
-
-
 def env_bool(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -63,10 +60,16 @@ def normalize_optional_text(value: Optional[str]) -> Optional[str]:
     return normalized or None
 
 
+STORAGE_DIR = Path(
+    expand_path(os.getenv("STORAGE_DIR", str(REPOSITORY_DIR / "storage")))
+)
+CLONE_STORAGE_DIR = Path(
+    expand_path(os.getenv("CLONE_STORAGE_DIR", str(STORAGE_DIR / "clone")))
+)
 HF_MIRROR_DIR = expand_path(os.getenv("HF_MIRROR_DIR", "~/hf-mirror"))
-PROMPTS_DIR = expand_path(os.getenv("PROMPTS_DIR", str(API_DIR / "prompts")))
+PROMPTS_DIR = expand_path(os.getenv("PROMPTS_DIR", str(CLONE_STORAGE_DIR)))
 RUNTIME_CACHE_DIR = expand_path(
-    os.getenv("RUNTIME_CACHE_DIR", str(API_DIR / ".cache/runtime"))
+    os.getenv("RUNTIME_CACHE_DIR", str(STORAGE_DIR / ".cache/runtime"))
 )
 GPU_LOCK_FILE = expand_path(
     os.getenv("GPU_LOCK_FILE", str(Path(RUNTIME_CACHE_DIR) / "gpu-runtime.lock"))
@@ -101,7 +104,7 @@ LONGCAT_AUDIODIT_WORKER_TMP_DIR = expand_path(
 LONGCAT_AUDIODIT_OUTPUT_DIR = expand_path(
     os.getenv(
         "LONGCAT_AUDIODIT_OUTPUT_DIR",
-        os.getenv("TTS_OUTPUT_DIR", str(API_DIR / "tempAudio")),
+        str(CLONE_STORAGE_DIR),
     )
 )
 
@@ -482,12 +485,6 @@ class LongCatAudioDitWorkerManager:
 
             with open(output_path, "rb") as file:
                 audio_bytes = file.read()
-            saved_output_path = persist_audio_bytes(
-                audio_bytes,
-                "longcat_audiodit",
-                LONGCAT_AUDIODIT_OUTPUT_DIR,
-            )
-            print(f"[LongCat-AudioDiT] 已保存生成音频: {saved_output_path}")
             self.last_error = None
             return audio_bytes
         except Exception as exc:
@@ -625,6 +622,12 @@ async def synthesize_v2(request: LongCatAudioDitSynthesizeRequest):
             try:
                 payload = manager.build_worker_payload(request)
                 audio_bytes = manager.run_worker(payload)
+                saved_output_path = persist_audio_bytes(
+                    audio_bytes,
+                    "longcat_audiodit",
+                    LONGCAT_AUDIODIT_OUTPUT_DIR,
+                )
+                print(f"[LongCat-AudioDiT] 已保存生成音频: {saved_output_path}")
                 return Response(content=audio_bytes, media_type="audio/wav")
             except HTTPException:
                 raise

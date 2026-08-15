@@ -24,7 +24,9 @@ $HF_MIRROR_DIR/stabilityai/stable-audio-3-medium
 
 可通过 `STABLE_AUDIO_3_MEDIUM_MODEL_DIR`、`STABLE_AUDIO_3_REPO_PATH`、
 `HF_MIRROR_DIR`、`RUNTIME_CACHE_DIR`、`GPU_LOCK_FILE` 和
-`STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR` 覆盖路径。`LOCAL_FILES_ONLY=1` 时不会
+`STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR` 覆盖路径，默认保存到根项目的
+`storage/soundEffect/`。旧的全局 `TTS_OUTPUT_DIR` 不参与 Stable Audio 的目录解析。
+`LOCAL_FILES_ONLY=1` 时不会
 从 Hugging Face 联网下载权重。
 
 ## FlashAttention 结论

@@ -167,7 +167,7 @@ def approx_duration_from_text(text: str, max_duration: float = 30.0) -> float:
 def prepare_environment(request: dict[str, Any]) -> None:
     runtime_cache_dir = Path(
         request.get("runtime_cache_dir")
-        or Path(__file__).resolve().parents[1] / "api/.cache/runtime"
+        or Path(__file__).resolve().parents[1] / "storage/.cache/runtime"
     ).expanduser()
     hf_mirror_dir = Path(
         request.get("hf_mirror_dir") or Path.home() / "hf-mirror"
@@ -542,4 +542,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

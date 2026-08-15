@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from audio_output import persist_audio_bytes
 from runtime import UvWorkerConfig, cuda_status, run_uv_worker
 
 
@@ -36,6 +37,12 @@ def env_bool(name: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+STORAGE_DIR = expand_path(os.getenv("STORAGE_DIR", str(REPOSITORY_DIR / "storage")))
+SOUNDEFFECT_STORAGE_DIR = expand_path(
+    os.getenv("SOUNDEFFECT_STORAGE_DIR", str(STORAGE_DIR / "soundEffect"))
+)
 
 
 def resolve_conda_executable() -> Optional[str]:
@@ -68,7 +75,7 @@ def local_model_is_complete(model_dir: Path) -> bool:
 
 HF_MIRROR_DIR = expand_path(os.getenv("HF_MIRROR_DIR", "$HOME/hf-mirror"))
 RUNTIME_CACHE_DIR = expand_path(
-    os.getenv("RUNTIME_CACHE_DIR", str(REPOSITORY_DIR / "api/.cache/runtime"))
+    os.getenv("RUNTIME_CACHE_DIR", str(STORAGE_DIR / ".cache/runtime"))
 )
 GPU_LOCK_FILE = expand_path(
     os.getenv("GPU_LOCK_FILE", str(RUNTIME_CACHE_DIR / "gpu-runtime.lock"))
@@ -114,7 +121,12 @@ CUDA_RELEASE_DELAY = float(os.getenv("CUDA_RELEASE_DELAY", "2.0"))
 
 WORKER_SCRIPT = PROJECT_DIR / "worker.py"
 WORKER_TMP_DIR = RUNTIME_CACHE_DIR / "soundeffect_worker"
-for directory in (RUNTIME_CACHE_DIR, WORKER_TMP_DIR, GPU_LOCK_FILE.parent):
+for directory in (
+    RUNTIME_CACHE_DIR,
+    WORKER_TMP_DIR,
+    SOUNDEFFECT_STORAGE_DIR,
+    GPU_LOCK_FILE.parent,
+):
     directory.mkdir(parents=True, exist_ok=True)
 
 
@@ -242,6 +254,7 @@ async def health() -> dict[str, Any]:
             "worker_script": str(WORKER_SCRIPT),
             "worker_tmp_dir": str(WORKER_TMP_DIR),
             "gpu_lock_file": str(GPU_LOCK_FILE),
+            "soundeffect_storage_dir": str(SOUNDEFFECT_STORAGE_DIR),
         },
         "available": {
             "conda": bool(resolve_conda_executable()),
@@ -302,6 +315,12 @@ async def generate(request: SoundEffectGenerateRequest) -> Response:
                 audio = manager.run_worker(manager.build_worker_payload(request))
                 if not audio:
                     raise RuntimeError("SoundEffect worker 返回空音频。")
+                saved_output_path = persist_audio_bytes(
+                    audio,
+                    "moss_soundeffect",
+                    SOUNDEFFECT_STORAGE_DIR,
+                )
+                print(f"[MOSS-SoundEffect] 已保存音效: {saved_output_path}")
                 return Response(content=audio, media_type="audio/wav")
             except HTTPException:
                 raise
@@ -322,4 +341,3 @@ if __name__ == "__main__":
     print(f"[配置] worker 脚本: {WORKER_SCRIPT}")
     print(f"[配置] local_files_only={LOCAL_FILES_ONLY}, timeout={MOSS_SOUNDEFFECT_REQUEST_TIMEOUT}")
     uvicorn.run(app, host=API_HOST, port=API_PORT)
-

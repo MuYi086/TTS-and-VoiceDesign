@@ -2,7 +2,10 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-API_DIR="$PROJECT_DIR/api"
+MAIN_DIR="$PROJECT_DIR/main"
+STORAGE_DIR="${STORAGE_DIR:-$PROJECT_DIR/storage}"
+export STORAGE_DIR
+MIMO_TTS_PROJECT_DIR="${MIMO_TTS_PROJECT_DIR:-$PROJECT_DIR/mimo_tts}"
 # The control-plane wrappers use the Qwen3-TTS uv environment, while
 # heavyweight workers use their model-specific environments below.
 MOSS_SOUNDEFFECT_PROJECT_DIR="${MOSS_SOUNDEFFECT_PROJECT_DIR:-$PROJECT_DIR/moss_soundEffect}"
@@ -20,8 +23,6 @@ export QWEN_VOICEDESIGN_MODEL_DIR="${QWEN_VOICEDESIGN_MODEL_DIR:-$HF_MIRROR_DIR/
 export MOSS_VOICEGENERATOR_MODEL_DIR="${MOSS_VOICEGENERATOR_MODEL_DIR:-$HF_MIRROR_DIR/OpenMOSS-Team/MOSS-VoiceGenerator}"
 export MOSS_AUDIO_TOKENIZER_PATH="${MOSS_AUDIO_TOKENIZER_PATH:-$HF_MIRROR_DIR/OpenMOSS-Team/MOSS-Audio-Tokenizer}"
 export MOSS_VOICEGENERATOR_REQUEST_TIMEOUT="${MOSS_VOICEGENERATOR_REQUEST_TIMEOUT:-900}"
-export STEP_AUDIO_EDITX_CONDA_ENV="${STEP_AUDIO_EDITX_CONDA_ENV:-Step-Audio-EditX}"
-export STEP_AUDIO_EDITX_RUNTIME="${STEP_AUDIO_EDITX_RUNTIME:-uv}"
 export STEP_AUDIO_EDITX_MODEL_DIR="${STEP_AUDIO_EDITX_MODEL_DIR:-$HF_MIRROR_DIR/stepfun-ai/Step-Audio-EditX}"
 export STEP_AUDIO_TOKENIZER_PATH="${STEP_AUDIO_TOKENIZER_PATH:-$HF_MIRROR_DIR/stepfun-ai/Step-Audio-Tokenizer}"
 export STEP_AUDIO_EDITX_CODE_PATH="${STEP_AUDIO_EDITX_CODE_PATH:-$HOME/tts-depency/Step-Audio-EditX}"
@@ -55,9 +56,18 @@ export STABLE_AUDIO_3_MEDIUM_REQUEST_TIMEOUT="${STABLE_AUDIO_3_MEDIUM_REQUEST_TI
 export STABLE_AUDIO_3_MEDIUM_REQUIRE_FLASH_ATTN="${STABLE_AUDIO_3_MEDIUM_REQUIRE_FLASH_ATTN:-0}"
 export QWEN3_TTS_MODEL_DIR="${QWEN3_TTS_MODEL_DIR:-$HF_MIRROR_DIR/Qwen/Qwen3-TTS-12Hz-1.7B-Base}"
 export VOXCPM2_MODEL_DIR="${VOXCPM2_MODEL_DIR:-$HF_MIRROR_DIR/openbmb/VoxCPM2}"
-export QWEN_LIBS="${QWEN_LIBS:-$API_DIR/vendor/qwen_libs}"
-export PROMPTS_DIR="${PROMPTS_DIR:-$API_DIR/prompts}"
-export RUNTIME_CACHE_DIR="${RUNTIME_CACHE_DIR:-$API_DIR/.cache/runtime}"
+export QWEN_LIBS="${QWEN_LIBS:-$QWEN3_TTS_PROJECT_DIR/vendor/qwen_libs}"
+export TIMBRE_STORAGE_DIR="${TIMBRE_STORAGE_DIR:-$STORAGE_DIR/timbre}"
+export SOUNDEFFECT_STORAGE_DIR="${SOUNDEFFECT_STORAGE_DIR:-$STORAGE_DIR/soundEffect}"
+export CLONE_STORAGE_DIR="${CLONE_STORAGE_DIR:-$STORAGE_DIR/clone}"
+export STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR="${STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR:-$SOUNDEFFECT_STORAGE_DIR}"
+export QWEN3_TTS_OUTPUT_DIR="${QWEN3_TTS_OUTPUT_DIR:-$CLONE_STORAGE_DIR}"
+export VOXCPM2_OUTPUT_DIR="${VOXCPM2_OUTPUT_DIR:-$CLONE_STORAGE_DIR}"
+export LONGCAT_AUDIODIT_OUTPUT_DIR="${LONGCAT_AUDIODIT_OUTPUT_DIR:-$CLONE_STORAGE_DIR}"
+export DOTS_TTS_SOAR_OUTPUT_DIR="${DOTS_TTS_SOAR_OUTPUT_DIR:-$CLONE_STORAGE_DIR}"
+export STEP_AUDIO_EDITX_OUTPUT_DIR="${STEP_AUDIO_EDITX_OUTPUT_DIR:-$CLONE_STORAGE_DIR}"
+export PROMPTS_DIR="${PROMPTS_DIR:-$CLONE_STORAGE_DIR}"
+export RUNTIME_CACHE_DIR="${RUNTIME_CACHE_DIR:-$STORAGE_DIR/.cache/runtime}"
 export GPU_LOCK_FILE="${GPU_LOCK_FILE:-$RUNTIME_CACHE_DIR/gpu-runtime.lock}"
 export LOCAL_FILES_ONLY="${LOCAL_FILES_ONLY:-1}"
 # LongCat 的克隆默认值集中在对应 API 顶部；Qwen3-TTS 的默认值
@@ -65,9 +75,7 @@ export LOCAL_FILES_ONLY="${LOCAL_FILES_ONLY:-1}"
 # 此处只保留环境、模型路径等启动路由配置，避免覆盖 API 内可直接调试的值。
 # VoxCPM2 的默认生成参数集中在 voxcpm2/main.py；此处不再写入默认值，
 # 因此直接修改 API 顶部常量即可生效。外部显式设置的 VOXCPM2_* 环境变量会原样继承并覆盖 API 默认值。
-# 默认使用已安装的独立 uv 项目；设置 VOXCPM2_RUNTIME=conda 可回退到旧实现。
-export VOXCPM2_CONDA_ENV="${VOXCPM2_CONDA_ENV:-voxcpm2}"
-export VOXCPM2_RUNTIME="${VOXCPM2_RUNTIME:-uv}"
+# VoxCPM2 只使用仓库内独立 uv 项目，旧 Conda wrapper 已移除。
 export LONGCAT_AUDIODIT_MODEL_DIR="${LONGCAT_AUDIODIT_MODEL_DIR:-$HF_MIRROR_DIR/drbaph/LongCat-AudioDiT-3.5B-bf16}"
 export LONGCAT_AUDIODIT_REPO_PATH="${LONGCAT_AUDIODIT_REPO_PATH:-$HOME/tts-depency/LongCat-AudioDiT}"
 export LONGCAT_AUDIODIT_TOKENIZER_PATH="${LONGCAT_AUDIODIT_TOKENIZER_PATH:-$HF_MIRROR_DIR/google/umt5-base}"
@@ -88,9 +96,11 @@ export MIMO_RETRY_BASE_SECONDS="${MIMO_RETRY_BASE_SECONDS:-5}"
 export MIMO_RETRY_MAX_SECONDS="${MIMO_RETRY_MAX_SECONDS:-60}"
 export HOST="${HOST:-0.0.0.0}"
 export PORT="${PORT:-8300}"
+export MIMO_TTS_HOST="${MIMO_TTS_HOST:-$HOST}"
+export MIMO_TTS_PORT="${MIMO_TTS_PORT:-8312}"
+export MIMO_TTS_PROXY_URL="${MIMO_TTS_PROXY_URL:-http://127.0.0.1:$MIMO_TTS_PORT/v1/mimo/design}"
 export STEP_AUDIO_EDITX_HOST="${STEP_AUDIO_EDITX_HOST:-$HOST}"
 export STEP_AUDIO_EDITX_PORT="${STEP_AUDIO_EDITX_PORT:-8316}"
-export STEP_AUDIO_EDITX_UV_BASE_URL="${STEP_AUDIO_EDITX_UV_BASE_URL:-http://127.0.0.1:$STEP_AUDIO_EDITX_PORT}"
 export SOUNDEFFECT_HOST="${SOUNDEFFECT_HOST:-$HOST}"
 export SOUNDEFFECT_PORT="${SOUNDEFFECT_PORT:-8311}"
 export STABLE_AUDIO_3_MEDIUM_HOST="${STABLE_AUDIO_3_MEDIUM_HOST:-$HOST}"
@@ -99,7 +109,6 @@ export QWEN3_TTS_HOST="${QWEN3_TTS_HOST:-$HOST}"
 export QWEN3_TTS_PORT="${QWEN3_TTS_PORT:-8305}"
 export VOXCPM2_HOST="${VOXCPM2_HOST:-$HOST}"
 export VOXCPM2_PORT="${VOXCPM2_PORT:-8306}"
-export VOXCPM2_UV_BASE_URL="${VOXCPM2_UV_BASE_URL:-http://127.0.0.1:$VOXCPM2_PORT}"
 export LONGCAT_AUDIODIT_HOST="${LONGCAT_AUDIODIT_HOST:-$HOST}"
 export LONGCAT_AUDIODIT_PORT="${LONGCAT_AUDIODIT_PORT:-8307}"
 export DOTS_TTS_SOAR_HOST="${DOTS_TTS_SOAR_HOST:-$HOST}"
@@ -113,15 +122,14 @@ export HF_MODULES_CACHE="${HF_MODULES_CACHE:-$RUNTIME_CACHE_DIR/hf_modules}"
 export NUMBA_CACHE_DIR="${NUMBA_CACHE_DIR:-$RUNTIME_CACHE_DIR/numba}"
 export MPLCONFIGDIR="${MPLCONFIGDIR:-$RUNTIME_CACHE_DIR/matplotlib}"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$RUNTIME_CACHE_DIR/xdg}"
-mkdir -p "$PROMPTS_DIR" "$HF_MODULES_CACHE" "$NUMBA_CACHE_DIR" "$MPLCONFIGDIR" "$XDG_CACHE_HOME" "$(dirname "$GPU_LOCK_FILE")"
+mkdir -p "$TIMBRE_STORAGE_DIR" "$SOUNDEFFECT_STORAGE_DIR" "$CLONE_STORAGE_DIR" "$PROMPTS_DIR" "$HF_MODULES_CACHE" "$NUMBA_CACHE_DIR" "$MPLCONFIGDIR" "$XDG_CACHE_HOME" "$(dirname "$GPU_LOCK_FILE")"
 
 echo "=================================================="
 echo "   Unitale AI local backend"
 echo "=================================================="
 echo "Control-plane uv project: $QWEN3_TTS_PROJECT_DIR"
+echo "MiMo TTS uv project:      $MIMO_TTS_PROJECT_DIR"
 echo "MOSS VoiceGenerator:  $MOSS_VOICEGENERATOR_MODEL_DIR"
-echo "Step-Audio-EditX env: $STEP_AUDIO_EDITX_CONDA_ENV"
-echo "Step-Audio-EditX runtime: $STEP_AUDIO_EDITX_RUNTIME"
 echo "Step-Audio-EditX uv project: $STEP_AUDIO_EDITX_PROJECT_DIR"
 echo "Step-Audio-EditX API: http://$STEP_AUDIO_EDITX_HOST:$STEP_AUDIO_EDITX_PORT"
 echo "Step-Audio-EditX model: $STEP_AUDIO_EDITX_MODEL_DIR"
@@ -142,9 +150,7 @@ echo "Qwen VoiceDesign model:      $QWEN_VOICEDESIGN_MODEL_DIR"
 echo "MOSS VoiceGenerator uv project: $MOSS_VOICEGENERATOR_PROJECT_DIR"
 echo "MOSS VoiceGenerator model:      $MOSS_VOICEGENERATOR_MODEL_DIR"
 echo "MOSS Audio tokenizer:           $MOSS_AUDIO_TOKENIZER_PATH"
-echo "VoxCPM2 runtime:     $VOXCPM2_RUNTIME"
 echo "VoxCPM2 uv project:  $VOXCPM2_PROJECT_DIR"
-echo "VoxCPM2 legacy env:  $VOXCPM2_CONDA_ENV"
 echo "VoxCPM2 model:       $VOXCPM2_MODEL_DIR"
 echo "LongCat uv project:  $LONGCAT_AUDIODIT_PROJECT_DIR"
 echo "LongCat model:       $LONGCAT_AUDIODIT_MODEL_DIR"
@@ -160,11 +166,17 @@ echo "Qwen sidecar libs:   $QWEN_LIBS"
 echo "MiMo base URL:       $MIMO_BASE_URL"
 echo "MiMo model:          $MIMO_MODEL"
 echo "MiMo API key:        $([[ -n "${MIMO_API_KEY:-}" ]] && echo configured || echo missing)"
-echo "Prompts dir:         $PROMPTS_DIR"
+echo "Storage root:        $STORAGE_DIR"
+echo "Timbre storage:      $TIMBRE_STORAGE_DIR"
+echo "SoundEffect storage: $SOUNDEFFECT_STORAGE_DIR"
+echo "Clone storage:       $CLONE_STORAGE_DIR"
+echo "Reference audio dir: $PROMPTS_DIR"
 echo "HF modules cache:    $HF_MODULES_CACHE"
 echo "GPU lock file:       $GPU_LOCK_FILE"
 echo "Main API:            http://$HOST:$PORT"
 echo "Main health:         http://127.0.0.1:$PORT/v1/health"
+echo "MiMo TTS API:        http://$MIMO_TTS_HOST:$MIMO_TTS_PORT"
+echo "MiMo TTS health:     http://127.0.0.1:$MIMO_TTS_PORT/v1/health"
 echo "SoundEffect API:     http://$SOUNDEFFECT_HOST:$SOUNDEFFECT_PORT"
 echo "SoundEffect health:  http://127.0.0.1:$SOUNDEFFECT_PORT/v1/health"
 echo "Stable Audio 3 Medium API:    http://$STABLE_AUDIO_3_MEDIUM_HOST:$STABLE_AUDIO_3_MEDIUM_PORT"
@@ -180,9 +192,9 @@ echo "VoxCPM2 health:      http://127.0.0.1:$VOXCPM2_PORT/v1/health"
 echo "LongCat health:      http://127.0.0.1:$LONGCAT_AUDIODIT_PORT/v1/health"
 echo "dots.tts-soar health: http://127.0.0.1:$DOTS_TTS_SOAR_PORT/v1/health"
 echo "MOSS design route:   http://127.0.0.1:$MOSS_VOICEGENERATOR_PORT/v1/moss/design"
-echo "VoxCPM2 design route: http://127.0.0.1:$PORT/v1/voxcpm2/design"
-echo "MiMo design route:   http://127.0.0.1:$PORT/v1/mimo/design"
-echo "Step-Audio-EditX route: http://127.0.0.1:$PORT/v1/step-audio-editx/edit"
+echo "VoxCPM2 design route: http://127.0.0.1:$VOXCPM2_PORT/v1/voxcpm2/design"
+echo "MiMo design route:   http://127.0.0.1:$MIMO_TTS_PORT/v1/mimo/design"
+echo "Step-Audio-EditX route: http://127.0.0.1:$STEP_AUDIO_EDITX_PORT/v1/step-audio-editx/edit"
 echo "SoundEffect route:   http://127.0.0.1:$SOUNDEFFECT_PORT/v1/generate"
 echo "Stable Audio 3 Medium route: http://127.0.0.1:$STABLE_AUDIO_3_MEDIUM_PORT/v1/generate"
 echo "Qwen3-TTS synth:     http://127.0.0.1:$QWEN3_TTS_PORT/v2/synthesize"
@@ -195,6 +207,7 @@ echo "=================================================="
 cd "$PROJECT_DIR"
 
 main_pid=""
+mimo_tts_pid=""
 soundeffect_pid=""
 stable_audio_3_medium_pid=""
 qwen3_tts_pid=""
@@ -209,7 +222,7 @@ cleanup() {
   local status=$?
   trap - INT TERM EXIT
 
-  for pid in "$main_pid" "$soundeffect_pid" "$stable_audio_3_medium_pid" "$qwen3_tts_pid" "$qwen_voicedesign_pid" "$moss_voicegenerator_pid" "$step_audio_editx_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid"; do
+  for pid in "$main_pid" "$mimo_tts_pid" "$soundeffect_pid" "$stable_audio_3_medium_pid" "$qwen3_tts_pid" "$qwen_voicedesign_pid" "$moss_voicegenerator_pid" "$step_audio_editx_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid"; do
     if [[ -n "$pid" ]] && kill -0 -- "-$pid" 2>/dev/null; then
       kill -TERM -- "-$pid" 2>/dev/null || true
     fi
@@ -217,13 +230,14 @@ cleanup() {
 
   sleep 1
 
-  for pid in "$main_pid" "$soundeffect_pid" "$stable_audio_3_medium_pid" "$qwen3_tts_pid" "$qwen_voicedesign_pid" "$moss_voicegenerator_pid" "$step_audio_editx_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid"; do
+  for pid in "$main_pid" "$mimo_tts_pid" "$soundeffect_pid" "$stable_audio_3_medium_pid" "$qwen3_tts_pid" "$qwen_voicedesign_pid" "$moss_voicegenerator_pid" "$step_audio_editx_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid"; do
     if [[ -n "$pid" ]] && kill -0 -- "-$pid" 2>/dev/null; then
       kill -KILL -- "-$pid" 2>/dev/null || true
     fi
   done
 
   wait "$main_pid" 2>/dev/null || true
+  wait "$mimo_tts_pid" 2>/dev/null || true
   wait "$soundeffect_pid" 2>/dev/null || true
   wait "$stable_audio_3_medium_pid" 2>/dev/null || true
   wait "$qwen3_tts_pid" 2>/dev/null || true
@@ -238,10 +252,16 @@ cleanup() {
 
 trap cleanup INT TERM EXIT
 
-# Main API keeps its existing 8300 routes and uses the Qwen3-TTS uv
-# control-plane environment.
-setsid uv run --no-sync --project "$QWEN3_TTS_PROJECT_DIR" python "$API_DIR/api.py" &
+# The main control plane owns the existing 8300 routes and uses the
+# Qwen3-TTS uv environment only for its lightweight HTTP dependencies.
+setsid uv run --no-sync --project "$QWEN3_TTS_PROJECT_DIR" python "$MAIN_DIR/main.py" &
 main_pid=$!
+# MiMo is a cloud-backed VoiceDesign service with its own health and cache.
+MIMO_TTS_HOST="$MIMO_TTS_HOST" MIMO_TTS_PORT="$MIMO_TTS_PORT" \
+  HOST="$MIMO_TTS_HOST" PORT="$MIMO_TTS_PORT" \
+  setsid uv run --no-sync --project "$MIMO_TTS_PROJECT_DIR" \
+  python "$MIMO_TTS_PROJECT_DIR/main.py" &
+mimo_tts_pid=$!
 # MOSS-SoundEffect uv 服务：8311 保持原有路由、端口和请求契约。
 HOST="$SOUNDEFFECT_HOST" PORT="$SOUNDEFFECT_PORT" \
   setsid uv run --no-sync --project "$MOSS_SOUNDEFFECT_PROJECT_DIR" \
@@ -267,24 +287,16 @@ MOSS_VOICEGENERATOR_HOST="$MOSS_VOICEGENERATOR_HOST" MOSS_VOICEGENERATOR_PORT="$
   setsid uv run --project "$MOSS_VOICEGENERATOR_PROJECT_DIR" \
   python "$MOSS_VOICEGENERATOR_PROJECT_DIR/main.py" &
 moss_voicegenerator_pid=$!
-# Step-Audio-EditX 独立 uv 服务：8300 主 API 保留 WebUI 兼容代理，模型服务使用 8316。
+# Step-Audio-EditX 独立 uv 服务：完整提供上传、检查和编辑接口。
 # 依赖由部署前手动执行 `uv sync --project Step_Audio_EditX --locked`；启动阶段不再联网解析。
 STEP_AUDIO_EDITX_HOST="$STEP_AUDIO_EDITX_HOST" STEP_AUDIO_EDITX_PORT="$STEP_AUDIO_EDITX_PORT" \
   HOST="$STEP_AUDIO_EDITX_HOST" PORT="$STEP_AUDIO_EDITX_PORT" \
   setsid uv run --no-sync --project "$STEP_AUDIO_EDITX_PROJECT_DIR" \
   python "$STEP_AUDIO_EDITX_PROJECT_DIR/main.py" &
 step_audio_editx_pid=$!
-if [[ "$VOXCPM2_RUNTIME" == "uv" ]]; then
-  # VoxCPM2 standalone uv service: preserves 8306 clone/upload/health routes.
-  HOST="$VOXCPM2_HOST" PORT="$VOXCPM2_PORT" \
-    setsid uv run --no-sync --project "$VOXCPM2_PROJECT_DIR" \
-    python "$VOXCPM2_PROJECT_DIR/main.py" &
-else
-  # Migration fallback: retain the original Conda wrapper until final removal approval.
-  HOST="$VOXCPM2_HOST" PORT="$VOXCPM2_PORT" \
-    setsid conda run --no-capture-output -n "$VOXCPM2_CONDA_ENV" \
-    python "$API_DIR/voxcpm2_api.py" &
-fi
+HOST="$VOXCPM2_HOST" PORT="$VOXCPM2_PORT" \
+  setsid uv run --no-sync --project "$VOXCPM2_PROJECT_DIR" \
+  python "$VOXCPM2_PROJECT_DIR/main.py" &
 voxcpm2_pid=$!
 # LongCat-AudioDiT uv 服务保持原 8307 端口和 WebUI 路由/字段兼容。
 HOST="$LONGCAT_AUDIODIT_HOST" PORT="$LONGCAT_AUDIODIT_PORT" \
@@ -297,4 +309,4 @@ HOST="$DOTS_TTS_SOAR_HOST" PORT="$DOTS_TTS_SOAR_PORT" \
     python "$DOTS_TTS_SOAR_PROJECT_DIR/main.py" &
 dots_tts_soar_pid=$!
 
-wait -n "$main_pid" "$soundeffect_pid" "$stable_audio_3_medium_pid" "$qwen3_tts_pid" "$qwen_voicedesign_pid" "$moss_voicegenerator_pid" "$step_audio_editx_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid"
+wait -n "$main_pid" "$mimo_tts_pid" "$soundeffect_pid" "$stable_audio_3_medium_pid" "$qwen3_tts_pid" "$qwen_voicedesign_pid" "$moss_voicegenerator_pid" "$step_audio_editx_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid"

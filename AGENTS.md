@@ -4,10 +4,10 @@
 
 This repository is Unitale's local TTS, voice-design, and sound-effect backend.
 
-- `api/` contains the HTTP entry points (`api.py` and model-specific `*_api.py` files), heavyweight inference workers (`*_worker.py`), shared request/audio helpers, and vendored upstream code.
-- The main API listens on `8300`; dedicated services use `8305` (Qwen3-TTS), `8306` (VoxCPM2), `8307` (LongCat), `8308` (dots.tts-soar), `8311` (MOSS sound effects), and `8313` (Stable Audio 3 Medium).
+- `main/` contains the 8300 control-plane HTTP entry point and its runtime helper only. Model services live in their own directories, including `mimo_tts/` and `Step_Audio_EditX/`.
+- The main API listens on `8300`; dedicated services use `8312` (MiMo VoiceDesign), `8305` (Qwen3-TTS), `8306` (VoxCPM2), `8307` (LongCat), `8308` (dots.tts-soar), `8311` (MOSS sound effects), `8313` (Stable Audio 3 Medium), `8314` (Qwen VoiceDesign), `8315` (MOSS VoiceGenerator), and `8316` (Step-Audio-EditX).
 - `tests/` contains standard-library `unittest` regression tests. `soundEffect/` contains the GPU-backed MOSS example and smoke test; `README.md` documents API contracts and model setup.
-- `api/prompts/`, `api/.cache/`, `api/tempAudio/`, and `api/vendor/` may contain runtime files, caches, generated WAVs, or local dependencies. Do not commit model weights, uploaded/reference audio, generated audio, or machine-specific paths.
+- `storage/` contains runtime prompts, caches, and generated WAVs. Do not commit model weights, uploaded/reference audio, generated audio, or machine-specific paths.
 
 ## Build, Test, and Development Commands
 
@@ -17,9 +17,10 @@ Ensure Conda and uv are available, then run:
 bash start.sh
 uv run --project qwen3_tts python -m unittest discover -s tests -v
 curl http://127.0.0.1:8300/v1/health
+curl http://127.0.0.1:8312/v1/health
 ```
 
-`start.sh` launches all HTTP wrappers and their dedicated workers; the main control plane and Qwen3-TTS 8305 use `qwen3_tts/.venv`, migrated services use their own uv projects, and remaining heavyweight workers use their model-specific Conda environments. The former `moss-soundEffect` Conda environment is removed. Override ports, model locations, environments, and caches with environment variables (for example, `PORT=8400 bash start.sh`) rather than editing host-specific defaults. Use `soundEffect/run_moss_soundeffect_v2.sh` only for its CUDA/model smoke test.
+`start.sh` launches the 8300 control plane, the MiMo 8312 service, and all model-specific uv projects; heavyweight workers use their service-local uv environments. The former `moss-soundEffect` Conda environment and the 8300 Step-Audio-EditX proxy are removed. Override ports, model locations, environments, and caches with environment variables (for example, `PORT=8400 bash start.sh`) rather than editing host-specific defaults. Use `soundEffect/run_moss_soundeffect_v2.sh` only for its CUDA/model smoke test.
 
 ## Coding Style & Architecture
 

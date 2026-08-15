@@ -25,7 +25,6 @@ from synthesis_request import CloneSynthesisRequest
 
 SERVICE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SERVICE_DIR)
-API_DIR = os.path.join(PROJECT_DIR, "api")
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -60,9 +59,15 @@ def module_available(module_name: str) -> bool:
     return importlib.util.find_spec(module_name) is not None
 
 
+STORAGE_DIR = expand_path(os.getenv("STORAGE_DIR", os.path.join(PROJECT_DIR, "storage")))
+CLONE_STORAGE_DIR = expand_path(
+    os.getenv("CLONE_STORAGE_DIR", os.path.join(STORAGE_DIR, "clone"))
+)
 HF_MIRROR_DIR = expand_path(os.getenv("HF_MIRROR_DIR", "~/hf-mirror"))
-PROMPTS_DIR = expand_path(os.getenv("PROMPTS_DIR", os.path.join(API_DIR, "prompts")))
-RUNTIME_CACHE_DIR = expand_path(os.getenv("RUNTIME_CACHE_DIR", os.path.join(API_DIR, ".cache/runtime")))
+PROMPTS_DIR = expand_path(os.getenv("PROMPTS_DIR", CLONE_STORAGE_DIR))
+RUNTIME_CACHE_DIR = expand_path(
+    os.getenv("RUNTIME_CACHE_DIR", os.path.join(STORAGE_DIR, ".cache/runtime"))
+)
 GPU_LOCK_FILE = expand_path(os.getenv("GPU_LOCK_FILE", os.path.join(RUNTIME_CACHE_DIR, "gpu-runtime.lock")))
 LOCAL_FILES_ONLY = env_bool("LOCAL_FILES_ONLY", True)
 CUDA_RELEASE_DELAY = float(os.getenv("CUDA_RELEASE_DELAY", "2.0"))
@@ -161,7 +166,7 @@ DOTS_TTS_SOAR_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "dots_tts_soar_wo
 DOTS_TTS_SOAR_OUTPUT_DIR = expand_path(
     os.getenv(
         "DOTS_TTS_SOAR_OUTPUT_DIR",
-        os.getenv("TTS_OUTPUT_DIR", os.path.join(API_DIR, "tempAudio")),
+        CLONE_STORAGE_DIR,
     )
 )
 
@@ -371,12 +376,6 @@ class DotsTtsSoarWorkerManager:
     def run_worker(self, payload: dict) -> bytes:
         try:
             audio = run_uv_worker(payload, DOTS_TTS_SOAR_WORKER)
-            saved_output_path = persist_audio_bytes(
-                audio,
-                "dots_tts_soar",
-                DOTS_TTS_SOAR_OUTPUT_DIR,
-            )
-            print(f"[dots.tts-soar] 已保存生成音频: {saved_output_path}")
             self.last_error = None
             return audio
         except Exception as exc:
@@ -498,6 +497,12 @@ async def synthesize_v2(request: DotsTtsSoarSynthesizeRequest):
             try:
                 payload = manager.build_worker_payload(request)
                 audio_bytes = manager.run_worker(payload)
+                saved_output_path = persist_audio_bytes(
+                    audio_bytes,
+                    "dots_tts_soar",
+                    DOTS_TTS_SOAR_OUTPUT_DIR,
+                )
+                print(f"[dots.tts-soar] 已保存生成音频: {saved_output_path}")
                 return Response(content=audio_bytes, media_type="audio/wav")
             except HTTPException:
                 raise

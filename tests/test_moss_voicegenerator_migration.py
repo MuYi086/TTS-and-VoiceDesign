@@ -21,6 +21,9 @@ os.environ.update(
         "HF_MIRROR_DIR": str(TEST_ROOT / "hf-mirror"),
         "MOSS_VOICEGENERATOR_MODEL_DIR": str(TEST_ROOT / "model"),
         "MOSS_AUDIO_TOKENIZER_PATH": str(TEST_ROOT / "codec"),
+        "STORAGE_DIR": str(TEST_ROOT / "storage"),
+        "TIMBRE_STORAGE_DIR": str(TEST_ROOT / "storage" / "timbre"),
+        "TTS_OUTPUT_DIR": str(TEST_ROOT / "legacy-clone"),
         "RUNTIME_CACHE_DIR": str(TEST_ROOT / "cache"),
         "GPU_LOCK_FILE": str(TEST_ROOT / "cache" / "gpu.lock"),
         "LOCAL_FILES_ONLY": "1",
@@ -107,6 +110,10 @@ class MossVoiceGeneratorMigrationTests(unittest.TestCase):
         self.assertEqual(response.content, wav)
         run_worker.assert_called_once()
         self.assertEqual(run_worker.call_args.args[0]["text"], "你好。")
+        saved_files = list(main.TIMBRE_STORAGE_DIR.glob("moss_voicegenerator_*.wav"))
+        self.assertTrue(saved_files)
+        self.assertTrue(all(path.parent == main.TIMBRE_STORAGE_DIR for path in saved_files))
+        self.assertFalse((TEST_ROOT / "legacy-clone").exists())
 
     def test_worker_uses_uv_interpreter_and_cleans_temporary_files(self) -> None:
         captured: dict[str, object] = {}

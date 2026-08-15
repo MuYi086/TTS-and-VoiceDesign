@@ -22,13 +22,12 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from audio_output import persist_audio_bytes
 from voicedesign_runtime import cuda_status, terminate_process_group
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
 REPOSITORY_DIR = PROJECT_DIR.parent
-
-
 def env_bool(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -40,6 +39,12 @@ def expand_path(path: str) -> str:
     return os.path.abspath(os.path.expandvars(os.path.expanduser(path)))
 
 
+STORAGE_DIR = Path(
+    expand_path(os.getenv("STORAGE_DIR", str(REPOSITORY_DIR / "storage")))
+)
+TIMBRE_STORAGE_DIR = Path(
+    expand_path(os.getenv("TIMBRE_STORAGE_DIR", str(STORAGE_DIR / "timbre")))
+)
 HF_MIRROR_DIR = expand_path(os.getenv("HF_MIRROR_DIR", "~/hf-mirror"))
 QWEN_VOICEDESIGN_MODEL_DIR = expand_path(
     os.getenv(
@@ -48,7 +53,7 @@ QWEN_VOICEDESIGN_MODEL_DIR = expand_path(
     )
 )
 RUNTIME_CACHE_DIR = expand_path(
-    os.getenv("RUNTIME_CACHE_DIR", str(REPOSITORY_DIR / "api/.cache/runtime"))
+    os.getenv("RUNTIME_CACHE_DIR", str(STORAGE_DIR / ".cache/runtime"))
 )
 GPU_LOCK_FILE = expand_path(
     os.getenv("GPU_LOCK_FILE", os.path.join(RUNTIME_CACHE_DIR, "gpu-runtime.lock"))
@@ -84,7 +89,12 @@ if LOCAL_FILES_ONLY:
     os.environ.setdefault("HF_HUB_OFFLINE", "1")
     os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
-for path in (WORKER_TMP_DIR, os.environ["HF_MODULES_CACHE"], os.environ["NUMBA_CACHE_DIR"]):
+for path in (
+    WORKER_TMP_DIR,
+    TIMBRE_STORAGE_DIR,
+    os.environ["HF_MODULES_CACHE"],
+    os.environ["NUMBA_CACHE_DIR"],
+):
     os.makedirs(path, exist_ok=True)
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 os.makedirs(os.environ["XDG_CACHE_HOME"], exist_ok=True)
@@ -294,6 +304,7 @@ async def health():
             "qwen_voicedesign_model_dir": QWEN_VOICEDESIGN_MODEL_DIR,
             "worker_script": WORKER_SCRIPT,
             "worker_tmp_dir": WORKER_TMP_DIR,
+            "timbre_storage_dir": str(TIMBRE_STORAGE_DIR),
             "gpu_lock_file": GPU_LOCK_FILE,
         },
         "available": {
@@ -340,10 +351,14 @@ def qwen_design(request: QwenDesignRequest):
     with gpu_runtime_lock("qwen/design"):
         with manager.lock:
             try:
-                return Response(
-                    content=manager.run_worker(manager.build_worker_payload(request)),
-                    media_type="audio/wav",
+                audio_bytes = manager.run_worker(manager.build_worker_payload(request))
+                saved_output_path = persist_audio_bytes(
+                    audio_bytes,
+                    "qwen_voicedesign",
+                    TIMBRE_STORAGE_DIR,
                 )
+                print(f"[Qwen3-TTS VoiceDesign] 已保存音色音频: {saved_output_path}")
+                return Response(content=audio_bytes, media_type="audio/wav")
             except HTTPException:
                 raise
             except Exception as exc:

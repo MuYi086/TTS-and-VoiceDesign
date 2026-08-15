@@ -1,8 +1,8 @@
 # LongCat-AudioDiT-3.5B uv service
 
-This directory is the migrated implementation of the former
-`api/longcat_audiodit_api.py` and `api/longcat_audiodit_worker.py`.
-Those legacy Conda files have been removed after the uv migration was verified.
+This directory is the migrated implementation of the former LongCat
+Conda API and worker. Those legacy files have been removed after the uv
+migration was verified.
 
 ## Run
 
@@ -26,7 +26,8 @@ The default paths remain shared with the legacy service:
 - model: `$HF_MIRROR_DIR/drbaph/LongCat-AudioDiT-3.5B-bf16`
 - tokenizer: `$HF_MIRROR_DIR/google/umt5-base`
 - official source: `$LONGCAT_AUDIODIT_REPO_PATH`
-- prompts/output/cache/lock: the existing `api/` runtime directories
+- prompts: `storage/clone/`; output: `storage/clone/`; cache and lock:
+  `storage/.cache/`
 
 Override paths with the existing `LONGCAT_AUDIODIT_*` variables. The worker imports
 the external `audiodit` package only when a synthesis request starts.

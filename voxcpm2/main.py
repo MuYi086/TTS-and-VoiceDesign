@@ -4,7 +4,6 @@ import importlib.util
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -21,13 +20,12 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Res
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
 from starlette.middleware.base import BaseHTTPMiddleware
-from audio_output import persist_audio_file
+from audio_output import persist_audio_bytes, persist_audio_file
 from synthesis_request import CloneSynthesisRequest
 from gpu_runtime import cuda_status, terminate_process_group
 
 SERVICE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SERVICE_DIR)
-LEGACY_API_DIR = os.path.join(PROJECT_DIR, "api")
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -56,9 +54,16 @@ def normalize_device_name(value: Optional[str], default: str = "cuda") -> str:
 
 
 HF_MIRROR_DIR = expand_path(os.getenv("HF_MIRROR_DIR", "~/hf-mirror"))
-PROMPTS_DIR = expand_path(os.getenv("PROMPTS_DIR", os.path.join(LEGACY_API_DIR, "prompts")))
+STORAGE_DIR = expand_path(os.getenv("STORAGE_DIR", os.path.join(PROJECT_DIR, "storage")))
+CLONE_STORAGE_DIR = expand_path(
+    os.getenv("CLONE_STORAGE_DIR", os.path.join(STORAGE_DIR, "clone"))
+)
+TIMBRE_STORAGE_DIR = expand_path(
+    os.getenv("TIMBRE_STORAGE_DIR", os.path.join(STORAGE_DIR, "timbre"))
+)
+PROMPTS_DIR = expand_path(os.getenv("PROMPTS_DIR", CLONE_STORAGE_DIR))
 RUNTIME_CACHE_DIR = expand_path(
-    os.getenv("RUNTIME_CACHE_DIR", os.path.join(LEGACY_API_DIR, ".cache/runtime"))
+    os.getenv("RUNTIME_CACHE_DIR", os.path.join(STORAGE_DIR, ".cache/runtime"))
 )
 GPU_LOCK_FILE = expand_path(os.getenv("GPU_LOCK_FILE", os.path.join(RUNTIME_CACHE_DIR, "gpu-runtime.lock")))
 LOCAL_FILES_ONLY = env_bool("LOCAL_FILES_ONLY", True)
@@ -66,9 +71,6 @@ CUDA_RELEASE_DELAY = float(os.getenv("CUDA_RELEASE_DELAY", "2.0"))
 API_HOST = os.getenv("HOST", "0.0.0.0")
 API_PORT = int(os.getenv("PORT", "8306"))
 
-# 保留该变量用于旧配置和 health 兼容；uv worker 不再通过 Conda 启动。
-VOXCPM2_CONDA_ENV = os.getenv("VOXCPM2_CONDA_ENV", "voxcpm2")
-VOXCPM2_RUNTIME = os.getenv("VOXCPM2_RUNTIME", "uv").strip().lower()
 VOXCPM2_MODEL_DIR = expand_path(
     os.getenv("VOXCPM2_MODEL_DIR", os.path.join(HF_MIRROR_DIR, "openbmb/VoxCPM2"))
 )
@@ -132,8 +134,11 @@ VOXCPM2_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "voxcpm2_worker")
 VOXCPM2_OUTPUT_DIR = expand_path(
     os.getenv(
         "VOXCPM2_OUTPUT_DIR",
-        os.getenv("TTS_OUTPUT_DIR", os.path.join(LEGACY_API_DIR, "tempAudio")),
+        CLONE_STORAGE_DIR,
     )
+)
+VOXCPM2_TIMBRE_OUTPUT_DIR = expand_path(
+    os.getenv("VOXCPM2_TIMBRE_OUTPUT_DIR", TIMBRE_STORAGE_DIR)
 )
 VOXCPM2_VOICE_DESIGN_WORKER_SCRIPT = os.path.join(SERVICE_DIR, "voice_design_worker.py")
 
@@ -153,6 +158,7 @@ os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 os.makedirs(os.environ["XDG_CACHE_HOME"], exist_ok=True)
 os.makedirs(VOXCPM2_WORKER_TMP_DIR, exist_ok=True)
 os.makedirs(VOXCPM2_OUTPUT_DIR, exist_ok=True)
+os.makedirs(VOXCPM2_TIMBRE_OUTPUT_DIR, exist_ok=True)
 gpu_lock_dir = os.path.dirname(GPU_LOCK_FILE)
 if gpu_lock_dir:
     os.makedirs(gpu_lock_dir, exist_ok=True)
@@ -214,9 +220,22 @@ def module_available(module_name: str) -> bool:
     return importlib.util.find_spec(module_name) is not None
 
 
-def persist_generated_audio(source_path: str) -> str:
-    """Copy a validated worker WAV to the user-accessible output directory."""
-    return str(persist_audio_file(source_path, "voxcpm2", VOXCPM2_OUTPUT_DIR))
+def persist_generated_audio(source_path: str, operation: str = "clone") -> str:
+    """Copy a validated worker WAV into its semantic storage category."""
+    output_dir = (
+        VOXCPM2_TIMBRE_OUTPUT_DIR if operation == "voice_design" else VOXCPM2_OUTPUT_DIR
+    )
+    prefix = "voxcpm2_voicedesign" if operation == "voice_design" else "voxcpm2"
+    return str(persist_audio_file(source_path, prefix, output_dir))
+
+
+def persist_generated_audio_bytes(audio_bytes: bytes, operation: str = "clone") -> str:
+    """Persist route output, including bytes returned by a mocked worker."""
+    output_dir = (
+        VOXCPM2_TIMBRE_OUTPUT_DIR if operation == "voice_design" else VOXCPM2_OUTPUT_DIR
+    )
+    prefix = "voxcpm2_voicedesign" if operation == "voice_design" else "voxcpm2"
+    return str(persist_audio_bytes(audio_bytes, prefix, output_dir))
 
 
 def sha256_file(path: str) -> str:
@@ -226,13 +245,6 @@ def sha256_file(path: str) -> str:
         for chunk in iter(lambda: file_obj.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def resolve_conda_executable() -> Optional[str]:
-    conda_exe = os.environ.get("CONDA_EXE")
-    if conda_exe and os.path.isfile(expand_path(conda_exe)):
-        return expand_path(conda_exe)
-    return shutil.which("conda")
 
 
 def assert_local_request(request: Request) -> None:
@@ -495,10 +507,8 @@ class VoxCpm2WorkerManager:
             if not os.path.isfile(output_path) or os.path.getsize(output_path) == 0:
                 raise RuntimeError("VoxCPM2 worker 未生成音频文件。")
 
-            saved_output_path = persist_generated_audio(output_path)
-            print(f"[VoxCPM2] 已保存生成音频: {saved_output_path}")
-            with open(saved_output_path, "rb") as f:
-                return f.read()
+            with open(output_path, "rb") as file:
+                return file.read()
         finally:
             terminate_process_group(proc, "VoxCPM2")
             for path in (request_path, output_path):
@@ -573,10 +583,10 @@ async def health():
             "voice_design_worker_script": VOXCPM2_VOICE_DESIGN_WORKER_SCRIPT,
             "worker_tmp_dir": VOXCPM2_WORKER_TMP_DIR,
             "output_dir": VOXCPM2_OUTPUT_DIR,
+            "clone_storage_dir": VOXCPM2_OUTPUT_DIR,
+            "timbre_storage_dir": VOXCPM2_TIMBRE_OUTPUT_DIR,
         },
         "available": {
-            # 保留 conda 字段供旧监控读取；新 worker 始终使用当前 uv 环境。
-            "conda": bool(resolve_conda_executable()),
             "python": sys.executable,
             "worker_script": os.path.isfile(VOXCPM2_WORKER_SCRIPT),
             "voice_design_worker_script": os.path.isfile(VOXCPM2_VOICE_DESIGN_WORKER_SCRIPT),
@@ -588,9 +598,8 @@ async def health():
         },
         "cuda": cuda,
         "runtime": {
-            "worker_runtime": VOXCPM2_RUNTIME,
+            "worker_runtime": "uv",
             "worker_python": sys.executable,
-            "worker_env": VOXCPM2_CONDA_ENV,
             "flash_attention": "not required; VoxCPM uses PyTorch scaled_dot_product_attention",
             "flash_attention_policy": (
                 "not required; VoxCPM uses PyTorch scaled_dot_product_attention and does not import flash_attn"
@@ -634,6 +643,11 @@ async def voxcpm2_design(request: VoxCpm2VoiceDesignRequest):
                     payload,
                     worker_script=VOXCPM2_VOICE_DESIGN_WORKER_SCRIPT,
                 )
+            saved_output_path = persist_generated_audio_bytes(
+                audio_bytes,
+                operation="voice_design",
+            )
+            print(f"[VoxCPM2] 已保存音色音频: {saved_output_path}")
             return Response(content=audio_bytes, media_type="audio/wav")
         except HTTPException:
             raise
@@ -699,6 +713,8 @@ async def synthesize_v2(request: Request):
             with manager.lock:
                 payload = manager.build_worker_payload(VoxCpm2SynthesizeRequest.model_validate(data))
                 audio_bytes = manager.run_worker(payload)
+            saved_output_path = persist_generated_audio_bytes(audio_bytes, operation="clone")
+            print(f"[VoxCPM2] 已保存生成音频: {saved_output_path}")
             return Response(content=audio_bytes, media_type="audio/wav")
         except HTTPException:
             raise
@@ -713,8 +729,7 @@ if __name__ == "__main__":
     print("==================================================")
     print("   Unitale AI 本地后端 VoxCPM2 Voice Clone")
     print("==================================================")
-    print(f"[配置] VoxCPM2 worker runtime: {VOXCPM2_RUNTIME}, python={sys.executable}")
-    print(f"[兼容] VoxCPM2 legacy Conda env: {VOXCPM2_CONDA_ENV}")
+    print(f"[配置] VoxCPM2 worker runtime: uv, python={sys.executable}")
     print(f"[配置] VoxCPM2 模型目录: {VOXCPM2_MODEL_DIR}")
     print(f"[配置] VoxCPM2 helper: {VOXCPM2_HELPER_SCRIPT}")
     print(f"[配置] prompts 目录: {PROMPTS_DIR}")

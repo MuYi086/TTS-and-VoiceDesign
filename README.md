@@ -10,25 +10,25 @@
 - Stable Audio 3 Medium：默认音效模型；根据英文提示词生成音乐或 44.1 kHz 立体声音效，端口 `8313`
 - Qwen3-TTS VoiceDesign：根据音色描述生成参考音频，独立 uv 服务端口 `8314`，路由 `/v1/qwen/design`
 - MOSS VoiceGenerator：根据音色描述生成参考音频，独立 uv 服务端口 `8315`，路由 `/v1/moss/design`
-- Step-Audio-EditX：对已上传的音频按情绪、说话风格、非语言表现等进行迭代编辑；独立 uv 服务端口 `8316`，主 API `8300` 保留兼容代理，路由 `/v1/step-audio-editx/edit`
-- MiMo TTS VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/mimo/design`
-- VoxCPM2 VoiceDesign：根据音色描述生成参考音频，走主 API 的 `/v1/voxcpm2/design`
+- MiMo TTS VoiceDesign：根据音色描述生成参考音频，独立 uv 服务端口 `8312`，路由 `/v1/mimo/design`
+- Step-Audio-EditX：对已上传的音频按情绪、说话风格、非语言表现等进行迭代编辑；独立 uv 服务端口 `8316`，完整提供上传、检查和编辑路由 `/v1/step-audio-editx/edit`
+- VoxCPM2 VoiceDesign：根据音色描述生成参考音频，走 VoxCPM2 uv 服务 `8306` 的 `/v1/voxcpm2/design`
 
-主 API、旧版兼容 wrapper/worker 和共享运行时模块位于 `api/`；Qwen3-TTS Base、Qwen3-TTS VoiceDesign、MOSS VoiceGenerator、Step-Audio-EditX、VoxCPM2、LongCat-AudioDiT 和 dots.tts-soar 分别使用各自的 uv 项目。上传资源、缓存和供应商代码位于 `api/prompts/`、`api/.cache/` 与 `api/vendor/`。所有本地 TTS 模型成功合成的 WAV 都会额外保留在 `api/tempAudio/`，文件名前缀用于区分模型；可通过 `TTS_OUTPUT_DIR` 统一覆盖，也可通过对应模型的 `*_OUTPUT_DIR` 覆盖。不要把生成音频或模型权重提交到 Git。
+主 API 位于 `main/main.py`，8300 保留控制面、共享上传/检查工具和 MiMo 兼容代理；MiMo、Step-Audio-EditX 及其他模型推理、worker 和模型专用请求处理全部位于各自目录，并由 `start.sh` 启动。上传的普通参考音频默认位于 `storage/clone/`，运行缓存位于 `storage/.cache/`；如果上传内容已经存在于 `storage/timbre/`（例如刚生成的设计音色），系统只在 `storage/timbre/.references/` 建立引用，不会再复制 WAV 到 `storage/clone/`。成功生成的音频按用途缓存到 `storage/timbre/`（音色设计）、`storage/soundEffect/`（音效）和 `storage/clone/`（克隆/语音编辑），可通过 `TIMBRE_STORAGE_DIR`、`SOUNDEFFECT_STORAGE_DIR`、`CLONE_STORAGE_DIR` 以及各服务的专用 `*_OUTPUT_DIR` 覆盖。不要把生成音频或模型权重提交到 Git。
 
 ## 本地环境
 
-主 API、MOSS-SoundEffect 8311 和 Stable Audio 3 Medium 8313 分别使用
-`qwen3_tts/`、`moss_soundEffect/` 与 `stable_audio_3_medium/` uv 项目；
+主 API、MiMo TTS 8312、MOSS-SoundEffect 8311 和 Stable Audio 3 Medium 8313 分别使用
+`qwen3_tts/`、`mimo_tts/`、`moss_soundEffect/` 与 `stable_audio_3_medium/` uv 项目；
 Qwen3-TTS 8305、Qwen3-TTS VoiceDesign 8314、MOSS VoiceGenerator 8315、
 Step-Audio-EditX 8316、VoxCPM2 8306、LongCat-AudioDiT 8307 和 dots.tts-soar 8308 服务也
-使用各自目录内的 uv 环境，由 `uv run` 启动。VoxCPM2 和旧 Stable Audio
-回退路径的 worker 继续保留各自 Conda 环境；VoxCPM2 可通过 `VOXCPM2_RUNTIME=conda` 暂时回退到 `api/voxcpm2_api.py`。
+使用各自目录内的 uv 环境，由 `uv run` 启动；旧 VoxCPM2 API/Conda 回退路径已删除。
 
-Qwen3-TTS、MOSS-SoundEffect、MOSS VoiceGenerator、Step-Audio-EditX、VoxCPM2、LongCat-AudioDiT 和 Stable Audio 3 Medium 在请求期间分别拉起一次性 worker；它们使用各自 uv 项目的 Python，其它模型使用对应专用 Conda 环境。模型在请求结束后由 worker 退出释放显存；主 API、各包装器和 worker 共享 `GPU_LOCK_FILE`，避免并发抢占 GPU。Step-Audio-EditX 仍可通过 `STEP_AUDIO_EDITX_RUNTIME=conda` 回退到旧 worker，VoxCPM2 仍可通过 `VOXCPM2_RUNTIME=conda` 回退到旧 worker，Stable Audio 3 Medium 已完全迁移到独立 uv 项目，不再依赖专用 Conda 环境。
+Qwen3-TTS、MOSS-SoundEffect、MOSS VoiceGenerator、Step-Audio-EditX、VoxCPM2、LongCat-AudioDiT 和 Stable Audio 3 Medium 在请求期间分别拉起一次性 worker，并使用各自 uv 项目的 Python。模型在请求结束后由 worker 退出释放显存；各本地模型服务和 worker 共享 `GPU_LOCK_FILE`，避免并发抢占 GPU。MiMo 是独立的云端请求服务，不加载本地模型；Step-Audio-EditX 直接由 8316 完整提供服务，不再有 8300 兼容代理。
 
 ```bash
 uv run --project qwen3_tts python qwen3_tts/worker.py ...
+uv run --project mimo_tts python mimo_tts/main.py ...
 uv run --project voxcpm2 python voxcpm2/worker.py ...
 uv run --project qwen3_voiceDesign python qwen3_voiceDesign/worker.py ...
 uv run --project moss_voiceGenerator python moss_voiceGenerator/worker.py ...
@@ -51,7 +51,7 @@ RTX 4070 Ti SUPER 的必要依赖。Stable Audio 3 Medium 的 uv 项目使用 Py
 export MIMO_API_KEY=...
 ```
 
-MiMo 是云端服务，运行后端的机器必须能连接 `https://api.xiaomimimo.com:443`。若网络需要代理，请在启动 `start.sh` 前设置标准代理环境变量，例如 `HTTPS_PROXY=http://127.0.0.1:7890`（并按需设置 `NO_PROXY=127.0.0.1,localhost`）。网络不可达时 `/v1/mimo/design` 会返回 `503` 及可操作的错误说明；这不会影响本地 Qwen 音色设计或其他本地 TTS 接口。
+MiMo 是云端服务，运行后端的机器必须能连接 `https://api.xiaomimimo.com:443`。独立服务默认监听 `8312`；`8300/v1/mimo/design` 作为兼容代理转发到 8312，成功生成的音色音频缓存到 `storage/timbre/`。若网络需要代理，请在启动 `start.sh` 前设置标准代理环境变量，例如 `HTTPS_PROXY=http://127.0.0.1:7890`（并按需设置 `NO_PROXY=127.0.0.1,localhost`）。网络不可达时 `/v1/mimo/design` 会返回 `503` 及可操作的错误说明；这不会影响本地 Qwen 音色设计或其他本地 TTS 接口。
 
 ## 模型路径
 
@@ -81,6 +81,7 @@ MiMo 是云端服务，运行后端的机器必须能连接 `https://api.xiaomim
 ```bash
 bash start.sh
 curl http://127.0.0.1:8300/v1/health
+curl http://127.0.0.1:8312/v1/health
 curl http://127.0.0.1:8305/v1/health
 curl http://127.0.0.1:8314/v1/health
 curl http://127.0.0.1:8315/v1/health
@@ -95,12 +96,13 @@ curl http://127.0.0.1:8313/v1/health
 默认服务地址：
 
 ```text
-http://127.0.0.1:8300  MiMo/VoxCPM2 音色设计与 Step-Audio-EditX 编辑
+http://127.0.0.1:8300  控制面、共享上传/检查工具与 MiMo 兼容代理
+http://127.0.0.1:8312  MiMo TTS VoiceDesign
 http://127.0.0.1:8305  Qwen3-TTS-12Hz-1.7B-Base
 http://127.0.0.1:8314  Qwen3-TTS VoiceDesign
 http://127.0.0.1:8315  MOSS VoiceGenerator
 http://127.0.0.1:8316  Step-Audio-EditX uv 服务
-http://127.0.0.1:8306  VoxCPM2
+http://127.0.0.1:8306  VoxCPM2 克隆与 VoiceDesign
 http://127.0.0.1:8307  LongCat-AudioDiT-3.5B-bf16
 http://127.0.0.1:8308  dots.tts-soar
 http://127.0.0.1:8311  MOSS-SoundEffect v2.0
@@ -136,8 +138,8 @@ Stable Audio 提示词。短而具体的音效应使用与实际声音相符的�
 `STABLE_AUDIO_3_MEDIUM_DEFAULT_SECONDS`、`STABLE_AUDIO_3_MEDIUM_DEFAULT_STEPS`、
 `STABLE_AUDIO_3_MEDIUM_DEFAULT_CFG_SCALE`、`STABLE_AUDIO_3_MEDIUM_DEFAULT_SEED` 和
 `STABLE_AUDIO_3_MEDIUM_REQUEST_TIMEOUT` 覆盖配置；输出目录可由
-`STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR` 或 `TTS_OUTPUT_DIR` 覆盖。设置
-旧 `api/stable_audio_3_medium_api.py` 和 worker 已在迁移确认后移除；8313
+`STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR` 覆盖，默认保存到 `storage/soundEffect`。设置
+旧 Stable Audio 3 Medium API 和 worker 已在迁移确认后移除；8313
 现在只由 `stable_audio_3_medium/` uv 项目提供服务。
 
 ## 语音合成接口
@@ -173,24 +175,24 @@ VoxCPM2 的 `ultimate` 与 `controllable` 请求路径严格互斥：前者用�
 
 `8306` 还支持 `nonverbal_tags`（数组，最多一个）。仅接受官方标签 `laughing`、`sigh`、`Uhm`、`Shh`、`Question-ah`、`Question-ei`、`Question-en`、`Question-oh`、`Surprise-wa`、`Surprise-yo`、`Dissatisfaction-hnn`，且只能配合 `clone_mode="controllable"` 使用。worker 会把最终目标文本拼为 `(control_instruction)[tag]正文`（无控制或标签时省略相应前缀），并在每个文本分片调用模型前向终端打印该最终文本、分片序号和克隆模式；不会打印参考音频转写。
 
-参考音频上传按内容 `sha256` 校验，不再只按文件名判断是否存在；同名音频更新后会自动覆盖服务端旧缓存。`GET /v1/check/audio` 返回 `sha256` 和 `size_bytes`，供 WebUI 判断是否需要重新上传。
+参考音频上传按内容 `sha256` 校验，不再只按文件名判断是否存在；同名音频更新后会自动覆盖服务端旧缓存。各独立服务（包括 Step-Audio-EditX）的 `GET /v1/check/audio` 返回服务自身的音频存在状态，供 WebUI 判断是否需要重新上传。
 
-VoxCPM2 可直接在 [`voxcpm2/main.py`](voxcpm2/main.py) 顶部修改集中默认值：`cfg_value`、`inference_timesteps`、`normalize`、`denoise`、`retry_badcase`、`load_denoiser`、`optimize`、`device`、`seed`、分片长度、分片停顿和超时。`start.sh` 默认启动 `voxcpm2/` uv 服务；如启动前设置 `VOXCPM2_RUNTIME=conda`，则回退到注释保留的 `api/voxcpm2_api.py`。`denoise=true` 时会自动启用 `load_denoiser`。
+VoxCPM2 可直接在 [`voxcpm2/main.py`](voxcpm2/main.py) 顶部修改集中默认值：`cfg_value`、`inference_timesteps`、`normalize`、`denoise`、`retry_badcase`、`load_denoiser`、`optimize`、`device`、`seed`、分片长度、分片停顿和超时。`start.sh` 始终通过 `voxcpm2/` uv 服务启动 VoxCPM2；`denoise=true` 时会自动启用 `load_denoiser`。
 
-每个本地 TTS 与 Stable Audio 3 Medium 端点成功后都会保留一份原始 WAV 到输出目录，接口响应内容不变。默认目录为 `api/tempAudio/`，文件名前缀示例为 `qwen3_tts`、`voxcpm2`、`longcat_audiodit`、`dots_tts_soar` 或 `stable_audio_3_medium`。此目录不会自动清理，完成后请按需要转移或删除文件；`VOXCPM2_OUTPUT_DIR` 继续兼容旧版 VoxCPM2 专用配置。
+每个本地语音克隆、音色设计、语音编辑和音效端点成功后都会保留一份原始 WAV，接口响应内容不变：音色设计写入 `storage/timbre/`，MOSS/Stable Audio 音效写入 `storage/soundEffect/`，克隆和 Step-Audio-EditX 语音写入 `storage/clone/`。这些目录不会自动清理，完成后请按需要转移或删除文件；各服务的专用 `*_OUTPUT_DIR` 仍可覆盖默认目录。
 
 ## Step-Audio-EditX 编辑接口
 
-Step-Audio-EditX 使用上传到 `8300` 的音频作为 prompt。先通过 `POST /v1/upload_audio` 上传音频，再调用：
+Step-Audio-EditX 使用 8316 自身上传的音频作为 prompt。先通过 `POST /v1/upload_audio` 上传音频，再调用 8316 的编辑接口：
 
 ```bash
-curl -X POST http://127.0.0.1:8300/v1/step-audio-editx/edit \
+curl -X POST http://127.0.0.1:8316/v1/step-audio-editx/edit \
   -H 'Content-Type: application/json' \
   -d '{"prompt_audio":"step-audio-editx/line-1.wav","prompt_text":"这是一条台词。","generated_text":"这是一条台词。","edit_type":"emotion","edit_info":"coldness"}' \
   -o edited.wav
 ```
 
-请求字段 `edit_type`、`edit_info` 分别映射官方命令行的 `--edit-type`、`--edit-info`。`emotion`、`style` 与 `speed` 需要非空 `edit_info`；`paralinguistic` 使用目标文本中的官方标签；`denoise` 与 `vad` 不要求文本。`start.sh` 默认启动 `Step_Audio_EditX/` 的 uv 服务到 `8316`，主 API `8300` 的同路径会代理到该服务，因此 WebUI 无需修改地址；启动脚本使用 `uv run --no-sync`，请先完成一次 `uv sync --project Step_Audio_EditX --locked`。模型、tokenizer、官方源码和推理参数可分别通过 `STEP_AUDIO_EDITX_MODEL_DIR`、`STEP_AUDIO_TOKENIZER_PATH`、`STEP_AUDIO_EDITX_CODE_PATH`、`STEP_AUDIO_EDITX_*` 覆盖。单次音频建议不超过 30 秒。
+请求字段 `edit_type`、`edit_info` 分别映射官方命令行的 `--edit-type`、`--edit-info`。`emotion`、`style` 与 `speed` 需要非空 `edit_info`；`paralinguistic` 使用目标文本中的官方标签；`denoise` 与 `vad` 不要求文本。`start.sh` 默认启动 `Step_Audio_EditX/` 的 uv 服务到 `8316`，该服务完整提供 `/v1/upload_audio`、`/v1/check/audio` 和 `/v1/step-audio-editx/edit`，不再经过 8300 代理；启动脚本使用 `uv run --no-sync`，请先完成一次 `uv sync --project Step_Audio_EditX --locked`。模型、tokenizer、官方源码和推理参数可分别通过 `STEP_AUDIO_EDITX_MODEL_DIR`、`STEP_AUDIO_TOKENIZER_PATH`、`STEP_AUDIO_EDITX_CODE_PATH`、`STEP_AUDIO_EDITX_*` 覆盖。单次音频建议不超过 30 秒。
 
 Step-Audio-EditX 当前不要求安装 `flash_attn`：本机 uv/Conda 环境均未安装该模块，上游推理路径固定使用 `VLLM_ATTENTION_BACKEND=TRITON_ATTN`，并默认 `enforce_eager=1`；`/v1/health` 会报告 `flash_attn` 状态和该策略。`/home/muyi086/tts-depency/flash-attention` 是源码仓库，不等于已安装且可加载的扩展；只有后续实测需要 FlashAttention 性能优化时，才应针对当前 Torch/CUDA/Python 编译并单独做 canary。
 
@@ -226,12 +228,12 @@ curl -X POST http://127.0.0.1:8315/v1/moss/design \
   -d '{"voice_description":"成年女性，温柔、清晰，语速中等。","text":"你好。"}' \
   -o moss_reference.wav
 
-curl -X POST http://127.0.0.1:8300/v1/voxcpm2/design \
+curl -X POST http://127.0.0.1:8306/v1/voxcpm2/design \
   -H 'Content-Type: application/json' \
   -d '{"voice_description":"成年女性，声音清晰自然，语速中等。","text":"你好。"}' \
   -o voxcpm2_reference.wav
 
-curl -X POST http://127.0.0.1:8300/v1/mimo/design \
+curl -X POST http://127.0.0.1:8312/v1/mimo/design \
   -H 'Content-Type: application/json' \
   -d '{"voice_description":"成年女性，声音清晰自然，语速中等。","text":"你好。"}' \
   -o mimo_reference.wav
@@ -239,8 +241,8 @@ curl -X POST http://127.0.0.1:8300/v1/mimo/design \
 
 WebUI 的“脚本制作”页默认选择 `stable-audio-3-medium`（8313），也可切换至 `moss-soundEffect-v2`（8311）。剧本分析会为每项 SoundEffect 计划同时保存中文 `prompt` 和英文
 `prompt_en`；选择 MOSS 时发送中文字段，选择 Medium 时发送英文字段。下方“生成全部 SoundEffect
-音效”会顺序调用当前下拉框选中的模型；生成结果由页面存入工程资产库，Stable Audio 服务端也会同步保留
-原始 WAV 到 `api/tempAudio/`。
+音效”会顺序调用当前下拉框选中的模型；生成结果由页面存入工程资产库，服务端也会同步保留原始 WAV 到
+`storage/soundEffect/`。
 
 MOSS VoiceGenerator 必须搭配官方的 **MOSS-Audio-Tokenizer（v1，24 kHz、单声道）**；`MOSS-Audio-Tokenizer-v2` 是 48 kHz 双声道 codec，不能用于当前 1.7B VoiceGenerator，否则会产生非语音噪声。可通过 `MOSS_AUDIO_TOKENIZER_PATH` 覆盖默认路径。
 
@@ -254,7 +256,7 @@ HF_ENDPOINT=https://hf-mirror.com hf download OpenMOSS-Team/MOSS-Audio-Tokenizer
 
 下载完成后，`GET http://127.0.0.1:8315/v1/health` 中的 `available.moss_audio_tokenizer` 应为 `true`，再重启 `bash start.sh`。worker 现在会在加载 Transformers 前检查 codec 的 `model_type`、24 kHz 单声道配置和权重完整性，并对不完整目录给出明确错误。
 
-VoxCPM2 音色设计由 `voxcpm2/main.py` 与 `voxcpm2/voice_design_worker.py` 处理，不与克隆 worker 或 Qwen / MiMo 逻辑混用；8300 的 `api/voxcpm2_voice_design.py` 仅保留兼容代理和 Conda 回退。它按照官方文档将音色描述编码为 `(音色描述)正文` 后调用 `model.generate()`。官方示例中的 `seed=42` 是可复现示例值，不是质量专用值；本项目克隆与音色设计默认不固定随机种子，需要复现实例时可通过请求显式传入 `seed=42`。
+VoxCPM2 音色设计由 `voxcpm2/main.py` 与 `voxcpm2/voice_design_worker.py` 处理，不与克隆 worker 或 Qwen / MiMo 逻辑混用，直接通过 8306 提供服务。它按照官方文档将音色描述编码为 `(音色描述)正文` 后调用 `model.generate()`。官方示例中的 `seed=42` 是可复现示例值，不是质量专用值；本项目克隆与音色设计默认不固定随机种子，需要复现实例时可通过请求显式传入 `seed=42`。
 
 ## 本地回归测试
 

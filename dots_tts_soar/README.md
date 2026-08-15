@@ -11,8 +11,8 @@ uv sync --project dots_tts_soar --locked
 uv run --project dots_tts_soar python dots_tts_soar/main.py
 ```
 
-模型默认读取 `$HF_MIRROR_DIR/rednote-hilab/dots.tts-soar`，参考音频、缓存和输出
-目录继续使用根项目的 `api/prompts/`、`api/.cache/runtime/` 和 `api/tempAudio/`。
+模型默认读取 `$HF_MIRROR_DIR/rednote-hilab/dots.tts-soar`，参考音频和克隆输出
+目录使用根项目的 `storage/clone/`，运行缓存使用 `storage/.cache/runtime/`。
 可以通过 `DOTS_TTS_SOAR_MODEL_DIR`、`PROMPTS_DIR`、`RUNTIME_CACHE_DIR`、
 `GPU_LOCK_FILE` 和现有 `DOTS_TTS_SOAR_*` 参数覆盖。
 
@@ -44,4 +44,4 @@ CUDA 和 GPU 架构单独编译并做 canary，不要在默认迁移路径中编
 ## 迁移状态
 
 dots.tts-soar 已完成迁移，`start.sh` 固定使用本目录的 uv 项目启动 8308
-服务。旧 `api/dots_tts_soar_api.py`、旧 worker 和对应 Conda 环境均已移除。
+服务。旧 API、worker 和对应 Conda 环境均已移除。

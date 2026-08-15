@@ -27,10 +27,8 @@ from gpu_runtime import cuda_status, terminate_process_group
 # ==========================================
 # 0. 系统配置
 # ==========================================
-API_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_DIR = os.path.dirname(API_DIR)
-
-
+SERVICE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_DIR = os.path.dirname(SERVICE_DIR)
 def env_bool(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -68,9 +66,19 @@ def normalize_optional_text(value: Optional[str]) -> Optional[str]:
     return normalized
 
 
+STORAGE_DIR = expand_path(os.getenv("STORAGE_DIR", os.path.join(PROJECT_DIR, "storage")))
+CLONE_STORAGE_DIR = expand_path(
+    os.getenv("CLONE_STORAGE_DIR", os.path.join(STORAGE_DIR, "clone"))
+)
+TIMBRE_STORAGE_DIR = expand_path(
+    os.getenv("TIMBRE_STORAGE_DIR", os.path.join(STORAGE_DIR, "timbre"))
+)
+TIMBRE_REFERENCE_DIR = os.path.join(TIMBRE_STORAGE_DIR, ".references")
 HF_MIRROR_DIR = expand_path(os.getenv("HF_MIRROR_DIR", "~/hf-mirror"))
-PROMPTS_DIR = expand_path(os.getenv("PROMPTS_DIR", os.path.join(PROJECT_DIR, "api", "prompts")))
-RUNTIME_CACHE_DIR = expand_path(os.getenv("RUNTIME_CACHE_DIR", os.path.join(PROJECT_DIR, "api", ".cache/runtime")))
+PROMPTS_DIR = expand_path(os.getenv("PROMPTS_DIR", CLONE_STORAGE_DIR))
+RUNTIME_CACHE_DIR = expand_path(
+    os.getenv("RUNTIME_CACHE_DIR", os.path.join(STORAGE_DIR, ".cache/runtime"))
+)
 GPU_LOCK_FILE = expand_path(os.getenv("GPU_LOCK_FILE", os.path.join(RUNTIME_CACHE_DIR, "gpu-runtime.lock")))
 LOCAL_FILES_ONLY = env_bool("LOCAL_FILES_ONLY", True)
 CUDA_RELEASE_DELAY = float(os.getenv("CUDA_RELEASE_DELAY", "2.0"))
@@ -182,16 +190,18 @@ QWEN3_TTS_TRIM_LEADING_SILENCE_MAX_MS = int(
 QWEN3_TTS_REQUEST_TIMEOUT = float(
     os.getenv("QWEN3_TTS_REQUEST_TIMEOUT", str(QWEN3_TTS_REQUEST_TIMEOUT_DEFAULT))
 )
-QWEN3_TTS_WORKER_SCRIPT = os.path.join(API_DIR, "worker.py")
+QWEN3_TTS_WORKER_SCRIPT = os.path.join(SERVICE_DIR, "worker.py")
 QWEN3_TTS_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "qwen3_tts_worker")
 QWEN3_TTS_OUTPUT_DIR = expand_path(
     os.getenv(
         "QWEN3_TTS_OUTPUT_DIR",
-        os.getenv("TTS_OUTPUT_DIR", os.path.join(PROJECT_DIR, "api", "tempAudio")),
+        CLONE_STORAGE_DIR,
     )
 )
 QWEN3_TTS_USE_QWEN_LIBS = env_bool("QWEN3_TTS_USE_QWEN_LIBS", False)
-QWEN_LIBS_PATH = expand_path(os.getenv("QWEN_LIBS", os.path.join(PROJECT_DIR, "api", "vendor/qwen_libs")))
+QWEN_LIBS_PATH = expand_path(
+    os.getenv("QWEN_LIBS", os.path.join(SERVICE_DIR, "vendor/qwen_libs"))
+)
 
 os.environ.setdefault("HF_HOME", HF_MIRROR_DIR)
 os.environ.setdefault("HF_MODULES_CACHE", os.path.join(RUNTIME_CACHE_DIR, "hf_modules"))
@@ -203,6 +213,8 @@ if LOCAL_FILES_ONLY:
     os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 os.makedirs(PROMPTS_DIR, exist_ok=True)
+os.makedirs(TIMBRE_STORAGE_DIR, exist_ok=True)
+os.makedirs(TIMBRE_REFERENCE_DIR, exist_ok=True)
 os.makedirs(os.environ["HF_MODULES_CACHE"], exist_ok=True)
 os.makedirs(os.environ["NUMBA_CACHE_DIR"], exist_ok=True)
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
@@ -241,8 +253,56 @@ def hash_filename(filename: str) -> str:
     return f"{h}{ext}"
 
 
+def clone_prompt_audio_path(filename: str) -> str:
+    return os.path.join(PROMPTS_DIR, hash_filename(filename))
+
+
+def timbre_reference_map_path(filename: str) -> str:
+    return os.path.join(TIMBRE_REFERENCE_DIR, f"{hash_filename(filename)}.path")
+
+
+def prompt_audio_path(filename: str) -> str:
+    """Resolve clone uploads, or a timbre asset referenced for clone preview."""
+    clone_path = clone_prompt_audio_path(filename)
+    if os.path.isfile(clone_path):
+        return clone_path
+
+    reference_path = timbre_reference_map_path(filename)
+    if os.path.isfile(reference_path):
+        with open(reference_path, "r", encoding="utf-8") as reference_file:
+            timbre_path = reference_file.read().strip()
+        if timbre_path and os.path.isfile(timbre_path):
+            return timbre_path
+    return clone_path
+
+
+def file_sha256(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def find_matching_timbre_audio(content: bytes) -> Optional[str]:
+    """Find an existing designed voice without copying it into clone storage."""
+    content_digest = hashlib.sha256(content).hexdigest()
+    with os.scandir(TIMBRE_STORAGE_DIR) as entries:
+        for entry in entries:
+            if not entry.is_file() or not entry.name.lower().endswith(".wav"):
+                continue
+            if file_sha256(entry.path) == content_digest:
+                return entry.path
+    return None
+
+
 def prompt_text_sidecar_path(filename: str) -> str:
-    return os.path.join(PROMPTS_DIR, f"{hash_filename(filename)}.prompt.txt")
+    clone_sidecar_path = os.path.join(PROMPTS_DIR, f"{hash_filename(filename)}.prompt.txt")
+    if os.path.isfile(clone_prompt_audio_path(filename)):
+        return clone_sidecar_path
+    if os.path.isfile(timbre_reference_map_path(filename)):
+        return os.path.join(TIMBRE_REFERENCE_DIR, f"{hash_filename(filename)}.prompt.txt")
+    return clone_sidecar_path
 
 
 def load_prompt_text_sidecar(filename: str) -> Optional[str]:
@@ -338,9 +398,10 @@ class Qwen3TtsWorkerManager:
     def __init__(self):
         self.lock = threading.RLock()
         self.last_error: Optional[str] = None
+        self.last_output_path: Optional[str] = None
 
     def build_worker_payload(self, request: Qwen3TtsSynthesizeRequest) -> dict:
-        ref_audio_path = os.path.join(PROMPTS_DIR, hash_filename(request.audio_path))
+        ref_audio_path = prompt_audio_path(request.audio_path)
         if not os.path.isfile(ref_audio_path):
             raise HTTPException(status_code=404, detail="音频不存在")
 
@@ -412,6 +473,7 @@ class Qwen3TtsWorkerManager:
         }
 
     def run_worker(self, payload: dict) -> bytes:
+        self.last_output_path = None
         python_executable = sys.executable
         if not python_executable or not os.path.isfile(python_executable):
             raise RuntimeError("未找到 qwen3_tts uv 环境的 Python 解释器，无法调用 Qwen3-TTS worker。")
@@ -482,7 +544,7 @@ class Qwen3TtsWorkerManager:
                 "qwen3_tts",
                 QWEN3_TTS_OUTPUT_DIR,
             )
-            print(f"[Qwen3-TTS] 已保存生成音频: {saved_output_path}")
+            self.last_output_path = str(saved_output_path)
             self.last_error = None
             return audio_bytes
         except Exception as exc:
@@ -572,9 +634,24 @@ async def upload_audio(
     prompt_text: Optional[str] = Form(None),
 ):
     content = await audio.read()
-    save_path = os.path.join(PROMPTS_DIR, hash_filename(full_path))
-    with open(save_path, "wb") as f:
-        f.write(content)
+    clone_path = clone_prompt_audio_path(full_path)
+    timbre_path = find_matching_timbre_audio(content)
+    if timbre_path:
+        # The same designed voice may be uploaded again for clone preview. Keep
+        # the actual WAV only in timbre storage and persist a small resolver map.
+        if os.path.isfile(clone_path):
+            os.remove(clone_path)
+        clone_sidecar_path = os.path.join(PROMPTS_DIR, f"{hash_filename(full_path)}.prompt.txt")
+        if os.path.isfile(clone_sidecar_path):
+            os.remove(clone_sidecar_path)
+        with open(timbre_reference_map_path(full_path), "w", encoding="utf-8") as reference_file:
+            reference_file.write(timbre_path)
+    else:
+        reference_map_path = timbre_reference_map_path(full_path)
+        if os.path.isfile(reference_map_path):
+            os.remove(reference_map_path)
+        with open(clone_path, "wb") as f:
+            f.write(content)
 
     normalized_prompt_text = prompt_text.strip() if prompt_text and prompt_text.strip() else None
     save_prompt_text_sidecar(full_path, normalized_prompt_text)
@@ -589,7 +666,7 @@ async def upload_audio(
 
 @app.get("/v1/check/audio")
 async def check_audio_exists(file_name: str):
-    exists = os.path.isfile(os.path.join(PROMPTS_DIR, hash_filename(file_name)))
+    exists = os.path.isfile(prompt_audio_path(file_name))
     return {
         "code": 200 if exists else 404,
         "exists": exists,
@@ -603,7 +680,17 @@ async def synthesize_v2(request: Qwen3TtsSynthesizeRequest):
         with manager.lock:
             try:
                 payload = manager.build_worker_payload(request)
+                manager.last_output_path = None
                 audio_bytes = manager.run_worker(payload)
+                if manager.last_output_path is None:
+                    saved_output_path = persist_audio_bytes(
+                        audio_bytes,
+                        "qwen3_tts",
+                        QWEN3_TTS_OUTPUT_DIR,
+                    )
+                else:
+                    saved_output_path = manager.last_output_path
+                print(f"[Qwen3-TTS] 已保存生成音频: {saved_output_path}")
                 return Response(content=audio_bytes, media_type="audio/wav")
             except HTTPException:
                 raise

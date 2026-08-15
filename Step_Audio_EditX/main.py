@@ -28,6 +28,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field, model_validator
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from audio_output import persist_audio_bytes
 from step_audio_editx_runtime import (
     cuda_status,
     env_bool,
@@ -41,11 +42,15 @@ from step_audio_editx_runtime import (
 PROJECT_DIR = Path(__file__).resolve().parent
 REPOSITORY_DIR = PROJECT_DIR.parent
 HF_MIRROR_DIR = expand_path(os.getenv("HF_MIRROR_DIR", "~/hf-mirror"))
+STORAGE_DIR = expand_path(os.getenv("STORAGE_DIR", str(REPOSITORY_DIR / "storage")))
+CLONE_STORAGE_DIR = expand_path(
+    os.getenv("CLONE_STORAGE_DIR", str(Path(STORAGE_DIR) / "clone"))
+)
 PROMPTS_DIR = expand_path(
-    os.getenv("PROMPTS_DIR", str(REPOSITORY_DIR / "api" / "prompts"))
+    os.getenv("PROMPTS_DIR", CLONE_STORAGE_DIR)
 )
 RUNTIME_CACHE_DIR = expand_path(
-    os.getenv("RUNTIME_CACHE_DIR", str(REPOSITORY_DIR / "api/.cache/runtime"))
+    os.getenv("RUNTIME_CACHE_DIR", str(Path(STORAGE_DIR) / ".cache/runtime"))
 )
 GPU_LOCK_FILE = expand_path(
     os.getenv("GPU_LOCK_FILE", os.path.join(RUNTIME_CACHE_DIR, "gpu-runtime.lock"))
@@ -77,6 +82,9 @@ TOKENIZER_PATH = expand_path(
 CODE_PATH = expand_path(
     os.getenv("STEP_AUDIO_EDITX_CODE_PATH", "~/tts-depency/Step-Audio-EditX")
 )
+STEP_AUDIO_EDITX_OUTPUT_DIR = expand_path(
+    os.getenv("STEP_AUDIO_EDITX_OUTPUT_DIR", CLONE_STORAGE_DIR)
+)
 DTYPE = os.getenv("STEP_AUDIO_EDITX_DTYPE", "bfloat16")
 MAX_MODEL_LEN = int(os.getenv("STEP_AUDIO_EDITX_MAX_MODEL_LEN", "3072"))
 GPU_MEMORY_UTILIZATION = float(
@@ -90,7 +98,7 @@ EDIT_TYPES = frozenset(
     {"emotion", "style", "paralinguistic", "denoise", "vad", "speed"}
 )
 
-for directory in (PROMPTS_DIR, WORKER_TMP_DIR):
+for directory in (PROMPTS_DIR, WORKER_TMP_DIR, STEP_AUDIO_EDITX_OUTPUT_DIR):
     os.makedirs(directory, exist_ok=True)
 os.makedirs(os.path.dirname(GPU_LOCK_FILE) or ".", exist_ok=True)
 
@@ -317,6 +325,7 @@ async def health():
             "worker_script": WORKER_SCRIPT,
             "worker_tmp_dir": WORKER_TMP_DIR,
             "prompts_dir": PROMPTS_DIR,
+            "clone_storage_dir": STEP_AUDIO_EDITX_OUTPUT_DIR,
             "gpu_lock_file": GPU_LOCK_FILE,
         },
         "available": {
@@ -382,6 +391,12 @@ def step_audio_editx_edit(request: StepAudioEditXEditRequest):
             try:
                 payload = manager.build_worker_payload(request, prompt_path)
                 audio_bytes = manager.run_worker(payload)
+                saved_output_path = persist_audio_bytes(
+                    audio_bytes,
+                    "step_audio_editx",
+                    STEP_AUDIO_EDITX_OUTPUT_DIR,
+                )
+                print(f"[Step-Audio-EditX] 已保存语音音频: {saved_output_path}")
                 return Response(content=audio_bytes, media_type="audio/wav")
             except FileNotFoundError as exc:
                 raise HTTPException(status_code=404, detail=str(exc)) from exc

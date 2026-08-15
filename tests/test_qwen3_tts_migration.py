@@ -19,6 +19,9 @@ TEST_ROOT = Path(TEST_RUNTIME.name)
 os.environ.update(
     {
         "PROMPTS_DIR": str(TEST_ROOT / "prompts"),
+        "STORAGE_DIR": str(TEST_ROOT / "storage"),
+        "TIMBRE_STORAGE_DIR": str(TEST_ROOT / "storage" / "timbre"),
+        "TTS_OUTPUT_DIR": str(TEST_ROOT / "legacy-clone"),
         "RUNTIME_CACHE_DIR": str(TEST_ROOT / "cache"),
         "GPU_LOCK_FILE": str(TEST_ROOT / "cache" / "gpu.lock"),
         "QWEN3_TTS_OUTPUT_DIR": str(TEST_ROOT / "output"),
@@ -91,6 +94,37 @@ class Qwen3TtsMigrationTests(unittest.TestCase):
                 encoding="utf-8"
             ),
             prompt_text,
+        )
+
+    def test_timbre_reference_upload_does_not_copy_audio_to_clone(self) -> None:
+        from fastapi.testclient import TestClient
+
+        filename = "designed-voice.wav"
+        content = b"RIFF" + b"\x05\x06" * 32
+        timbre_path = TEST_ROOT / "storage" / "timbre" / "qwen_voicedesign_fixture.wav"
+        timbre_path.write_bytes(content)
+
+        response = TestClient(main.app).post(
+            "/v1/upload_audio",
+            files={"audio": (filename, io.BytesIO(content), "audio/wav")},
+            data={"full_path": filename, "prompt_text": "设计音色参考文本。"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        clone_path = TEST_ROOT / "prompts" / main.hash_filename(filename)
+        self.assertFalse(clone_path.exists())
+        self.assertEqual(main.prompt_audio_path(filename), str(timbre_path))
+        checked = TestClient(main.app).get("/v1/check/audio", params={"file_name": filename})
+        self.assertEqual(checked.status_code, 200)
+        self.assertTrue(checked.json()["exists"])
+        self.assertEqual(
+            main.load_prompt_text_sidecar(filename),
+            "设计音色参考文本。",
+        )
+        payload = main.Qwen3TtsSynthesizeRequest(text="你好。", audio_path=filename)
+        self.assertEqual(
+            main.manager.build_worker_payload(payload)["ref_audio_path"],
+            str(timbre_path),
         )
 
     def test_request_contract_rejects_style_prompt(self) -> None:

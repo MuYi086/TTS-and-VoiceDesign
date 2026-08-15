@@ -1,0 +1,9 @@
+# Runtime audio and cache files are intentionally kept out of Git.
+*
+!.gitignore
+!timbre/
+!timbre/.gitkeep
+!soundEffect/
+!soundEffect/.gitkeep
+!clone/
+!clone/.gitkeep

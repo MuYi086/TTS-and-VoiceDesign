@@ -211,38 +211,17 @@ class StepAudioEditXMigrationTests(unittest.TestCase):
                 main.manager.run_worker(payload)
         self.assertEqual(list(Path(main.WORKER_TMP_DIR).iterdir()), [])
 
-    def test_legacy_main_api_proxies_to_uv_without_changing_webui_route(self) -> None:
-        from fastapi.testclient import TestClient
-
-        api_dir = REPOSITORY_DIR / "api"
-        sys.path.insert(0, str(api_dir))
-        os.environ["STEP_AUDIO_EDITX_RUNTIME"] = "uv"
-        os.environ["STEP_AUDIO_EDITX_UV_BASE_URL"] = "http://127.0.0.1:8316"
-        spec = importlib.util.spec_from_file_location(
-            "legacy_main_api_for_step_audio_editx_test", api_dir / "api.py"
+    def test_legacy_api_proxy_is_removed(self) -> None:
+        main_dir = REPOSITORY_DIR / "main"
+        self.assertFalse((main_dir / "step_audio_editx.py").exists())
+        self.assertNotIn(
+            "/v1/step-audio-editx/edit",
+            (main_dir / "main.py").read_text(encoding="utf-8"),
         )
-        assert spec and spec.loader
-        legacy_api = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = legacy_api
-        spec.loader.exec_module(legacy_api)
-
-        with patch.object(
-            legacy_api.step_audio_editx_manager,
-            "run_uv_service",
-            return_value=b"RIFF" + b"\0" * 40,
-        ) as proxy:
-            response = TestClient(legacy_api.app).post(
-                "/v1/step-audio-editx/edit",
-                json={
-                    "prompt_audio": self.prompt_name,
-                    "prompt_text": "这是一条测试台词。",
-                    "edit_type": "emotion",
-                    "edit_info": "calmness",
-                },
-            )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.headers["content-type"], "audio/wav")
-        proxy.assert_called_once()
+        self.assertIn(
+            "/v1/step-audio-editx/edit",
+            (SERVICE_DIR / "main.py").read_text(encoding="utf-8"),
+        )
 
     def test_start_script_does_not_resolve_dependencies_at_runtime(self) -> None:
         start_script = (REPOSITORY_DIR / "start.sh").read_text(encoding="utf-8")
@@ -250,6 +229,8 @@ class StepAudioEditXMigrationTests(unittest.TestCase):
             'uv run --no-sync --project "$STEP_AUDIO_EDITX_PROJECT_DIR"',
             start_script,
         )
+        self.assertNotIn("STEP_AUDIO_EDITX_UV_BASE_URL", start_script)
+        self.assertNotIn("MAIN_DIR/step_audio_editx", start_script)
 
     def test_audio_processing_dependencies_are_declared(self) -> None:
         pyproject = (SERVICE_DIR / "pyproject.toml").read_text(encoding="utf-8")

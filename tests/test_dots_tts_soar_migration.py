@@ -227,9 +227,9 @@ class DotsTtsSoarMigrationTests(unittest.TestCase):
         )
         self.assertNotIn("DOTS_TTS_SOAR_RUNTIME", script)
         self.assertNotIn("DOTS_TTS_SOAR_CONDA_ENV", script)
-        self.assertNotIn('python "$API_DIR/dots_tts_soar_api.py"', script)
-        self.assertFalse((REPOSITORY_DIR / "api/dots_tts_soar_api.py").exists())
-        self.assertFalse((REPOSITORY_DIR / "api/dots_tts_soar_worker.py").exists())
+        self.assertNotIn('python "$MAIN_DIR/dots_tts_soar_api.py"', script)
+        self.assertFalse((REPOSITORY_DIR / "main/dots_tts_soar_api.py").exists())
+        self.assertFalse((REPOSITORY_DIR / "main/dots_tts_soar_worker.py").exists())
 
 
 if __name__ == "__main__":

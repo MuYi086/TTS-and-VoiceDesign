@@ -41,6 +41,9 @@ os.environ.update(
         "HF_MIRROR_DIR": str(TEST_ROOT / "hf-mirror"),
         "MOSS_SOUNDEFFECT_MODEL_DIR": str(MODEL_DIR),
         "MOSS_SOUNDEFFECT_CODE_PATH": str(CODE_DIR),
+        "STORAGE_DIR": str(TEST_ROOT / "storage"),
+        "SOUNDEFFECT_STORAGE_DIR": str(TEST_ROOT / "storage" / "soundEffect"),
+        "TTS_OUTPUT_DIR": str(TEST_ROOT / "legacy-clone"),
         "RUNTIME_CACHE_DIR": str(CACHE_DIR),
         "GPU_LOCK_FILE": str(CACHE_DIR / "gpu.lock"),
         "LOCAL_FILES_ONLY": "1",
@@ -142,6 +145,10 @@ class MossSoundEffectMigrationTests(unittest.TestCase):
         self.assertEqual(response.headers["content-type"], "audio/wav")
         self.assertEqual(response.content, wav)
         run_worker.assert_called_once()
+        saved_files = list(main.SOUNDEFFECT_STORAGE_DIR.glob("moss_soundeffect_*.wav"))
+        self.assertTrue(saved_files)
+        self.assertTrue(all(path.parent == main.SOUNDEFFECT_STORAGE_DIR for path in saved_files))
+        self.assertFalse((TEST_ROOT / "legacy-clone").exists())
 
     def test_uv_worker_uses_current_interpreter_and_cleans_temp_files(self) -> None:
         captured: dict[str, object] = {}
@@ -193,14 +200,14 @@ class MossSoundEffectMigrationTests(unittest.TestCase):
         )
         self.assertNotIn("MOSS_SOUNDEFFECT_RUNTIME", script)
         self.assertNotIn("MOSS_SOUNDEFFECT_CONDA_ENV", script)
-        self.assertNotIn('python "$API_DIR/soundeffect_api.py"', script)
+        self.assertNotIn('python "$MAIN_DIR/soundeffect_api.py"', script)
         self.assertIn(
-            'setsid uv run --no-sync --project "$QWEN3_TTS_PROJECT_DIR" python "$API_DIR/api.py"',
+            'setsid uv run --no-sync --project "$QWEN3_TTS_PROJECT_DIR" python "$MAIN_DIR/main.py"',
             script,
         )
         self.assertNotIn('CONDA_ENV="${CONDA_ENV:-moss-soundEffect}"', script)
-        self.assertFalse((REPOSITORY_DIR / "api/soundeffect_api.py").exists())
-        self.assertFalse((REPOSITORY_DIR / "api/soundeffect_worker.py").exists())
+        self.assertFalse((REPOSITORY_DIR / "main/soundeffect_api.py").exists())
+        self.assertFalse((REPOSITORY_DIR / "main/soundeffect_worker.py").exists())
 
 
 if __name__ == "__main__":

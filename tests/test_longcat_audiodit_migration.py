@@ -205,10 +205,10 @@ class LongCatAudioDitMigrationTests(unittest.TestCase):
             'uv run --no-sync --project "$LONGCAT_AUDIODIT_PROJECT_DIR"',
             script,
         )
-        self.assertNotIn("api/longcat_audiodit_api.py", script)
+        self.assertNotIn("main/longcat_audiodit_api.py", script)
         self.assertNotIn("LONGCAT_AUDIODIT_CONDA_ENV", script)
-        self.assertFalse((REPOSITORY_DIR / "api/longcat_audiodit_api.py").exists())
-        self.assertFalse((REPOSITORY_DIR / "api/longcat_audiodit_worker.py").exists())
+        self.assertFalse((REPOSITORY_DIR / "main/longcat_audiodit_api.py").exists())
+        self.assertFalse((REPOSITORY_DIR / "main/longcat_audiodit_worker.py").exists())
 
 
 if __name__ == "__main__":

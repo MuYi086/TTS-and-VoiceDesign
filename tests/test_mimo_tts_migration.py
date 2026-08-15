@@ -1,0 +1,120 @@
+"""No-network regression tests for the standalone MiMo VoiceDesign service."""
+
+from __future__ import annotations
+
+import importlib.util
+import os
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+
+REPOSITORY_DIR = Path(__file__).resolve().parents[1]
+SERVICE_DIR = REPOSITORY_DIR / "mimo_tts"
+TEST_RUNTIME = tempfile.TemporaryDirectory(prefix="mimo-tts-tests-")
+TEST_ROOT = Path(TEST_RUNTIME.name)
+TIMBRE_DIR = TEST_ROOT / "timbre"
+TIMBRE_DIR.mkdir(parents=True, exist_ok=True)
+
+os.environ.update(
+    {
+        "STORAGE_DIR": str(TEST_ROOT / "storage"),
+        "TIMBRE_STORAGE_DIR": str(TIMBRE_DIR),
+        "RUNTIME_CACHE_DIR": str(TEST_ROOT / "cache"),
+        "MIMO_TTS_HOST": "127.0.0.1",
+        "MIMO_TTS_PORT": "8312",
+        "MIMO_MAX_RETRIES": "0",
+    }
+)
+sys.path.insert(0, str(SERVICE_DIR))
+sys.modules.pop("audio_output", None)
+spec = importlib.util.spec_from_file_location(
+    "mimo_tts_service_main_for_test", SERVICE_DIR / "main.py"
+)
+assert spec and spec.loader
+main = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = main
+spec.loader.exec_module(main)
+
+
+class MimoTtsMigrationTests(unittest.TestCase):
+    def test_routes_health_and_standalone_startup_contract(self) -> None:
+        from fastapi.testclient import TestClient
+
+        expected_routes = {
+            ("GET", "/v1/health"),
+            ("GET", "/v1/voice-design/providers"),
+            ("POST", "/v1/mimo/design"),
+        }
+        actual_routes = {
+            (method, route.path)
+            for route in main.app.routes
+            if hasattr(route, "methods")
+            for method in route.methods
+            if method in {"GET", "POST"}
+        }
+        self.assertTrue(expected_routes.issubset(actual_routes))
+
+        response = TestClient(main.app).get("/v1/health")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["paths"]["timbre_storage_dir"], str(TIMBRE_DIR))
+        self.assertEqual(payload["runtime"]["provider"], "mimo")
+
+    def test_design_route_returns_wav_and_persists_timbre_copy(self) -> None:
+        from fastapi.testclient import TestClient
+
+        wav = b"RIFF" + b"\0" * 40
+        with patch.object(main, "run_mimo_voice_design", return_value=wav):
+            response = TestClient(main.app).post(
+                "/v1/mimo/design",
+                json={
+                    "voice_description": "成年女性，温柔、清晰。",
+                    "text": "你好。",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["content-type"], "audio/wav")
+        self.assertEqual(response.content, wav)
+        saved_files = list(TIMBRE_DIR.glob("mimo_voicedesign_*.wav"))
+        self.assertTrue(saved_files)
+        self.assertEqual(saved_files[-1].read_bytes(), wav)
+
+    def test_mimo_logic_is_not_kept_in_control_plane(self) -> None:
+        control_plane_source = (REPOSITORY_DIR / "main/main.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("/v1/mimo/design", control_plane_source)
+        self.assertNotIn("run_mimo_voice_design", control_plane_source)
+        self.assertIn("forward_mimo_design_request", control_plane_source)
+        self.assertFalse((REPOSITORY_DIR / "api").exists())
+
+    def test_start_script_launches_mimo_and_direct_step_services(self) -> None:
+        start_script = (REPOSITORY_DIR / "start.sh").read_text(encoding="utf-8")
+        self.assertIn('MIMO_TTS_PROJECT_DIR="${MIMO_TTS_PROJECT_DIR:-$PROJECT_DIR/mimo_tts}"', start_script)
+        self.assertIn('uv run --no-sync --project "$MIMO_TTS_PROJECT_DIR"', start_script)
+        self.assertIn('python "$MIMO_TTS_PROJECT_DIR/main.py"', start_script)
+        self.assertIn("MIMO_TTS_PORT:-8312", start_script)
+        self.assertIn('MIMO_TTS_PROXY_URL="${MIMO_TTS_PROXY_URL:-http://127.0.0.1:$MIMO_TTS_PORT/v1/mimo/design}"', start_script)
+        self.assertIn("$STEP_AUDIO_EDITX_PORT/v1/step-audio-editx/edit", start_script)
+        for output_variable, storage_variable in (
+            ("STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR", "SOUNDEFFECT_STORAGE_DIR"),
+            ("QWEN3_TTS_OUTPUT_DIR", "CLONE_STORAGE_DIR"),
+            ("VOXCPM2_OUTPUT_DIR", "CLONE_STORAGE_DIR"),
+            ("LONGCAT_AUDIODIT_OUTPUT_DIR", "CLONE_STORAGE_DIR"),
+            ("DOTS_TTS_SOAR_OUTPUT_DIR", "CLONE_STORAGE_DIR"),
+            ("STEP_AUDIO_EDITX_OUTPUT_DIR", "CLONE_STORAGE_DIR"),
+        ):
+            self.assertIn(
+                f'export {output_variable}="${{{output_variable}:-${storage_variable}}}"',
+                start_script,
+            )
+        self.assertNotIn("$PORT/v1/mimo/design", start_script)
+        self.assertNotIn("$PORT/v1/step-audio-editx/edit", start_script)
+
+
+if __name__ == "__main__":
+    unittest.main()
