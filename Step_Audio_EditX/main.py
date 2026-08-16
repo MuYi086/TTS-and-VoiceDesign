@@ -65,7 +65,7 @@ WORKER_SCRIPT = str(PROJECT_DIR / "worker.py")
 LOCAL_FILES_ONLY = env_bool("LOCAL_FILES_ONLY", True)
 CUDA_RELEASE_DELAY = float(os.getenv("CUDA_RELEASE_DELAY", "2.0"))
 API_HOST = os.getenv("STEP_AUDIO_EDITX_HOST", os.getenv("HOST", "0.0.0.0"))
-API_PORT = int(os.getenv("STEP_AUDIO_EDITX_PORT", os.getenv("PORT", "8316")))
+API_PORT = int(os.getenv("STEP_AUDIO_EDITX_PORT", os.getenv("PORT", "8331")))
 REQUEST_TIMEOUT = float(os.getenv("STEP_AUDIO_EDITX_REQUEST_TIMEOUT", "900"))
 MODEL_DIR = expand_path(
     os.getenv(
@@ -126,7 +126,7 @@ app.add_middleware(ForceCORS)
 
 
 class StepAudioEditXEditRequest(BaseModel):
-    """Wire-compatible request schema for the former main API route."""
+    """Request schema for the standalone Step-Audio-EditX route."""
 
     prompt_text: Optional[str] = None
     prompt_audio: str = Field(
@@ -383,7 +383,7 @@ async def check_audio_exists(file_name: str):
     return {"code": 200 if exists else 404, "exists": exists}
 
 
-@app.post("/v1/step-audio-editx/edit")
+@app.post("/v1/stepAudioEditx/edit")
 def step_audio_editx_edit(request: StepAudioEditXEditRequest):
     prompt_path = prompt_audio_path(request.prompt_audio)
     with gpu_runtime_lock(GPU_LOCK_FILE, "step-audio-editx/edit"):

@@ -38,7 +38,7 @@ os.environ.update(
         "LOCAL_FILES_ONLY": "1",
         "CUDA_RELEASE_DELAY": "0",
         "STEP_AUDIO_EDITX_REQUEST_TIMEOUT": "5",
-        "STEP_AUDIO_EDITX_PORT": "8316",
+        "STEP_AUDIO_EDITX_PORT": "8331",
     }
 )
 sys.path.insert(0, str(SERVICE_DIR))
@@ -65,7 +65,7 @@ class StepAudioEditXMigrationTests(unittest.TestCase):
             ("POST", "/internal/unload_all"),
             ("POST", "/v1/upload_audio"),
             ("GET", "/v1/check/audio"),
-            ("POST", "/v1/step-audio-editx/edit"),
+            ("POST", "/v1/stepAudioEditx/edit"),
         }
         actual_routes = {
             (method, route.path)
@@ -102,7 +102,7 @@ class StepAudioEditXMigrationTests(unittest.TestCase):
         wav = b"RIFF" + b"\0" * 40
         with patch.object(main.manager, "run_worker", return_value=wav) as run_worker:
             response = TestClient(main.app).post(
-                "/v1/step-audio-editx/edit",
+                "/v1/stepAudioEditx/edit",
                 json={
                     "prompt_audio": self.prompt_name,
                     "prompt_text": "这是一条测试台词。",
@@ -215,11 +215,11 @@ class StepAudioEditXMigrationTests(unittest.TestCase):
         main_dir = REPOSITORY_DIR / "main"
         self.assertFalse((main_dir / "step_audio_editx.py").exists())
         self.assertNotIn(
-            "/v1/step-audio-editx/edit",
+            "/v1/stepAudioEditx/edit",
             (main_dir / "main.py").read_text(encoding="utf-8"),
         )
         self.assertIn(
-            "/v1/step-audio-editx/edit",
+            "/v1/stepAudioEditx/edit",
             (SERVICE_DIR / "main.py").read_text(encoding="utf-8"),
         )
 

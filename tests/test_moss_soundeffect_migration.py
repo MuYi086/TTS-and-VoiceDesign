@@ -73,8 +73,7 @@ class MossSoundEffectMigrationTests(unittest.TestCase):
         expected_routes = {
             ("GET", "/v1/health"),
             ("POST", "/internal/unload_all"),
-            ("POST", "/v1/generate"),
-            ("POST", "/v2/synthesize"),
+            ("POST", "/v1/moss/soundEffect"),
         }
         actual_routes = {
             (method, route.path)
@@ -131,13 +130,13 @@ class MossSoundEffectMigrationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             main.SoundEffectGenerateRequest(prompt="声效", seconds=31)
 
-    def test_generate_alias_returns_wav_without_model(self) -> None:
+    def test_generate_route_returns_wav_without_model(self) -> None:
         from fastapi.testclient import TestClient
 
         wav = b"RIFF" + b"\0" * 40
         with patch.object(main.manager, "run_worker", return_value=wav) as run_worker:
             response = TestClient(main.app).post(
-                "/v2/synthesize",
+                "/v1/moss/soundEffect",
                 json={"prompt": "近距离玻璃碎裂", "seconds": 1},
             )
 

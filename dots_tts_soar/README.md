@@ -1,6 +1,6 @@
 # dots.tts-soar uv 服务
 
-这是 `dots.tts-soar` 的独立 Python 3.12.13 uv 服务，默认监听 `8308`。HTTP
+这是 `dots.tts-soar` 的独立 Python 3.12.13 uv 服务，默认监听 `8324`。HTTP
 控制面在 `main.py`，模型推理在 `worker.py`；每个合成请求都会启动一个同一 uv
 环境中的 worker，完成后清理 CUDA 并退出。
 
@@ -11,8 +11,9 @@ uv sync --project dots_tts_soar --locked
 uv run --project dots_tts_soar python dots_tts_soar/main.py
 ```
 
-模型默认读取 `$HF_MIRROR_DIR/rednote-hilab/dots.tts-soar`，参考音频和克隆输出
-目录使用根项目的 `storage/clone/`，运行缓存使用 `storage/.cache/runtime/`。
+模型默认读取 `$HF_MIRROR_DIR/rednote-hilab/dots.tts-soar`，普通参考音频和克隆输出
+目录使用根项目的 `storage/clone/`；音色设计音频只使用 `storage/timbre/`，同步到本服务
+时仅在 `storage/timbre/.references/` 保存引用映射。运行缓存使用 `storage/.cache/runtime/`。
 可以通过 `DOTS_TTS_SOAR_MODEL_DIR`、`PROMPTS_DIR`、`RUNTIME_CACHE_DIR`、
 `GPU_LOCK_FILE` 和现有 `DOTS_TTS_SOAR_*` 参数覆盖。
 
@@ -23,10 +24,10 @@ uv run --project dots_tts_soar python dots_tts_soar/main.py
 - `GET /v1/health`
 - `POST /v1/upload_audio`
 - `GET /v1/check/audio?file_name=...`
-- `POST /v2/synthesize`
+- `POST /v2/dotsTTS/clone`
 - `POST /internal/unload_all`
 
-`/v2/synthesize` 成功返回 `audio/wav`，默认输出 48 kHz 单声道。`prompt_text`
+`/v2/dotsTTS/clone` 成功返回 `audio/wav`，默认输出 48 kHz 单声道。`prompt_text`
 可以直接传入，也可以使用上传时保存的 sidecar；省略参考文本时保留官方
 x-vector-only cloning 行为。
 
@@ -43,5 +44,5 @@ CUDA 和 GPU 架构单独编译并做 canary，不要在默认迁移路径中编
 
 ## 迁移状态
 
-dots.tts-soar 已完成迁移，`start.sh` 固定使用本目录的 uv 项目启动 8308
+dots.tts-soar 已完成迁移，`start.sh` 固定使用本目录的 uv 项目启动 8324
 服务。旧 API、worker 和对应 Conda 环境均已移除。

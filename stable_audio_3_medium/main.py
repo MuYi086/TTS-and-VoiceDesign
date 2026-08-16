@@ -72,7 +72,7 @@ GPU_LOCK_FILE = expand_path(os.getenv("GPU_LOCK_FILE", str(RUNTIME_CACHE_DIR / "
 LOCAL_FILES_ONLY = env_bool("LOCAL_FILES_ONLY", True)
 CUDA_RELEASE_DELAY = float(os.getenv("CUDA_RELEASE_DELAY", "2.0"))
 API_HOST = os.getenv("HOST", "0.0.0.0")
-API_PORT = int(os.getenv("PORT", "8313"))
+API_PORT = int(os.getenv("PORT", "8311"))
 
 STABLE_AUDIO_3_MEDIUM_MODEL_DIR = expand_path(
     os.getenv(
@@ -339,8 +339,7 @@ async def internal_unload_all(request: Request) -> JSONResponse:
     )
 
 
-@app.post("/v1/generate")
-@app.post("/v2/synthesize")
+@app.post("/v1/stableAudio/soundEffect")
 async def generate(request: StableAudio3MediumGenerateRequest) -> Response:
     """Generate a WAV while serializing access to the shared GPU."""
     with gpu_runtime_lock(GPU_LOCK_FILE, "stable_audio_3_medium/generate"):

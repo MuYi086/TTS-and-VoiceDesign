@@ -46,7 +46,7 @@ class Qwen3TtsMigrationTests(unittest.TestCase):
             ("POST", "/internal/unload_all"),
             ("POST", "/v1/upload_audio"),
             ("GET", "/v1/check/audio"),
-            ("POST", "/v2/synthesize"),
+            ("POST", "/v1/qwen/clone"),
         }
         actual_routes = {
             (method, route.path)

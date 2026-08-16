@@ -97,26 +97,26 @@ export MIMO_RETRY_MAX_SECONDS="${MIMO_RETRY_MAX_SECONDS:-60}"
 export HOST="${HOST:-0.0.0.0}"
 export PORT="${PORT:-8300}"
 export MIMO_TTS_HOST="${MIMO_TTS_HOST:-$HOST}"
-export MIMO_TTS_PORT="${MIMO_TTS_PORT:-8312}"
-export MIMO_TTS_PROXY_URL="${MIMO_TTS_PROXY_URL:-http://127.0.0.1:$MIMO_TTS_PORT/v1/mimo/design}"
+export MIMO_TTS_PORT="${MIMO_TTS_PORT:-8303}"
+export MIMO_TTS_PROXY_URL="${MIMO_TTS_PROXY_URL:-http://127.0.0.1:$MIMO_TTS_PORT/v1/mimo/timbre}"
 export STEP_AUDIO_EDITX_HOST="${STEP_AUDIO_EDITX_HOST:-$HOST}"
-export STEP_AUDIO_EDITX_PORT="${STEP_AUDIO_EDITX_PORT:-8316}"
+export STEP_AUDIO_EDITX_PORT="${STEP_AUDIO_EDITX_PORT:-8331}"
 export SOUNDEFFECT_HOST="${SOUNDEFFECT_HOST:-$HOST}"
-export SOUNDEFFECT_PORT="${SOUNDEFFECT_PORT:-8311}"
+export SOUNDEFFECT_PORT="${SOUNDEFFECT_PORT:-8312}"
 export STABLE_AUDIO_3_MEDIUM_HOST="${STABLE_AUDIO_3_MEDIUM_HOST:-$HOST}"
-export STABLE_AUDIO_3_MEDIUM_PORT="${STABLE_AUDIO_3_MEDIUM_PORT:-8313}"
+export STABLE_AUDIO_3_MEDIUM_PORT="${STABLE_AUDIO_3_MEDIUM_PORT:-8311}"
 export QWEN3_TTS_HOST="${QWEN3_TTS_HOST:-$HOST}"
-export QWEN3_TTS_PORT="${QWEN3_TTS_PORT:-8305}"
+export QWEN3_TTS_PORT="${QWEN3_TTS_PORT:-8321}"
 export VOXCPM2_HOST="${VOXCPM2_HOST:-$HOST}"
-export VOXCPM2_PORT="${VOXCPM2_PORT:-8306}"
+export VOXCPM2_PORT="${VOXCPM2_PORT:-8322}"
 export LONGCAT_AUDIODIT_HOST="${LONGCAT_AUDIODIT_HOST:-$HOST}"
-export LONGCAT_AUDIODIT_PORT="${LONGCAT_AUDIODIT_PORT:-8307}"
+export LONGCAT_AUDIODIT_PORT="${LONGCAT_AUDIODIT_PORT:-8323}"
 export DOTS_TTS_SOAR_HOST="${DOTS_TTS_SOAR_HOST:-$HOST}"
-export DOTS_TTS_SOAR_PORT="${DOTS_TTS_SOAR_PORT:-8308}"
+export DOTS_TTS_SOAR_PORT="${DOTS_TTS_SOAR_PORT:-8324}"
 export QWEN_VOICEDESIGN_HOST="${QWEN_VOICEDESIGN_HOST:-$HOST}"
-export QWEN_VOICEDESIGN_PORT="${QWEN_VOICEDESIGN_PORT:-8314}"
+export QWEN_VOICEDESIGN_PORT="${QWEN_VOICEDESIGN_PORT:-8301}"
 export MOSS_VOICEGENERATOR_HOST="${MOSS_VOICEGENERATOR_HOST:-$HOST}"
-export MOSS_VOICEGENERATOR_PORT="${MOSS_VOICEGENERATOR_PORT:-8315}"
+export MOSS_VOICEGENERATOR_PORT="${MOSS_VOICEGENERATOR_PORT:-8302}"
 
 export HF_MODULES_CACHE="${HF_MODULES_CACHE:-$RUNTIME_CACHE_DIR/hf_modules}"
 export NUMBA_CACHE_DIR="${NUMBA_CACHE_DIR:-$RUNTIME_CACHE_DIR/numba}"
@@ -174,7 +174,7 @@ echo "Reference audio dir: $PROMPTS_DIR"
 echo "HF modules cache:    $HF_MODULES_CACHE"
 echo "GPU lock file:       $GPU_LOCK_FILE"
 echo "Main API:            http://$HOST:$PORT"
-echo "Main health:         http://127.0.0.1:$PORT/v1/health"
+echo "Control route:       http://127.0.0.1:$PORT/v1/control"
 echo "MiMo TTS API:        http://$MIMO_TTS_HOST:$MIMO_TTS_PORT"
 echo "MiMo TTS health:     http://127.0.0.1:$MIMO_TTS_PORT/v1/health"
 echo "SoundEffect API:     http://$SOUNDEFFECT_HOST:$SOUNDEFFECT_PORT"
@@ -191,17 +191,30 @@ echo "VoxCPM2 API:         http://$VOXCPM2_HOST:$VOXCPM2_PORT"
 echo "VoxCPM2 health:      http://127.0.0.1:$VOXCPM2_PORT/v1/health"
 echo "LongCat health:      http://127.0.0.1:$LONGCAT_AUDIODIT_PORT/v1/health"
 echo "dots.tts-soar health: http://127.0.0.1:$DOTS_TTS_SOAR_PORT/v1/health"
-echo "MOSS design route:   http://127.0.0.1:$MOSS_VOICEGENERATOR_PORT/v1/moss/design"
-echo "VoxCPM2 design route: http://127.0.0.1:$VOXCPM2_PORT/v1/voxcpm2/design"
-echo "MiMo design route:   http://127.0.0.1:$MIMO_TTS_PORT/v1/mimo/design"
-echo "Step-Audio-EditX route: http://127.0.0.1:$STEP_AUDIO_EDITX_PORT/v1/step-audio-editx/edit"
-echo "SoundEffect route:   http://127.0.0.1:$SOUNDEFFECT_PORT/v1/generate"
-echo "Stable Audio 3 Medium route: http://127.0.0.1:$STABLE_AUDIO_3_MEDIUM_PORT/v1/generate"
-echo "Qwen3-TTS synth:     http://127.0.0.1:$QWEN3_TTS_PORT/v2/synthesize"
-echo "Qwen VoiceDesign route: http://127.0.0.1:$QWEN_VOICEDESIGN_PORT/v1/qwen/design"
-echo "VoxCPM2 synth:       http://127.0.0.1:$VOXCPM2_PORT/v2/synthesize"
-echo "LongCat synth:       http://127.0.0.1:$LONGCAT_AUDIODIT_PORT/v2/synthesize"
-echo "dots.tts-soar synth: http://127.0.0.1:$DOTS_TTS_SOAR_PORT/v2/synthesize"
+echo "MOSS timbre route:   http://127.0.0.1:$MOSS_VOICEGENERATOR_PORT/v1/moss/timbre"
+echo "MiMo timbre route:   http://127.0.0.1:$MIMO_TTS_PORT/v1/mimo/timbre"
+echo "Step-Audio-EditX route: http://127.0.0.1:$STEP_AUDIO_EDITX_PORT/v1/stepAudioEditx/edit"
+echo "MOSS sound-effect route: http://127.0.0.1:$SOUNDEFFECT_PORT/v1/moss/soundEffect"
+echo "Stable Audio 3 Medium route: http://127.0.0.1:$STABLE_AUDIO_3_MEDIUM_PORT/v1/stableAudio/soundEffect"
+echo "Qwen timbre route:   http://127.0.0.1:$QWEN_VOICEDESIGN_PORT/v1/qwen/timbre"
+echo "Qwen3-TTS clone:     http://127.0.0.1:$QWEN3_TTS_PORT/v1/qwen/clone"
+echo "VoxCPM2 clone:       http://127.0.0.1:$VOXCPM2_PORT/v1/voxcpm2/clone"
+echo "LongCat clone:       http://127.0.0.1:$LONGCAT_AUDIODIT_PORT/v1/longCat/clone"
+echo "dots.tts-soar clone: http://127.0.0.1:$DOTS_TTS_SOAR_PORT/v2/dotsTTS/clone"
+echo ""
+echo "模型接口与端口映射"
+printf '%-24s %-6s %s\n' '服务' '端口' '最终接口'
+printf '%-24s %-6s %s\n' '控制面' "$PORT" '/v1/control'
+printf '%-24s %-6s %s\n' 'Qwen3-TTS VoiceDesign' "$QWEN_VOICEDESIGN_PORT" '/v1/qwen/timbre'
+printf '%-24s %-6s %s\n' 'MOSS VoiceGenerator' "$MOSS_VOICEGENERATOR_PORT" '/v1/moss/timbre'
+printf '%-24s %-6s %s\n' 'MiMo TTS VoiceDesign' "$MIMO_TTS_PORT" '/v1/mimo/timbre'
+printf '%-24s %-6s %s\n' 'Stable Audio 3 Medium' "$STABLE_AUDIO_3_MEDIUM_PORT" '/v1/stableAudio/soundEffect'
+printf '%-24s %-6s %s\n' 'MOSS-SoundEffect v2' "$SOUNDEFFECT_PORT" '/v1/moss/soundEffect'
+printf '%-24s %-6s %s\n' 'Qwen3-TTS Base' "$QWEN3_TTS_PORT" '/v1/qwen/clone'
+printf '%-24s %-6s %s\n' 'VoxCPM2' "$VOXCPM2_PORT" '/v1/voxcpm2/clone'
+printf '%-24s %-6s %s\n' 'LongCat-AudioDiT' "$LONGCAT_AUDIODIT_PORT" '/v1/longCat/clone'
+printf '%-24s %-6s %s\n' 'dots.tts-soar' "$DOTS_TTS_SOAR_PORT" '/v2/dotsTTS/clone'
+printf '%-24s %-6s %s\n' 'Step-Audio-EditX' "$STEP_AUDIO_EDITX_PORT" '/v1/stepAudioEditx/edit'
 echo "=================================================="
 
 cd "$PROJECT_DIR"
@@ -252,7 +265,7 @@ cleanup() {
 
 trap cleanup INT TERM EXIT
 
-# The main control plane owns the existing 8300 routes and uses the
+# The main control plane owns the 8300 control routes and uses the
 # Qwen3-TTS uv environment only for its lightweight HTTP dependencies.
 setsid uv run --no-sync --project "$QWEN3_TTS_PROJECT_DIR" python "$MAIN_DIR/main.py" &
 main_pid=$!
@@ -262,7 +275,7 @@ MIMO_TTS_HOST="$MIMO_TTS_HOST" MIMO_TTS_PORT="$MIMO_TTS_PORT" \
   setsid uv run --no-sync --project "$MIMO_TTS_PROJECT_DIR" \
   python "$MIMO_TTS_PROJECT_DIR/main.py" &
 mimo_tts_pid=$!
-# MOSS-SoundEffect uv 服务：8311 保持原有路由、端口和请求契约。
+# MOSS-SoundEffect uv 服务：使用最终约定的 8312 端口和路由。
 HOST="$SOUNDEFFECT_HOST" PORT="$SOUNDEFFECT_PORT" \
   setsid uv run --no-sync --project "$MOSS_SOUNDEFFECT_PROJECT_DIR" \
   python "$MOSS_SOUNDEFFECT_PROJECT_DIR/main.py" &
@@ -272,16 +285,16 @@ HOST="$STABLE_AUDIO_3_MEDIUM_HOST" PORT="$STABLE_AUDIO_3_MEDIUM_PORT" \
   setsid uv run --no-sync --project "$STABLE_AUDIO_3_MEDIUM_PROJECT_DIR" \
   python "$STABLE_AUDIO_3_MEDIUM_PROJECT_DIR/main.py" &
 stable_audio_3_medium_pid=$!
-# Qwen3-TTS uv 服务：保持原端口 8305、环境变量和 API 路由。
+# Qwen3-TTS uv 服务：使用最终约定的 8321 端口和克隆路由。
 HOST="$QWEN3_TTS_HOST" PORT="$QWEN3_TTS_PORT" setsid uv run --project "$QWEN3_TTS_PROJECT_DIR" python "$QWEN3_TTS_PROJECT_DIR/main.py" &
 qwen3_tts_pid=$!
-# Qwen3-TTS VoiceDesign 独立 uv 服务：使用专用端口 8314。
+# Qwen3-TTS VoiceDesign 独立 uv 服务：使用最终约定的 8301 端口。
 QWEN_VOICEDESIGN_HOST="$QWEN_VOICEDESIGN_HOST" QWEN_VOICEDESIGN_PORT="$QWEN_VOICEDESIGN_PORT" \
   HOST="$QWEN_VOICEDESIGN_HOST" PORT="$QWEN_VOICEDESIGN_PORT" \
   setsid uv run --project "$QWEN3_VOICEDESIGN_PROJECT_DIR" \
   python "$QWEN3_VOICEDESIGN_PROJECT_DIR/main.py" &
 qwen_voicedesign_pid=$!
-# MOSS VoiceGenerator 独立 uv 服务：使用专用端口 8315。
+# MOSS VoiceGenerator 独立 uv 服务：使用最终约定的 8302 端口。
 MOSS_VOICEGENERATOR_HOST="$MOSS_VOICEGENERATOR_HOST" MOSS_VOICEGENERATOR_PORT="$MOSS_VOICEGENERATOR_PORT" \
   HOST="$MOSS_VOICEGENERATOR_HOST" PORT="$MOSS_VOICEGENERATOR_PORT" \
   setsid uv run --project "$MOSS_VOICEGENERATOR_PROJECT_DIR" \
@@ -298,12 +311,12 @@ HOST="$VOXCPM2_HOST" PORT="$VOXCPM2_PORT" \
   setsid uv run --no-sync --project "$VOXCPM2_PROJECT_DIR" \
   python "$VOXCPM2_PROJECT_DIR/main.py" &
 voxcpm2_pid=$!
-# LongCat-AudioDiT uv 服务保持原 8307 端口和 WebUI 路由/字段兼容。
+# LongCat-AudioDiT uv 服务：使用最终约定的 8323 端口。
 HOST="$LONGCAT_AUDIODIT_HOST" PORT="$LONGCAT_AUDIODIT_PORT" \
   setsid uv run --no-sync --project "$LONGCAT_AUDIODIT_PROJECT_DIR" \
   python "$LONGCAT_AUDIODIT_PROJECT_DIR/main.py" &
 longcat_audiodit_pid=$!
-# dots.tts-soar 使用独立 uv 项目，保持 8308 和 WebUI 请求契约不变。
+# dots.tts-soar 使用独立 uv 项目，使用最终约定的 8324 端口。
 HOST="$DOTS_TTS_SOAR_HOST" PORT="$DOTS_TTS_SOAR_PORT" \
   setsid uv run --no-sync --project "$DOTS_TTS_SOAR_PROJECT_DIR" \
     python "$DOTS_TTS_SOAR_PROJECT_DIR/main.py" &

@@ -81,7 +81,7 @@ GPU_LOCK_FILE = expand_path(
     os.getenv("GPU_LOCK_FILE", str(RUNTIME_CACHE_DIR / "gpu-runtime.lock"))
 )
 API_HOST = os.getenv("MOSS_SOUNDEFFECT_HOST", os.getenv("HOST", "0.0.0.0"))
-API_PORT = int(os.getenv("MOSS_SOUNDEFFECT_PORT", os.getenv("PORT", "8311")))
+API_PORT = int(os.getenv("MOSS_SOUNDEFFECT_PORT", os.getenv("PORT", "8312")))
 
 MOSS_SOUNDEFFECT_MODEL_DIR = expand_path(
     os.getenv(
@@ -306,8 +306,7 @@ async def internal_unload_all(request: Request) -> JSONResponse:
     )
 
 
-@app.post("/v1/generate")
-@app.post("/v2/synthesize")
+@app.post("/v1/moss/soundEffect")
 async def generate(request: SoundEffectGenerateRequest) -> Response:
     with gpu_runtime_lock("soundeffect/generate"):
         with manager.lock:

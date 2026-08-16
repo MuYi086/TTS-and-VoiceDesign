@@ -70,23 +70,17 @@ class StableAudioApiContractTests(unittest.TestCase):
             patch.object(main, "wait_after_cuda_release"),
         ):
             response = self.client.post(
-                "/v1/generate",
-                json={"prompt": "a short glass shatter", "seconds": 1},
-            )
-            alias_response = self.client.post(
-                "/v2/synthesize",
+                "/v1/stableAudio/soundEffect",
                 json={"prompt": "a short glass shatter", "seconds": 1},
             )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers["content-type"], "audio/wav")
         self.assertEqual(response.content, FAKE_WAV)
-        self.assertEqual(alias_response.status_code, 200)
-        self.assertEqual(alias_response.headers["content-type"], "audio/wav")
-        self.assertEqual(run_worker.call_count, 2)
+        self.assertEqual(run_worker.call_count, 1)
         self.assertEqual(run_worker.call_args.args[0]["prompt"], "a short glass shatter")
         saved_files = list(main.STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR.glob("stable_audio_3_medium_*.wav"))
-        self.assertEqual(len(saved_files), 2)
+        self.assertEqual(len(saved_files), 1)
         self.assertTrue(
             all(path.parent == main.SOUNDEFFECT_STORAGE_DIR for path in saved_files)
         )

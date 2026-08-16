@@ -65,7 +65,7 @@ WORKER_SCRIPT = str(PROJECT_DIR / "worker.py")
 LOCAL_FILES_ONLY = env_bool("LOCAL_FILES_ONLY", True)
 CUDA_RELEASE_DELAY = float(os.getenv("CUDA_RELEASE_DELAY", "2.0"))
 API_HOST = os.getenv("QWEN_VOICEDESIGN_HOST", os.getenv("HOST", "0.0.0.0"))
-API_PORT = int(os.getenv("QWEN_VOICEDESIGN_PORT", os.getenv("PORT", "8314")))
+API_PORT = int(os.getenv("QWEN_VOICEDESIGN_PORT", os.getenv("PORT", "8301")))
 REQUEST_TIMEOUT = float(
     os.getenv("QWEN_VOICEDESIGN_REQUEST_TIMEOUT", "900")
 )
@@ -346,7 +346,7 @@ async def internal_unload_all(request: Request):
     return {"code": 200, "msg": "qwen3_voiceDesign worker 已退出，无常驻模型"}
 
 
-@app.post("/v1/qwen/design")
+@app.post("/v1/qwen/timbre")
 def qwen_design(request: QwenDesignRequest):
     with gpu_runtime_lock("qwen/design"):
         with manager.lock:

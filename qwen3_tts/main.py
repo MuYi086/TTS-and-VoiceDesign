@@ -83,7 +83,7 @@ GPU_LOCK_FILE = expand_path(os.getenv("GPU_LOCK_FILE", os.path.join(RUNTIME_CACH
 LOCAL_FILES_ONLY = env_bool("LOCAL_FILES_ONLY", True)
 CUDA_RELEASE_DELAY = float(os.getenv("CUDA_RELEASE_DELAY", "2.0"))
 API_HOST = os.getenv("HOST", "0.0.0.0")
-API_PORT = int(os.getenv("PORT", "8305"))
+API_PORT = int(os.getenv("PORT", "8321"))
 
 QWEN3_TTS_MODEL_DIR = expand_path(
     os.getenv("QWEN3_TTS_MODEL_DIR", os.path.join(HF_MIRROR_DIR, "Qwen/Qwen3-TTS-12Hz-1.7B-Base"))
@@ -674,7 +674,7 @@ async def check_audio_exists(file_name: str):
     }
 
 
-@app.post("/v2/synthesize")
+@app.post("/v1/qwen/clone")
 async def synthesize_v2(request: Qwen3TtsSynthesizeRequest):
     with gpu_runtime_lock("qwen3_tts/synthesize"):
         with manager.lock:

@@ -24,7 +24,7 @@ os.environ.update(
         "TIMBRE_STORAGE_DIR": str(TIMBRE_DIR),
         "RUNTIME_CACHE_DIR": str(TEST_ROOT / "cache"),
         "MIMO_TTS_HOST": "127.0.0.1",
-        "MIMO_TTS_PORT": "8312",
+        "MIMO_TTS_PORT": "8303",
         "MIMO_MAX_RETRIES": "0",
     }
 )
@@ -46,7 +46,7 @@ class MimoTtsMigrationTests(unittest.TestCase):
         expected_routes = {
             ("GET", "/v1/health"),
             ("GET", "/v1/voice-design/providers"),
-            ("POST", "/v1/mimo/design"),
+            ("POST", "/v1/mimo/timbre"),
         }
         actual_routes = {
             (method, route.path)
@@ -69,7 +69,7 @@ class MimoTtsMigrationTests(unittest.TestCase):
         wav = b"RIFF" + b"\0" * 40
         with patch.object(main, "run_mimo_voice_design", return_value=wav):
             response = TestClient(main.app).post(
-                "/v1/mimo/design",
+                "/v1/mimo/timbre",
                 json={
                     "voice_description": "成年女性，温柔、清晰。",
                     "text": "你好。",
@@ -87,7 +87,7 @@ class MimoTtsMigrationTests(unittest.TestCase):
         control_plane_source = (REPOSITORY_DIR / "main/main.py").read_text(
             encoding="utf-8"
         )
-        self.assertIn("/v1/mimo/design", control_plane_source)
+        self.assertIn("/v1/mimo/timbre", control_plane_source)
         self.assertNotIn("run_mimo_voice_design", control_plane_source)
         self.assertIn("forward_mimo_design_request", control_plane_source)
         self.assertFalse((REPOSITORY_DIR / "api").exists())
@@ -97,9 +97,36 @@ class MimoTtsMigrationTests(unittest.TestCase):
         self.assertIn('MIMO_TTS_PROJECT_DIR="${MIMO_TTS_PROJECT_DIR:-$PROJECT_DIR/mimo_tts}"', start_script)
         self.assertIn('uv run --no-sync --project "$MIMO_TTS_PROJECT_DIR"', start_script)
         self.assertIn('python "$MIMO_TTS_PROJECT_DIR/main.py"', start_script)
-        self.assertIn("MIMO_TTS_PORT:-8312", start_script)
-        self.assertIn('MIMO_TTS_PROXY_URL="${MIMO_TTS_PROXY_URL:-http://127.0.0.1:$MIMO_TTS_PORT/v1/mimo/design}"', start_script)
-        self.assertIn("$STEP_AUDIO_EDITX_PORT/v1/step-audio-editx/edit", start_script)
+        self.assertIn("MIMO_TTS_PORT:-8303", start_script)
+        self.assertIn('MIMO_TTS_PROXY_URL="${MIMO_TTS_PROXY_URL:-http://127.0.0.1:$MIMO_TTS_PORT/v1/mimo/timbre}"', start_script)
+        self.assertIn("$STEP_AUDIO_EDITX_PORT/v1/stepAudioEditx/edit", start_script)
+        for port_default in (
+            "PORT:-8300",
+            "QWEN_VOICEDESIGN_PORT:-8301",
+            "MOSS_VOICEGENERATOR_PORT:-8302",
+            "MIMO_TTS_PORT:-8303",
+            "STABLE_AUDIO_3_MEDIUM_PORT:-8311",
+            "SOUNDEFFECT_PORT:-8312",
+            "QWEN3_TTS_PORT:-8321",
+            "VOXCPM2_PORT:-8322",
+            "LONGCAT_AUDIODIT_PORT:-8323",
+            "DOTS_TTS_SOAR_PORT:-8324",
+            "STEP_AUDIO_EDITX_PORT:-8331",
+        ):
+            self.assertIn(port_default, start_script)
+        for route in (
+            "/v1/qwen/timbre",
+            "/v1/moss/timbre",
+            "/v1/mimo/timbre",
+            "/v1/stableAudio/soundEffect",
+            "/v1/moss/soundEffect",
+            "/v1/qwen/clone",
+            "/v1/voxcpm2/clone",
+            "/v1/longCat/clone",
+            "/v2/dotsTTS/clone",
+            "/v1/stepAudioEditx/edit",
+        ):
+            self.assertIn(route, start_script)
         for output_variable, storage_variable in (
             ("STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR", "SOUNDEFFECT_STORAGE_DIR"),
             ("QWEN3_TTS_OUTPUT_DIR", "CLONE_STORAGE_DIR"),
@@ -112,8 +139,8 @@ class MimoTtsMigrationTests(unittest.TestCase):
                 f'export {output_variable}="${{{output_variable}:-${storage_variable}}}"',
                 start_script,
             )
-        self.assertNotIn("$PORT/v1/mimo/design", start_script)
-        self.assertNotIn("$PORT/v1/step-audio-editx/edit", start_script)
+        self.assertNotIn("$PORT/v1/mimo/timbre", start_script)
+        self.assertNotIn("$PORT/v1/stepAudioEditx/edit", start_script)
 
 
 if __name__ == "__main__":

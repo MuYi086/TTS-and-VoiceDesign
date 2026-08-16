@@ -25,7 +25,7 @@ CONTROL_ENV = {
     "GPU_LOCK_FILE": str(TEST_ROOT / "storage/.cache/runtime/gpu-runtime.lock"),
     "HOST": "127.0.0.1",
     "PORT": "8300",
-    "MIMO_TTS_PROXY_URL": "http://127.0.0.1:8312/v1/mimo/design",
+    "MIMO_TTS_PROXY_URL": "http://127.0.0.1:8303/v1/mimo/timbre",
 }
 ORIGINAL_ENV = {key: os.environ.get(key) for key in CONTROL_ENV}
 os.environ.update(CONTROL_ENV)
@@ -51,7 +51,8 @@ class MainControlPlaneMigrationTests(unittest.TestCase):
 
         expected_routes = {
             ("GET", "/v1/health"),
-            ("POST", "/v1/mimo/design"),
+            ("GET", "/v1/control"),
+            ("POST", "/v1/mimo/timbre"),
             ("POST", "/v1/upload_audio"),
             ("GET", "/v1/check/audio"),
         }
@@ -105,7 +106,7 @@ class MainControlPlaneMigrationTests(unittest.TestCase):
             return_value=(200, b"RIFF-proxy", "audio/wav"),
         ) as forward:
             response = TestClient(main.app).post(
-                "/v1/mimo/design",
+                "/v1/mimo/timbre",
                 json={"voice_description": "温柔的女声", "text": "你好。"},
             )
 

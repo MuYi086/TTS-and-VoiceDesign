@@ -1,6 +1,6 @@
 # MiMo TTS VoiceDesign uv 服务
 
-该目录提供独立的 MiMo 云端音色设计服务，不依赖 `main/`，也不加载本地模型。服务默认监听 `8312`。
+该目录提供独立的 MiMo 云端音色设计服务，不依赖 `main/`，也不加载本地模型。服务默认监听 `8303`。
 
 ```bash
 uv sync --project mimo_tts --locked
@@ -11,7 +11,7 @@ MIMO_API_KEY=... uv run --project mimo_tts python mimo_tts/main.py
 
 - `GET /v1/health`
 - `GET /v1/voice-design/providers`
-- `POST /v1/mimo/design`
+- `POST /v1/mimo/timbre`
 
 成功生成的 WAV 默认缓存到 `storage/timbre/`。可通过 `MIMO_TTS_HOST`、`MIMO_TTS_PORT`、
 `MIMO_BASE_URL`、`MIMO_MODEL`、`MIMO_TIMEOUT`、`MIMO_MAX_CHARS_PER_CHUNK`、

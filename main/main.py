@@ -53,7 +53,7 @@ API_HOST = os.getenv("HOST", "0.0.0.0")
 API_PORT = int(os.getenv("PORT", "8300"))
 MIMO_TTS_PROXY_URL = os.getenv(
     "MIMO_TTS_PROXY_URL",
-    f"http://127.0.0.1:{os.getenv('MIMO_TTS_PORT', '8312')}/v1/mimo/design",
+    f"http://127.0.0.1:{os.getenv('MIMO_TTS_PORT', '8303')}/v1/mimo/timbre",
 )
 MIMO_TTS_PROXY_TIMEOUT = float(os.getenv("MIMO_TTS_PROXY_TIMEOUT", "310"))
 LOCAL_FILES_ONLY = os.getenv("LOCAL_FILES_ONLY", "1").lower() in {
@@ -98,7 +98,7 @@ app.add_middleware(ForceCORS)
 
 
 def forward_mimo_design_request(body: bytes, accept: str) -> tuple[int, bytes, str]:
-    """Forward the legacy 8300 route to the standalone MiMo service."""
+    """Forward the final control-plane MiMo route to the standalone service."""
     headers = {
         "Content-Type": "application/json",
         "Accept": accept or "*/*",
@@ -160,6 +160,7 @@ def find_matching_timbre_audio(content: bytes) -> Path | None:
 
 
 @app.get("/v1/health")
+@app.get("/v1/control")
 async def health():
     cuda = cuda_status()
     return {
@@ -191,7 +192,7 @@ async def health():
     }
 
 
-@app.post("/v1/mimo/design")
+@app.post("/v1/mimo/timbre")
 async def mimo_design_proxy(request: Request):
     """Keep the old 8300 route while MiMo inference stays in ``mimo_tts``."""
     body = await request.body()

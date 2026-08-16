@@ -29,7 +29,7 @@ os.environ.update(
         "LOCAL_FILES_ONLY": "1",
         "CUDA_RELEASE_DELAY": "0",
         "MOSS_VOICEGENERATOR_REQUEST_TIMEOUT": "5",
-        "MOSS_VOICEGENERATOR_PORT": "8315",
+        "MOSS_VOICEGENERATOR_PORT": "8302",
     }
 )
 (TEST_ROOT / "model").mkdir(parents=True, exist_ok=True)
@@ -53,7 +53,7 @@ class MossVoiceGeneratorMigrationTests(unittest.TestCase):
         expected_routes = {
             ("GET", "/v1/health"),
             ("POST", "/internal/unload_all"),
-            ("POST", "/v1/moss/design"),
+            ("POST", "/v1/moss/timbre"),
         }
         actual_routes = {
             (method, route.path)
@@ -98,7 +98,7 @@ class MossVoiceGeneratorMigrationTests(unittest.TestCase):
         wav = b"RIFF" + b"\0" * 40
         with patch.object(main.manager, "run_worker", return_value=wav) as run_worker:
             response = TestClient(main.app).post(
-                "/v1/moss/design",
+                "/v1/moss/timbre",
                 json={
                     "voice_description": "成年女性，温柔、清晰。",
                     "text": "你好。",

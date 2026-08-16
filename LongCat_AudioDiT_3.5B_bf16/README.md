@@ -13,12 +13,12 @@ uv sync --project LongCat_AudioDiT_3.5B_bf16 --locked
 bash start.sh
 ```
 
-The service keeps the WebUI-compatible port and routes:
+The service uses the final WebUI port `8323` and routes:
 
 - `GET /v1/health`
 - `POST /v1/upload_audio`
 - `GET /v1/check/audio`
-- `POST /v2/synthesize`
+- `POST /v1/longCat/clone`
 - `POST /internal/unload_all`
 
 The default paths remain shared with the legacy service:
@@ -26,8 +26,9 @@ The default paths remain shared with the legacy service:
 - model: `$HF_MIRROR_DIR/drbaph/LongCat-AudioDiT-3.5B-bf16`
 - tokenizer: `$HF_MIRROR_DIR/google/umt5-base`
 - official source: `$LONGCAT_AUDIODIT_REPO_PATH`
-- prompts: `storage/clone/`; output: `storage/clone/`; cache and lock:
-  `storage/.cache/`
+- prompts: `storage/clone/`; output: `storage/clone/`; designed voices remain in
+  `storage/timbre/`, and a matching design upload only creates a reference map under
+  `storage/timbre/.references/`; cache and lock: `storage/.cache/`
 
 Override paths with the existing `LONGCAT_AUDIODIT_*` variables. The worker imports
 the external `audiodit` package only when a synthesis request starts.

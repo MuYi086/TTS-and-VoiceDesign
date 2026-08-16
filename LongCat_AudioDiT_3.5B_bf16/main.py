@@ -66,6 +66,10 @@ STORAGE_DIR = Path(
 CLONE_STORAGE_DIR = Path(
     expand_path(os.getenv("CLONE_STORAGE_DIR", str(STORAGE_DIR / "clone")))
 )
+TIMBRE_STORAGE_DIR = Path(
+    expand_path(os.getenv("TIMBRE_STORAGE_DIR", str(STORAGE_DIR / "timbre")))
+)
+TIMBRE_REFERENCE_DIR = TIMBRE_STORAGE_DIR / ".references"
 HF_MIRROR_DIR = expand_path(os.getenv("HF_MIRROR_DIR", "~/hf-mirror"))
 PROMPTS_DIR = expand_path(os.getenv("PROMPTS_DIR", str(CLONE_STORAGE_DIR)))
 RUNTIME_CACHE_DIR = expand_path(
@@ -77,7 +81,7 @@ GPU_LOCK_FILE = expand_path(
 LOCAL_FILES_ONLY = env_bool("LOCAL_FILES_ONLY", True)
 CUDA_RELEASE_DELAY = float(os.getenv("CUDA_RELEASE_DELAY", "2.0"))
 API_HOST = os.getenv("HOST", "0.0.0.0")
-API_PORT = int(os.getenv("PORT", "8307"))
+API_PORT = int(os.getenv("PORT", "8323"))
 
 LONGCAT_AUDIODIT_MODEL_DIR = expand_path(
     os.getenv(
@@ -171,6 +175,8 @@ if LOCAL_FILES_ONLY:
 
 for directory in (
     PROMPTS_DIR,
+    TIMBRE_STORAGE_DIR,
+    TIMBRE_REFERENCE_DIR,
     os.environ["HF_MODULES_CACHE"],
     os.environ["NUMBA_CACHE_DIR"],
     os.environ["MPLCONFIGDIR"],
@@ -211,8 +217,56 @@ def hash_filename(filename: str) -> str:
     return f"{digest}{ext}"
 
 
+def clone_prompt_audio_path(filename: str) -> str:
+    return os.path.join(PROMPTS_DIR, hash_filename(filename))
+
+
+def timbre_reference_map_path(filename: str) -> str:
+    return str(TIMBRE_REFERENCE_DIR / f"{hash_filename(filename)}.path")
+
+
+def prompt_audio_path(filename: str) -> str:
+    """解析克隆上传，或解析只保存在音色目录中的设计音频。"""
+    clone_path = clone_prompt_audio_path(filename)
+    if os.path.isfile(clone_path):
+        return clone_path
+
+    reference_path = timbre_reference_map_path(filename)
+    if os.path.isfile(reference_path):
+        with open(reference_path, "r", encoding="utf-8") as reference_file:
+            timbre_path = reference_file.read().strip()
+        if timbre_path and os.path.isfile(timbre_path):
+            return timbre_path
+    return clone_path
+
+
+def file_sha256(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def find_matching_timbre_audio(content: bytes) -> Optional[str]:
+    """识别已生成的音色，避免把同一份 WAV 再复制到克隆目录。"""
+    content_digest = hashlib.sha256(content).hexdigest()
+    with os.scandir(TIMBRE_STORAGE_DIR) as entries:
+        for entry in entries:
+            if not entry.is_file() or not entry.name.lower().endswith(".wav"):
+                continue
+            if file_sha256(entry.path) == content_digest:
+                return entry.path
+    return None
+
+
 def prompt_text_sidecar_path(filename: str) -> str:
-    return os.path.join(PROMPTS_DIR, f"{hash_filename(filename)}.prompt.txt")
+    clone_sidecar_path = os.path.join(PROMPTS_DIR, f"{hash_filename(filename)}.prompt.txt")
+    if os.path.isfile(clone_prompt_audio_path(filename)):
+        return clone_sidecar_path
+    if os.path.isfile(timbre_reference_map_path(filename)):
+        return str(TIMBRE_REFERENCE_DIR / f"{hash_filename(filename)}.prompt.txt")
+    return clone_sidecar_path
 
 
 def load_prompt_text_sidecar(filename: str) -> Optional[str]:
@@ -323,7 +377,7 @@ class CloneSynthesisRequest(BaseModel):
     def reject_style_prompt(cls, value):
         if isinstance(value, dict) and "style_prompt" in value:
             raise ValueError(
-                "style_prompt 不适用于 /v2/synthesize；该接口仅用于参考音频克隆。"
+                "style_prompt 不适用于 /v1/longCat/clone；该接口仅用于参考音频克隆。"
             )
         return value
 
@@ -350,7 +404,7 @@ class LongCatAudioDitWorkerManager:
     def build_worker_payload(
         self, request: LongCatAudioDitSynthesizeRequest
     ) -> dict[str, object]:
-        ref_audio_path = os.path.join(PROMPTS_DIR, hash_filename(request.audio_path))
+        ref_audio_path = prompt_audio_path(request.audio_path)
         if not os.path.isfile(ref_audio_path):
             raise HTTPException(status_code=404, detail="音频不存在")
 
@@ -586,9 +640,23 @@ async def upload_audio(
     prompt_text: Optional[str] = Form(None),
 ):
     content = await audio.read()
-    save_path = os.path.join(PROMPTS_DIR, hash_filename(full_path))
-    with open(save_path, "wb") as file:
-        file.write(content)
+    clone_path = clone_prompt_audio_path(full_path)
+    timbre_path = find_matching_timbre_audio(content)
+    if timbre_path:
+        # 设计音色的原始 WAV 只保存在 timbre；这里仅保存解析引用供克隆服务使用。
+        if os.path.isfile(clone_path):
+            os.remove(clone_path)
+        clone_sidecar_path = os.path.join(PROMPTS_DIR, f"{hash_filename(full_path)}.prompt.txt")
+        if os.path.isfile(clone_sidecar_path):
+            os.remove(clone_sidecar_path)
+        with open(timbre_reference_map_path(full_path), "w", encoding="utf-8") as reference_file:
+            reference_file.write(timbre_path)
+    else:
+        reference_map_path = timbre_reference_map_path(full_path)
+        if os.path.isfile(reference_map_path):
+            os.remove(reference_map_path)
+        with open(clone_path, "wb") as file:
+            file.write(content)
 
     normalized_prompt_text = normalize_optional_text(prompt_text)
     save_prompt_text_sidecar(full_path, normalized_prompt_text)
@@ -604,7 +672,7 @@ async def upload_audio(
 
 @app.get("/v1/check/audio")
 async def check_audio_exists(file_name: str):
-    audio_path = os.path.join(PROMPTS_DIR, hash_filename(file_name))
+    audio_path = prompt_audio_path(file_name)
     exists = os.path.isfile(audio_path)
     return {
         "code": 200 if exists else 404,
@@ -615,7 +683,7 @@ async def check_audio_exists(file_name: str):
     }
 
 
-@app.post("/v2/synthesize")
+@app.post("/v1/longCat/clone")
 async def synthesize_v2(request: LongCatAudioDitSynthesizeRequest):
     with gpu_runtime_lock("longcat_audiodit/synthesize"):
         with manager.lock:

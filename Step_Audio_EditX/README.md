@@ -17,12 +17,12 @@ uv pip check --python Step_Audio_EditX/.venv/bin/python
 
 ```bash
 STEP_AUDIO_EDITX_HOST=127.0.0.1 \
-STEP_AUDIO_EDITX_PORT=8316 \
+STEP_AUDIO_EDITX_PORT=8331 \
 uv run --project Step_Audio_EditX python Step_Audio_EditX/main.py
 ```
 
-`start.sh` 默认以 `uv` 模式启动 8316；该服务完整提供
-`/v1/upload_audio`、`/v1/check/audio` 和 `/v1/step-audio-editx/edit`，不再经过主 API
+`start.sh` 默认以 `uv` 模式启动 8331；该服务完整提供
+`/v1/upload_audio`、`/v1/check/audio` 和 `/v1/stepAudioEditx/edit`，不再经过主 API
 代理，也不再保留 Conda 回退路径。
 
 ## 外部路径

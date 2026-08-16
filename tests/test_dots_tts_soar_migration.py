@@ -27,6 +27,7 @@ os.environ.update(
         "HF_MIRROR_DIR": str(TEST_ROOT / "hf-mirror"),
         "DOTS_TTS_SOAR_MODEL_DIR": str(MODEL_DIR),
         "PROMPTS_DIR": str(PROMPTS_DIR),
+        "TIMBRE_STORAGE_DIR": str(TEST_ROOT / "timbre"),
         "RUNTIME_CACHE_DIR": str(TEST_ROOT / "cache"),
         "GPU_LOCK_FILE": str(TEST_ROOT / "cache" / "gpu.lock"),
         "DOTS_TTS_SOAR_OUTPUT_DIR": str(TEST_ROOT / "output"),
@@ -68,7 +69,7 @@ class DotsTtsSoarMigrationTests(unittest.TestCase):
             ("POST", "/internal/unload_all"),
             ("POST", "/v1/upload_audio"),
             ("GET", "/v1/check/audio"),
-            ("POST", "/v2/synthesize"),
+            ("POST", "/v2/dotsTTS/clone"),
         }
         actual_routes = {
             (method, route.path)
@@ -117,6 +118,30 @@ class DotsTtsSoarMigrationTests(unittest.TestCase):
         self.assertEqual(check.json()["size_bytes"], len(content))
         self.assertTrue(check.json()["has_prompt_text"])
 
+    def test_timbre_reference_upload_does_not_copy_audio_to_clone(self) -> None:
+        from fastapi.testclient import TestClient
+
+        filename = "designed-voice.wav"
+        content = b"RIFF" + b"\x03\x04" * 32
+        timbre_path = Path(main.TIMBRE_STORAGE_DIR) / "dots-designed.wav"
+        timbre_path.write_bytes(content)
+
+        response = TestClient(main.app).post(
+            "/v1/upload_audio",
+            files={"audio": (filename, io.BytesIO(content), "audio/wav")},
+            data={"full_path": filename, "prompt_text": "设计音色参考文本。"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        clone_path = PROMPTS_DIR / main.hash_filename(filename)
+        self.assertFalse(clone_path.exists())
+        self.assertEqual(main.prompt_audio_path(filename), str(timbre_path))
+        self.assertTrue(Path(main.timbre_reference_map_path(filename)).exists())
+        self.assertEqual(main.load_prompt_text_sidecar(filename), "设计音色参考文本。")
+        checked = TestClient(main.app).get("/v1/check/audio", params={"file_name": filename})
+        self.assertEqual(checked.status_code, 200)
+        self.assertTrue(checked.json()["exists"])
+
     def test_request_contract_and_payload_preserve_dots_fields(self) -> None:
         request = main.DotsTtsSoarSynthesizeRequest(
             text="# 目标台词",
@@ -157,7 +182,7 @@ class DotsTtsSoarMigrationTests(unittest.TestCase):
         wav = b"RIFF" + b"\0" * 40
         with patch.object(main.manager, "run_worker", return_value=wav) as run_worker:
             response = TestClient(main.app).post(
-                "/v2/synthesize",
+                "/v2/dotsTTS/clone",
                 json={
                     "text": "目标台词",
                     "audio_path": self.filename,

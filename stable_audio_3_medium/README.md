@@ -1,6 +1,6 @@
 # Stable Audio 3 Medium uv service
 
-这是独立的 Stable Audio 3 Medium uv 服务，默认监听 `8313`。
+这是独立的 Stable Audio 3 Medium uv 服务，默认监听 `8311`。
 HTTP 进程只负责校验请求、持有共享 GPU 锁和返回 WAV；每个请求由当前项目的
 Python 3.12.13 启动一次性 `worker.py`，worker 退出后释放模型显存。
 
@@ -54,8 +54,7 @@ CUDA devel toolkit 的环境中从固定版本的 `/home/muyi086/tts-depency/fla
 保留以下路由和字段：
 
 - `GET /v1/health`
-- `POST /v1/generate`
-- `POST /v2/synthesize`
+- `POST /v1/stableAudio/soundEffect`
 - `POST /internal/unload_all`
 - `prompt`、`seconds`、`duration`、`steps`、`cfg_scale`、`seed`、`device`、`dtype`
 
@@ -73,8 +72,8 @@ uv run python -m unittest discover -s tests -v
 真实 GPU canary 需要完整权重、CUDA 和兼容的 Stable Audio 源码：
 
 ```bash
-curl -fsS http://127.0.0.1:8313/v1/health
-curl -fsS -X POST http://127.0.0.1:8313/v1/generate \
+curl -fsS http://127.0.0.1:8311/v1/health
+curl -fsS -X POST http://127.0.0.1:8311/v1/stableAudio/soundEffect \
   -H 'Content-Type: application/json' \
   -d '{"prompt":"A short glass shattering sound effect, crisp and dramatic", "seconds":1}' \
   -o /tmp/stable_audio_3_medium.wav

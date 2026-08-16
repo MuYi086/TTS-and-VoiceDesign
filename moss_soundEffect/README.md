@@ -1,7 +1,7 @@
 # MOSS-SoundEffect v2 uv 服务
 
 这个目录提供 MOSS-SoundEffect v2 的独立 uv HTTP 控制面和一次性模型 worker，
-共用 `moss_soundEffect/.venv`，worker 退出后释放显存。迁移已完成，8311 只由
+共用 `moss_soundEffect/.venv`，worker 退出后释放显存。迁移已完成，8312 只由
 本目录的 uv 服务提供。
 
 ## 运行
@@ -14,10 +14,10 @@ export MOSS_SOUNDEFFECT_CODE_PATH="$HOME/tts-depency/MOSS-TTS"
 export MOSS_SOUNDEFFECT_MODEL_DIR="$HOME/hf-mirror/OpenMOSS-Team/MOSS-SoundEffect-v2.0"
 ```
 
-启动 8311：
+启动 8312：
 
 ```bash
-HOST=127.0.0.1 PORT=8311 \
+HOST=127.0.0.1 PORT=8312 \
   uv run --no-sync --project moss_soundEffect \
   python moss_soundEffect/main.py
 ```
@@ -25,14 +25,14 @@ HOST=127.0.0.1 PORT=8311 \
 健康检查和生成：
 
 ```bash
-curl http://127.0.0.1:8311/v1/health
-curl -X POST http://127.0.0.1:8311/v1/generate \
+curl http://127.0.0.1:8312/v1/health
+curl -X POST http://127.0.0.1:8312/v1/moss/soundEffect \
   -H 'Content-Type: application/json' \
   -d '{"prompt":"门吱吱作响的声音，刺耳急促","seconds":1}' \
   -o moss-sfx.wav
 ```
 
-接口保留 `/v1/generate`、兼容别名 `/v2/synthesize` 和本机内部路由
+接口只提供最终路由 `/v1/moss/soundEffect` 和本机内部路由
 `/internal/unload_all`。成功响应是 48 kHz 单声道 `audio/wav`；`seconds` 范围
 为 `(0, 30]`。模型不会在 API 进程导入，真实推理通过同一 uv Python 启动
 `worker.py`。

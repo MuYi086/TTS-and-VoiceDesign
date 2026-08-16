@@ -50,7 +50,7 @@ class Qwen3VoiceDesignMigrationTests(unittest.TestCase):
         expected_routes = {
             ("GET", "/v1/health"),
             ("POST", "/internal/unload_all"),
-            ("POST", "/v1/qwen/design"),
+            ("POST", "/v1/qwen/timbre"),
         }
         actual_routes = {
             (method, route.path)
@@ -92,7 +92,7 @@ class Qwen3VoiceDesignMigrationTests(unittest.TestCase):
         wav = b"RIFF" + b"\0" * 40
         with patch.object(main.manager, "run_worker", return_value=wav) as run_worker:
             response = TestClient(main.app).post(
-                "/v1/qwen/design",
+                "/v1/qwen/timbre",
                 json={
                     "voice_description": "成年女性，温柔、清晰。",
                     "text": "你好。",

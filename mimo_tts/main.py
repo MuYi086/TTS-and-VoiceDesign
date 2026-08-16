@@ -63,7 +63,7 @@ MIMO_MAX_RETRIES = int(os.getenv("MIMO_MAX_RETRIES", "3"))
 MIMO_RETRY_BASE_SECONDS = float(os.getenv("MIMO_RETRY_BASE_SECONDS", "5"))
 MIMO_RETRY_MAX_SECONDS = float(os.getenv("MIMO_RETRY_MAX_SECONDS", "60"))
 API_HOST = os.getenv("MIMO_TTS_HOST", os.getenv("HOST", "0.0.0.0"))
-API_PORT = int(os.getenv("MIMO_TTS_PORT", os.getenv("PORT", "8312")))
+API_PORT = int(os.getenv("MIMO_TTS_PORT", os.getenv("PORT", "8303")))
 
 os.makedirs(TIMBRE_STORAGE_DIR, exist_ok=True)
 os.makedirs(RUNTIME_CACHE_DIR, exist_ok=True)
@@ -473,7 +473,7 @@ async def voice_design_providers():
             {
                 "id": "mimo",
                 "name": "MiMo TTS VoiceDesign",
-                "route": "/v1/mimo/design",
+                "route": "/v1/mimo/timbre",
                 "type": "cloud_api",
                 "ready": bool(os.getenv("MIMO_API_KEY")),
             }
@@ -481,7 +481,7 @@ async def voice_design_providers():
     }
 
 
-@app.post("/v1/mimo/design")
+@app.post("/v1/mimo/timbre")
 async def mimo_design(request: MimoDesignRequest):
     try:
         audio_bytes = run_mimo_voice_design(request.model_dump())

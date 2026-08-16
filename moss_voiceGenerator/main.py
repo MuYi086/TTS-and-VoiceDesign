@@ -77,7 +77,7 @@ WORKER_SCRIPT = str(PROJECT_DIR / "worker.py")
 LOCAL_FILES_ONLY = env_bool("LOCAL_FILES_ONLY", True)
 CUDA_RELEASE_DELAY = float(os.getenv("CUDA_RELEASE_DELAY", "2.0"))
 API_HOST = os.getenv("MOSS_VOICEGENERATOR_HOST", os.getenv("HOST", "0.0.0.0"))
-API_PORT = int(os.getenv("MOSS_VOICEGENERATOR_PORT", os.getenv("PORT", "8315")))
+API_PORT = int(os.getenv("MOSS_VOICEGENERATOR_PORT", os.getenv("PORT", "8302")))
 REQUEST_TIMEOUT = float(os.getenv("MOSS_VOICEGENERATOR_REQUEST_TIMEOUT", "900"))
 MAX_CHARS_PER_CHUNK = int(os.getenv("MOSS_VOICEGENERATOR_MAX_CHARS_PER_CHUNK", "0"))
 PAUSE_MS = int(os.getenv("MOSS_VOICEGENERATOR_PAUSE_MS", "250"))
@@ -135,7 +135,7 @@ app.add_middleware(ForceCORS)
 
 
 class MossDesignRequest(BaseModel):
-    """Request schema kept wire-compatible with the former 8300 endpoint."""
+    """Request schema for the standalone MOSS VoiceGenerator endpoint."""
 
     voice_description: str
     text: str = "这是生成的参考音频预览。"
@@ -369,7 +369,7 @@ async def internal_unload_all(request: Request):
     return {"code": 200, "msg": "moss_voiceGenerator worker 已退出，无常驻模型"}
 
 
-@app.post("/v1/moss/design")
+@app.post("/v1/moss/timbre")
 def moss_design(request: MossDesignRequest):
     with gpu_runtime_lock("moss/design"):
         with manager.lock:

@@ -27,6 +27,7 @@ os.environ.update(
         "HF_MIRROR_DIR": str(TEST_ROOT / "hf-mirror"),
         "VOXCPM2_MODEL_DIR": str(MODEL_DIR),
         "PROMPTS_DIR": str(PROMPTS_DIR),
+        "TIMBRE_STORAGE_DIR": str(TEST_ROOT / "timbre"),
         "RUNTIME_CACHE_DIR": str(TEST_ROOT / "cache"),
         "GPU_LOCK_FILE": str(TEST_ROOT / "cache" / "gpu.lock"),
         "VOXCPM2_OUTPUT_DIR": str(TEST_ROOT / "output"),
@@ -72,8 +73,7 @@ class VoxCpm2MigrationTests(unittest.TestCase):
             ("POST", "/internal/unload_all"),
             ("POST", "/v1/upload_audio"),
             ("GET", "/v1/check/audio"),
-            ("POST", "/v2/synthesize"),
-            ("POST", "/v1/voxcpm2/design"),
+            ("POST", "/v1/voxcpm2/clone"),
         }
         actual_routes = {
             (method, route.path)
@@ -121,6 +121,30 @@ class VoxCpm2MigrationTests(unittest.TestCase):
         self.assertEqual(checked.json()["size_bytes"], len(content))
         self.assertTrue(checked.json()["has_prompt_text"])
 
+    def test_timbre_reference_upload_does_not_copy_audio_to_clone(self) -> None:
+        from fastapi.testclient import TestClient
+
+        filename = "designed-voice.wav"
+        content = b"RIFF" + b"\x03\x04" * 32
+        timbre_path = Path(main.TIMBRE_STORAGE_DIR) / "voxcpm2-designed.wav"
+        timbre_path.write_bytes(content)
+
+        response = TestClient(main.app).post(
+            "/v1/upload_audio",
+            files={"audio": (filename, io.BytesIO(content), "audio/wav")},
+            data={"full_path": filename, "prompt_text": "设计音色参考文本。"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        clone_path = PROMPTS_DIR / main.hash_filename(filename)
+        self.assertFalse(clone_path.exists())
+        self.assertEqual(main.prompt_audio_path(filename), str(timbre_path))
+        self.assertTrue(Path(main.timbre_reference_map_path(filename)).exists())
+        self.assertEqual(main.load_prompt_text_sidecar(filename), "设计音色参考文本。")
+        checked = TestClient(main.app).get("/v1/check/audio", params={"file_name": filename})
+        self.assertEqual(checked.status_code, 200)
+        self.assertTrue(checked.json()["exists"])
+
     def test_clone_and_voice_design_payloads_keep_contract(self) -> None:
         clone_request = main.VoxCpm2SynthesizeRequest(
             text="# 要合成的台词",
@@ -160,14 +184,14 @@ class VoxCpm2MigrationTests(unittest.TestCase):
         self.assertEqual(design_payload["voice_description"], "温柔、清晰的成年女性")
         self.assertEqual(design_payload["text"], "这是生成的参考音频预览。")
 
-    def test_synthesize_and_design_routes_return_wav_without_model(self) -> None:
+    def test_clone_route_returns_wav_without_model(self) -> None:
         from fastapi.testclient import TestClient
 
         wav = b"RIFF" + b"\0" * 40
         client = TestClient(main.app)
         with patch.object(main.manager, "run_worker", return_value=wav) as run_worker:
             response = client.post(
-                "/v2/synthesize",
+                "/v1/voxcpm2/clone",
                 json={
                     "text": "你好。",
                     "audio_path": self.filename,
@@ -178,18 +202,6 @@ class VoxCpm2MigrationTests(unittest.TestCase):
         self.assertEqual(response.headers["content-type"], "audio/wav")
         self.assertEqual(response.content, wav)
         run_worker.assert_called_once()
-
-        with patch.object(main.manager, "run_worker", return_value=wav) as run_worker:
-            response = client.post(
-                "/v1/voxcpm2/design",
-                json={"voice_description": "自然、温柔", "text": "你好。"},
-            )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.content, wav)
-        self.assertEqual(
-            run_worker.call_args.kwargs["worker_script"],
-            main.VOXCPM2_VOICE_DESIGN_WORKER_SCRIPT,
-        )
 
     def test_worker_uses_current_uv_interpreter_and_cleans_temp_files(self) -> None:
         captured: dict[str, object] = {}
@@ -242,12 +254,11 @@ class VoxCpm2MigrationTests(unittest.TestCase):
         self.assertNotIn("main/voxcpm2_api.py", script)
         self.assertNotIn("VOXCPM2_UV_BASE_URL", script)
         self.assertIn(
-            'http://127.0.0.1:$VOXCPM2_PORT/v1/voxcpm2/design',
+            'http://127.0.0.1:$VOXCPM2_PORT/v1/voxcpm2/clone',
             script,
         )
         control_plane = (REPOSITORY_DIR / "main/main.py").read_text(encoding="utf-8")
         self.assertNotIn("voxcpm2_voice_design", control_plane)
-        self.assertNotIn("/v1/voxcpm2/design", control_plane)
         self.assertNotIn("VOXCPM2_RUNTIME", control_plane)
         for filename in (
             "voxcpm2_api.py",

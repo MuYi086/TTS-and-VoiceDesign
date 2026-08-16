@@ -1,39 +1,74 @@
-# Repository Guidelines
+# 仓库开发指南
 
-## Project Structure & Module Organization
+## 适用范围
 
-This repository is Unitale's local TTS, voice-design, and sound-effect backend.
+本仓库是 Unitale 的本地语音后端，提供语音合成、音色设计、语音编辑和音效生成能力。
+项目采用多项目 uv workspace 结构；每个服务独立维护自己的 `pyproject.toml`、
+`uv.lock`、HTTP 入口和 worker。
 
-- `main/` contains the 8300 control-plane HTTP entry point and its runtime helper only. Model services live in their own directories, including `mimo_tts/` and `Step_Audio_EditX/`.
-- The main API listens on `8300`; dedicated services use `8312` (MiMo VoiceDesign), `8305` (Qwen3-TTS), `8306` (VoxCPM2), `8307` (LongCat), `8308` (dots.tts-soar), `8311` (MOSS sound effects), `8313` (Stable Audio 3 Medium), `8314` (Qwen VoiceDesign), `8315` (MOSS VoiceGenerator), and `8316` (Step-Audio-EditX).
-- `tests/` contains standard-library `unittest` regression tests. `soundEffect/` contains the GPU-backed MOSS example and smoke test; `README.md` documents API contracts and model setup.
-- `storage/` contains runtime prompts, caches, and generated WAVs. Do not commit model weights, uploaded/reference audio, generated audio, or machine-specific paths.
+## 项目结构与服务速查
 
-## Build, Test, and Development Commands
+- `main/main.py` 是轻量的 `8300` 控制面，负责控制路由、共享上传/检查工具和 MiMo 兼容代理；
+  不得在其中加载模型包或执行推理。
+- 模型服务位于 `mimo_tts/`、`qwen3_tts/`、`voxcpm2/`、
+  `LongCat_AudioDiT_3.5B_bf16/`、`dots_tts_soar/`、`moss_soundEffect/`、
+  `stable_audio_3_medium/`、`qwen3_voiceDesign/`、`moss_voiceGenerator/` 和
+  `Step_Audio_EditX/`。
+- 最终默认端口：`8300` 控制面、`8301` Qwen VoiceDesign、`8302` MOSS VoiceGenerator、
+  `8303` MiMo、`8311` Stable Audio 3 Medium、`8312` MOSS-SoundEffect、`8321` Qwen3-TTS、
+  `8322` VoxCPM2、`8323` LongCat、`8324` dots.tts-soar、`8331` Step-Audio-EditX。
+- `tests/` 存放无模型 `unittest` 迁移回归测试；Stable Audio 测试独立存放。
+  `soundEffect/` 存放 MOSS GPU 示例；`storage/` 存放运行音频、sidecar、缓存和 GPU 锁，
+  不得提交其内容。
 
-Ensure Conda and uv are available, then run:
+## 安装、启动与测试
+
+本地模型推理需要 Python `3.12.13`、`uv` 和 CUDA 可用的主机。按照 `README.md` 准备模型权重
+与外部源码，然后使用 `uv sync --project <dir> --locked` 同步需要的项目。
+`bash start.sh` 会在 `qwen3_tts` uv 项目中启动轻量的 8300 控制面，并在各自项目中启动其余
+10 个 HTTP 进程；端口、路径、项目和运行参数均通过环境变量覆盖。
 
 ```bash
+bash -n start.sh
 bash start.sh
 uv run --project qwen3_tts python -m unittest discover -s tests -v
-curl http://127.0.0.1:8300/v1/health
-curl http://127.0.0.1:8312/v1/health
+(cd stable_audio_3_medium && uv run --project . python -m unittest discover -s tests -v)
+curl -fsS http://127.0.0.1:8300/v1/control
 ```
 
-`start.sh` launches the 8300 control plane, the MiMo 8312 service, and all model-specific uv projects; heavyweight workers use their service-local uv environments. The former `moss-soundEffect` Conda environment and the 8300 Step-Audio-EditX proxy are removed. Override ports, model locations, environments, and caches with environment variables (for example, `PORT=8400 bash start.sh`) rather than editing host-specific defaults. Use `soundEffect/run_moss_soundeffect_v2.sh` only for its CUDA/model smoke test.
+测试不得下载权重、依赖 CUDA、调用 MiMo 或执行真实模型。应 mock worker、subprocess、
+文件系统边界和网络调用。只有真实 MOSS GPU smoke test 才使用
+`bash soundEffect/run_moss_soundeffect_v2.sh`。
 
-## Coding Style & Architecture
+## 架构约束
 
-Use four-space Python indentation, `snake_case` for functions/variables, and `PascalCase` for Pydantic models. Keep request validation, HTTP responses, and compatibility behavior in `*_api.py`; keep model loading and inference in `*_worker.py`. Heavy workers run per request and coordinate through `GPU_LOCK_FILE`, so preserve cleanup and locking behavior. Match existing imports, type hints, docstrings, and line wrapping; no formatter or linter is configured.
+- 各服务的 `main.py` 负责 HTTP 校验、兼容逻辑、存储和响应；`worker.py` 负责模型加载与推理。
+- 重型本地服务每个请求只启动一个 worker。worker 必须使用该服务的 uv 解释器，在成功、失败
+  或超时时终止自己的进程组，并清理临时 JSON/WAV 文件。
+- 本地 GPU 服务通过共享的 `GPU_LOCK_FILE` 串行执行；必须保留 `finally` 中的锁释放逻辑和
+  CUDA 释放等待时间。
+- 参考音频使用 WebUI 的 `full_path` 标识，并可保存 `prompt_text` sidecar。生成结果按用途
+  保存：音色写入 `storage/timbre/`，音效写入 `storage/soundEffect/`，克隆/编辑音频写入
+  `storage/clone/`；这些目录都可覆盖。
+- 音色设计返回的 WAV 只能保存在 `storage/timbre/`。当 WebUI 为克隆预览把设计音频同步到
+  Qwen3-TTS、VoxCPM2、LongCat 或 dots 服务时，只能在 `storage/timbre/.references/` 写入
+  小型引用映射和文本 sidecar，不得在 `storage/clone/` 再复制一份设计 WAV；普通用户上传的
+  参考音频仍保存到 `storage/clone/`。
+- 参考音频克隆使用 `/v1/qwen/clone`、`/v1/voxcpm2/clone`、`/v1/longCat/clone` 和
+  `/v2/dotsTTS/clone`；音色设计使用 `/v1/qwen/timbre`、`/v1/moss/timbre` 和
+  `/v1/mimo/timbre`；音效使用 `/v1/stableAudio/soundEffect`、
+  `/v1/moss/soundEffect`；语音编辑使用 `/v1/stepAudioEditx/edit`。
+- 后端只注册并使用上述最终接口；不得新增或保留任何旧接口兼容别名。
+- 模型默认值集中放在各服务模块顶部。`start.sh` 只负责路由、路径、端口、环境和共享运行参数，
+  不应静默替换推理默认值。
 
-Preserve existing routes and compatibility fields. Add or update focused tests and document any API contract change in `README.md`. Model-specific defaults generally live at the top of the relevant API module; `start.sh` should primarily provide routing, paths, environments, and runtime configuration.
+## 编码规范与安全
 
-## Testing Guidelines
+Python 使用 4 个空格缩进，函数和变量使用 `snake_case`，Pydantic 模型使用 `PascalCase`。
+遵循现有的类型标注、import、docstring 和换行风格；仓库未配置全局 formatter 或 linter。
+路由、校验、存储或 worker 生命周期发生变化时，补充针对性的无模型测试，并同步更新
+`README.md` 中的 endpoint 或字段说明。
 
-Name files `test_*.py` and methods `test_*`. Tests must avoid downloading models, requiring CUDA, or calling external services; mock workers, subprocesses, and filesystem boundaries instead. Run the full discovery command before submitting changes.
-
-## Commits, Pull Requests & Security
-
-Use concise Conventional Commit-style subjects such as `feat:`, `fix:`, or `docs:`; recent commits commonly use Chinese summaries. PRs should describe affected endpoints/workers, list test commands and results, link relevant issues, and include request/response examples or screenshots for WebUI-visible changes.
-
-Keep `MIMO_API_KEY` and deployment-specific paths in environment variables. Never commit secrets, local model directories, caches, uploaded audio, or generated WAV files.
+不得加入模型权重、上传/参考音频、生成 WAV、虚拟环境、缓存、密钥或机器专用绝对路径。
+`MIMO_API_KEY` 必须通过环境变量提供。Commit subject 使用简洁的 Conventional Commit 格式，
+例如 `feat:`、`fix:` 或 `docs:`。

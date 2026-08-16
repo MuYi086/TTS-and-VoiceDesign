@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 
 
 class CloneSynthesisRequest(BaseModel):
-    """Base schema for reference-audio cloning requests.
+    """Base schema for ``/v2/dotsTTS/clone`` reference-audio cloning requests.
 
     The WebUI sends compatibility fields shared by several local TTS models,
     so unknown fields remain ignored.  A style prompt is rejected because
@@ -23,6 +23,6 @@ class CloneSynthesisRequest(BaseModel):
     def reject_style_prompt(cls, value: Any) -> Any:
         if isinstance(value, Mapping) and "style_prompt" in value:
             raise ValueError(
-                "style_prompt 不适用于 /v2/synthesize；该接口仅用于参考音频克隆。"
+                "style_prompt 不适用于 /v2/dotsTTS/clone；该接口仅用于参考音频克隆。"
             )
         return value

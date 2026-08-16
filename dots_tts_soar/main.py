@@ -63,6 +63,10 @@ STORAGE_DIR = expand_path(os.getenv("STORAGE_DIR", os.path.join(PROJECT_DIR, "st
 CLONE_STORAGE_DIR = expand_path(
     os.getenv("CLONE_STORAGE_DIR", os.path.join(STORAGE_DIR, "clone"))
 )
+TIMBRE_STORAGE_DIR = expand_path(
+    os.getenv("TIMBRE_STORAGE_DIR", os.path.join(STORAGE_DIR, "timbre"))
+)
+TIMBRE_REFERENCE_DIR = os.path.join(TIMBRE_STORAGE_DIR, ".references")
 HF_MIRROR_DIR = expand_path(os.getenv("HF_MIRROR_DIR", "~/hf-mirror"))
 PROMPTS_DIR = expand_path(os.getenv("PROMPTS_DIR", CLONE_STORAGE_DIR))
 RUNTIME_CACHE_DIR = expand_path(
@@ -72,7 +76,7 @@ GPU_LOCK_FILE = expand_path(os.getenv("GPU_LOCK_FILE", os.path.join(RUNTIME_CACH
 LOCAL_FILES_ONLY = env_bool("LOCAL_FILES_ONLY", True)
 CUDA_RELEASE_DELAY = float(os.getenv("CUDA_RELEASE_DELAY", "2.0"))
 API_HOST = os.getenv("HOST", "0.0.0.0")
-API_PORT = int(os.getenv("PORT", "8308"))
+API_PORT = int(os.getenv("PORT", "8324"))
 
 DOTS_TTS_SOAR_MODEL_DIR = expand_path(
     os.getenv("DOTS_TTS_SOAR_MODEL_DIR", os.path.join(HF_MIRROR_DIR, "rednote-hilab/dots.tts-soar"))
@@ -180,6 +184,8 @@ if LOCAL_FILES_ONLY:
     os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 os.makedirs(PROMPTS_DIR, exist_ok=True)
+os.makedirs(TIMBRE_STORAGE_DIR, exist_ok=True)
+os.makedirs(TIMBRE_REFERENCE_DIR, exist_ok=True)
 os.makedirs(DOTS_TTS_SOAR_WORKER_TMP_DIR, exist_ok=True)
 os.makedirs(DOTS_TTS_SOAR_OUTPUT_DIR, exist_ok=True)
 for cache_key in ("HF_MODULES_CACHE", "NUMBA_CACHE_DIR", "MPLCONFIGDIR", "XDG_CACHE_HOME"):
@@ -217,8 +223,56 @@ def hash_filename(filename: str) -> str:
     return f"{digest}{ext}"
 
 
+def clone_prompt_audio_path(filename: str) -> str:
+    return os.path.join(PROMPTS_DIR, hash_filename(filename))
+
+
+def timbre_reference_map_path(filename: str) -> str:
+    return os.path.join(TIMBRE_REFERENCE_DIR, f"{hash_filename(filename)}.path")
+
+
+def prompt_audio_path(filename: str) -> str:
+    """解析克隆上传，或解析只保存在音色目录中的设计音频。"""
+    clone_path = clone_prompt_audio_path(filename)
+    if os.path.isfile(clone_path):
+        return clone_path
+
+    reference_path = timbre_reference_map_path(filename)
+    if os.path.isfile(reference_path):
+        with open(reference_path, "r", encoding="utf-8") as reference_file:
+            timbre_path = reference_file.read().strip()
+        if timbre_path and os.path.isfile(timbre_path):
+            return timbre_path
+    return clone_path
+
+
+def file_sha256(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def find_matching_timbre_audio(content: bytes) -> Optional[str]:
+    """识别已生成的音色，避免把同一份 WAV 再复制到克隆目录。"""
+    content_digest = hashlib.sha256(content).hexdigest()
+    with os.scandir(TIMBRE_STORAGE_DIR) as entries:
+        for entry in entries:
+            if not entry.is_file() or not entry.name.lower().endswith(".wav"):
+                continue
+            if file_sha256(entry.path) == content_digest:
+                return entry.path
+    return None
+
+
 def prompt_text_sidecar_path(filename: str) -> str:
-    return os.path.join(PROMPTS_DIR, f"{hash_filename(filename)}.prompt.txt")
+    clone_sidecar_path = os.path.join(PROMPTS_DIR, f"{hash_filename(filename)}.prompt.txt")
+    if os.path.isfile(clone_prompt_audio_path(filename)):
+        return clone_sidecar_path
+    if os.path.isfile(timbre_reference_map_path(filename)):
+        return os.path.join(TIMBRE_REFERENCE_DIR, f"{hash_filename(filename)}.prompt.txt")
+    return clone_sidecar_path
 
 
 def load_prompt_text_sidecar(filename: str) -> Optional[str]:
@@ -313,7 +367,7 @@ class DotsTtsSoarWorkerManager:
         self.last_error: Optional[str] = None
 
     def build_worker_payload(self, request: DotsTtsSoarSynthesizeRequest) -> dict:
-        ref_audio_path = os.path.join(PROMPTS_DIR, hash_filename(request.audio_path))
+        ref_audio_path = prompt_audio_path(request.audio_path)
         if not os.path.isfile(ref_audio_path):
             raise HTTPException(status_code=404, detail="音频不存在")
 
@@ -462,9 +516,23 @@ async def upload_audio(
     prompt_text: Optional[str] = Form(None),
 ):
     content = await audio.read()
-    save_path = os.path.join(PROMPTS_DIR, hash_filename(full_path))
-    with open(save_path, "wb") as file:
-        file.write(content)
+    clone_path = clone_prompt_audio_path(full_path)
+    timbre_path = find_matching_timbre_audio(content)
+    if timbre_path:
+        # 设计音色的原始 WAV 只保存在 timbre；这里仅保存解析引用供克隆服务使用。
+        if os.path.isfile(clone_path):
+            os.remove(clone_path)
+        clone_sidecar_path = os.path.join(PROMPTS_DIR, f"{hash_filename(full_path)}.prompt.txt")
+        if os.path.isfile(clone_sidecar_path):
+            os.remove(clone_sidecar_path)
+        with open(timbre_reference_map_path(full_path), "w", encoding="utf-8") as reference_file:
+            reference_file.write(timbre_path)
+    else:
+        reference_map_path = timbre_reference_map_path(full_path)
+        if os.path.isfile(reference_map_path):
+            os.remove(reference_map_path)
+        with open(clone_path, "wb") as file:
+            file.write(content)
     normalized_prompt_text = normalize_optional_text(prompt_text)
     save_prompt_text_sidecar(full_path, normalized_prompt_text)
     return {
@@ -479,7 +547,7 @@ async def upload_audio(
 
 @app.get("/v1/check/audio")
 async def check_audio_exists(file_name: str):
-    audio_path = os.path.join(PROMPTS_DIR, hash_filename(file_name))
+    audio_path = prompt_audio_path(file_name)
     exists = os.path.isfile(audio_path)
     return {
         "code": 200 if exists else 404,
@@ -490,7 +558,7 @@ async def check_audio_exists(file_name: str):
     }
 
 
-@app.post("/v2/synthesize")
+@app.post("/v2/dotsTTS/clone")
 async def synthesize_v2(request: DotsTtsSoarSynthesizeRequest):
     with gpu_runtime_lock("dots_tts_soar/synthesize"):
         with manager.lock:

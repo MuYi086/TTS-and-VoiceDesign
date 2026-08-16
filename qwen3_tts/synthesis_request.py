@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 
 
 class CloneSynthesisRequest(BaseModel):
-    """Base schema for ``/v2/synthesize`` voice-cloning requests.
+    """Base schema for ``/v1/qwen/clone`` voice-cloning requests.
 
     The WebUI may send model-specific compatibility fields, so unknown fields
     remain ignored.  ``style_prompt`` is deliberately an exception: synthesis
@@ -24,6 +24,6 @@ class CloneSynthesisRequest(BaseModel):
     def reject_style_prompt(cls, value: Any) -> Any:
         if isinstance(value, Mapping) and "style_prompt" in value:
             raise ValueError(
-                "style_prompt 不适用于 /v2/synthesize；该接口仅用于参考音频克隆。"
+                "style_prompt 不适用于 /v1/qwen/clone；该接口仅用于参考音频克隆。"
             )
         return value
