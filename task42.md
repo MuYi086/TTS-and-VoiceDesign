@@ -1,0 +1,1 @@
+在TTS-Studio-WebUI中index.html的"<div class="font-bold text-xs text-slate-700">插入控制块</div>"后插入BGM下拉选择器，默认选中ace_step_1_5，然后增加一个"生成BGM"的按钮，点击除了执行"插入BGM"按钮的功能外，还会调用选中的BGM模型生成背景音色，并且在插入的bgm的html自动绑定上这个音频。你评估后按照第一性原理实现

@@ -14,6 +14,7 @@ SoundEffect 生成。仓库采用“一个服务一个 uv 项目”的边界：H
 | MiMo TTS VoiceDesign | 8303 | 云端音色设计 | `/v1/mimo/timbre` |
 | Stable Audio 3 Medium | 8311 | 文本生成音乐或声效 | `/v1/stableAudio/soundEffect` |
 | MOSS-SoundEffect v2 | 8312 | 文本生成声效 | `/v1/moss/soundEffect` |
+| ACE-Step 1.5 XL Turbo | 8313 | 有声小说 BGM、主题音乐和 underscore | `/v1/aceStep/bgm` |
 | Qwen3-TTS Base | 8321 | 参考音频语音克隆 | `/v1/qwen/clone` |
 | VoxCPM2 | 8322 | 语音克隆、音色设计 | `/v1/voxcpm2/clone` |
 | LongCat-AudioDiT-3.5B | 8323 | 参考音频语音克隆 | `/v1/longCat/clone` |
@@ -34,6 +35,7 @@ LongCat_AudioDiT_3.5B_bf16/  LongCat-AudioDiT 服务和 worker
 dots_tts_soar/                dots.tts-soar 服务和 worker
 moss_soundEffect/             MOSS-SoundEffect v2 服务和 worker
 stable_audio_3_medium/        Stable Audio 3 Medium 服务和 worker
+ace_step_1_5/                  ACE-Step 1.5 BGM 服务和 worker
 qwen3_voiceDesign/            Qwen VoiceDesign 服务和 worker
 moss_voiceGenerator/          MOSS VoiceGenerator 服务和 worker
 mimo_tts/                     MiMo 云端编排服务
@@ -49,6 +51,7 @@ storage/                      上传音频、生成音频、sidecar、缓存和 
 | --- | --- | --- |
 | `storage/timbre/` | Qwen、MOSS、VoxCPM2、MiMo 生成的音色参考音频 | `TIMBRE_STORAGE_DIR` |
 | `storage/soundEffect/` | MOSS 和 Stable Audio 生成的声效 | `SOUNDEFFECT_STORAGE_DIR`、`STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR` |
+| `storage/bgm/` | ACE-Step 有声小说 BGM 和 OST | `BGM_STORAGE_DIR`、`ACESTEP_OUTPUT_DIR` |
 | `storage/clone/` | 参考音频、克隆结果和 Step 编辑结果 | `CLONE_STORAGE_DIR`、各服务的 `*_OUTPUT_DIR` |
 | `storage/.cache/runtime/` | worker 临时文件、库缓存和共享 GPU 锁 | `RUNTIME_CACHE_DIR`、`GPU_LOCK_FILE` |
 
@@ -66,13 +69,13 @@ LongCat 和 dots.tts-soar 会在 `storage/timbre/.references/` 保存引用映�
 
 ```bash
 for project in qwen3_tts mimo_tts voxcpm2 LongCat_AudioDiT_3.5B_bf16 \
-  dots_tts_soar moss_soundEffect stable_audio_3_medium \
+  dots_tts_soar moss_soundEffect stable_audio_3_medium ace_step_1_5 \
   qwen3_voiceDesign moss_voiceGenerator Step_Audio_EditX; do
   uv sync --project "$project" --locked
 done
 ```
 
-Step-Audio-EditX、MOSS-SoundEffect 和 Stable Audio 3 依赖外部源码或系统命令；
+ACE-Step 的 Diffusers 依赖当前使用官方 Git 版本；Step-Audio-EditX、MOSS-SoundEffect 和 Stable Audio 3 依赖外部源码或系统命令；
 先准备对应路径，再执行 `uv sync`。启动前应完成依赖同步，不要把 `start.sh` 当作依赖
 安装流程；使用 `--no-sync` 的服务尤其要求对应环境已经准备好。
 
@@ -89,15 +92,15 @@ Tokenizer 和上游源码就绪后启动全部服务：
 bash start.sh
 ```
 
-`start.sh` 会启动 8300、8301、8302、8303、8311、8312、8321、8322、8323、8324 和
-8331 共 11 个进程；8300 使用 `qwen3_tts` uv 项目中的轻量 HTTP 依赖，其余服务使用
+`start.sh` 会启动 8300、8301、8302、8303、8311、8312、8313、8321、8322、8323、8324 和
+8331 共 12 个进程；8300 使用 `qwen3_tts` uv 项目中的轻量 HTTP 依赖，其余服务使用
 各自的 uv 项目，本地 GPU 服务通过 `GPU_LOCK_FILE` 串行访问 GPU。
 任一子进程退出时脚本会终止其余进程组并清理 worker。
 
 健康检查：
 
 ```bash
-for port in 8300 8301 8302 8303 8311 8312 8321 8322 8323 8324 8331; do
+for port in 8300 8301 8302 8303 8311 8312 8313 8321 8322 8323 8324 8331; do
   curl -fsS "http://127.0.0.1:${port}/v1/health" >/dev/null && echo "${port}: ok"
 done
 ```
@@ -121,6 +124,7 @@ HOST=127.0.0.1 PORT=8321 \
 | MOSS VoiceGenerator | `$HF_MIRROR_DIR/OpenMOSS-Team/MOSS-VoiceGenerator` | `MOSS_VOICEGENERATOR_MODEL_DIR`、`MOSS_AUDIO_TOKENIZER_PATH` |
 | MOSS-SoundEffect | `$HF_MIRROR_DIR/OpenMOSS-Team/MOSS-SoundEffect-v2.0` | `MOSS_SOUNDEFFECT_CODE_PATH`、`MOSS_SOUNDEFFECT_MODEL_DIR` |
 | Stable Audio 3 Medium | `$HF_MIRROR_DIR/stabilityai/stable-audio-3-medium` | `STABLE_AUDIO_3_REPO_PATH`、`STABLE_AUDIO_3_MEDIUM_MODEL_DIR` |
+| ACE-Step 1.5 XL Turbo | `$HF_MIRROR_DIR/ACE-Step/acestep-v15-xl-turbo-diffusers` | `ACESTEP_MODEL_DIR`、`ACESTEP_OFFLOAD`、`ACESTEP_VAE_TILING` |
 | VoxCPM2 | `$HF_MIRROR_DIR/openbmb/VoxCPM2` | `VOXCPM2_MODEL_DIR`、仓库内 `voxcpm2/voxcpm2_helpers.py` |
 | LongCat-AudioDiT | `$HF_MIRROR_DIR/drbaph/LongCat-AudioDiT-3.5B-bf16` | `LONGCAT_AUDIODIT_REPO_PATH`、`LONGCAT_AUDIODIT_TOKENIZER_PATH` |
 | dots.tts-soar | `$HF_MIRROR_DIR/rednote-hilab/dots.tts-soar` | `DOTS_TTS_SOAR_MODEL_DIR` |
@@ -129,7 +133,7 @@ HOST=127.0.0.1 PORT=8321 \
 通用配置包括 `HOST`、`PORT`、`STORAGE_DIR`、`PROMPTS_DIR`、`RUNTIME_CACHE_DIR`、
 `GPU_LOCK_FILE`、`LOCAL_FILES_ONLY` 和 `CUDA_RELEASE_DELAY`。服务专用配置使用对应
 前缀，例如 `QWEN3_TTS_*`、`VOXCPM2_*`、`LONGCAT_AUDIODIT_*`、`DOTS_TTS_SOAR_*`、
-`MOSS_SOUNDEFFECT_*`、`STABLE_AUDIO_3_MEDIUM_*`、`STEP_AUDIO_EDITX_*`、
+`MOSS_SOUNDEFFECT_*`、`STABLE_AUDIO_3_MEDIUM_*`、`ACESTEP_*`、`STEP_AUDIO_EDITX_*`、
 `QWEN_VOICEDESIGN_*` 和 `MOSS_VOICEGENERATOR_*`。每个服务的 `/v1/health` 会报告
 生效的路径、运行时和可用性。
 
@@ -233,6 +237,31 @@ curl -X POST http://127.0.0.1:8311/v1/stableAudio/soundEffect \
 两个服务都保留旧请求格式的兼容别名。脚本制作场景的提示词规范、
 `prompt_en` 约束和 GPU 示例见 [`soundEffect/README.md`](soundEffect/README.md) 与
 [`soundEffect/声效提示词说明.md`](soundEffect/声效提示词说明.md)。
+
+## ACE-Step BGM 生成
+
+ACE-Step 独立监听 `8313`，只负责有声小说纯配乐；Stable Audio 继续承担 ambience /
+texture，MOSS-SoundEffect 继续承担明确事件型短音效。服务默认使用 BF16、model CPU
+offload、VAE tiling 和一次性 worker，生成结果保存到 `storage/bgm/`，前端可直接把返回
+的标准 48 kHz 双声道 WAV 写入已有 `bgmLibrary`。
+
+```bash
+curl -X POST http://127.0.0.1:8313/v1/aceStep/bgm \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"Dark cinematic ambient underscore, sparse felt piano, low cello drone, restrained dynamics, designed underneath spoken narration, no vocals","seconds":10,"steps":8,"bpm":58,"keyscale":"D minor","timesignature":"4","seed":42}' \
+  -o ace-step-bgm.wav
+```
+
+`prompt` 长度为 1–2000，`seconds` 为 10–600，`steps` 为 1–20，`bpm` 为 30–240；
+`keyscale`、`timesignature` 可省略，`seed=-1` 表示随机。成功响应包含
+`X-ACE-Step-Seed`、`X-ACE-Step-Sample-Rate` 和 `X-ACE-Step-Model` 响应头。先手动准备
+依赖再启动：
+
+```bash
+uv sync --project ace_step_1_5 --locked
+```
+
+本仓库的 `start.sh` 对 ACE-Step 使用 `uv run --no-sync`，不会在启动时安装依赖。
 
 ## Step-Audio-EditX 编辑
 

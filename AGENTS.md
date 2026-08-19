@@ -12,10 +12,10 @@
   不得在其中加载模型包或执行推理。
 - 模型服务位于 `mimo_tts/`、`qwen3_tts/`、`voxcpm2/`、
   `LongCat_AudioDiT_3.5B_bf16/`、`dots_tts_soar/`、`moss_soundEffect/`、
-  `stable_audio_3_medium/`、`qwen3_voiceDesign/`、`moss_voiceGenerator/` 和
+  `stable_audio_3_medium/`、`ace_step_1_5/`、`qwen3_voiceDesign/`、`moss_voiceGenerator/` 和
   `Step_Audio_EditX/`。
 - 最终默认端口：`8300` 控制面、`8301` Qwen VoiceDesign、`8302` MOSS VoiceGenerator、
-  `8303` MiMo、`8311` Stable Audio 3 Medium、`8312` MOSS-SoundEffect、`8321` Qwen3-TTS、
+  `8303` MiMo、`8311` Stable Audio 3 Medium、`8312` MOSS-SoundEffect、`8313` ACE-Step BGM、`8321` Qwen3-TTS、
   `8322` VoxCPM2、`8323` LongCat、`8324` dots.tts-soar、`8331` Step-Audio-EditX。
 - `tests/` 存放无模型 `unittest` 迁移回归测试；Stable Audio 测试独立存放。
   `soundEffect/` 存放 MOSS GPU 示例；`storage/` 存放运行音频、sidecar、缓存和 GPU 锁，
@@ -26,12 +26,13 @@
 本地模型推理需要 Python `3.12.13`、`uv` 和 CUDA 可用的主机。按照 `README.md` 准备模型权重
 与外部源码，然后使用 `uv sync --project <dir> --locked` 同步需要的项目。
 `bash start.sh` 会在 `qwen3_tts` uv 项目中启动轻量的 8300 控制面，并在各自项目中启动其余
-10 个 HTTP 进程；端口、路径、项目和运行参数均通过环境变量覆盖。
+11 个 HTTP 进程；端口、路径、项目和运行参数均通过环境变量覆盖。
 
 ```bash
 bash -n start.sh
 bash start.sh
 uv run --project qwen3_tts python -m unittest discover -s tests -v
+(cd ace_step_1_5 && uv run --project . python -m unittest discover -s tests -v)
 (cd stable_audio_3_medium && uv run --project . python -m unittest discover -s tests -v)
 curl -fsS http://127.0.0.1:8300/v1/control
 ```
@@ -49,7 +50,7 @@ curl -fsS http://127.0.0.1:8300/v1/control
   CUDA 释放等待时间。
 - 参考音频使用 WebUI 的 `full_path` 标识，并可保存 `prompt_text` sidecar。生成结果按用途
   保存：音色写入 `storage/timbre/`，音效写入 `storage/soundEffect/`，克隆/编辑音频写入
-  `storage/clone/`；这些目录都可覆盖。
+  `storage/clone/`；BGM 写入 `storage/bgm/`；这些目录都可覆盖。
 - 音色设计返回的 WAV 只能保存在 `storage/timbre/`。当 WebUI 为克隆预览把设计音频同步到
   Qwen3-TTS、VoxCPM2、LongCat 或 dots 服务时，只能在 `storage/timbre/.references/` 写入
   小型引用映射和文本 sidecar，不得在 `storage/clone/` 再复制一份设计 WAV；普通用户上传的
@@ -57,7 +58,7 @@ curl -fsS http://127.0.0.1:8300/v1/control
 - 参考音频克隆使用 `/v1/qwen/clone`、`/v1/voxcpm2/clone`、`/v1/longCat/clone` 和
   `/v2/dotsTTS/clone`；音色设计使用 `/v1/qwen/timbre`、`/v1/moss/timbre` 和
   `/v1/mimo/timbre`；音效使用 `/v1/stableAudio/soundEffect`、
-  `/v1/moss/soundEffect`；语音编辑使用 `/v1/stepAudioEditx/edit`。
+  `/v1/moss/soundEffect`；BGM 使用 `/v1/aceStep/bgm`；语音编辑使用 `/v1/stepAudioEditx/edit`。
 - 后端只注册并使用上述最终接口；不得新增或保留任何旧接口兼容别名。
 - 模型默认值集中放在各服务模块顶部。`start.sh` 只负责路由、路径、端口、环境和共享运行参数，
   不应静默替换推理默认值。
