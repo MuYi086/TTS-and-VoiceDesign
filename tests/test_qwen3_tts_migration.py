@@ -1,7 +1,8 @@
-"""No-model regression tests for the standalone Qwen3-TTS service."""
+"""独立 Qwen3-TTS 服务的无模型回归测试。"""
 
 from __future__ import annotations
 
+# Qwen3-TTS 测试保护 clone 路由、参考音频 sidecar 和一次性 worker 契约。
 import asyncio
 import io
 import os

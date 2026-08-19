@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""One-shot MOSS-VoiceGenerator inference worker."""
+"""MOSS-VoiceGenerator 一次性推理 worker。"""
 
 from __future__ import annotations
 
+# MOSS tokenizer、processor 和模型只在 worker 内导入，父 API 不承担 CUDA 生命周期。
 import gc
 import importlib.util
 import json
@@ -24,6 +25,7 @@ from moss_voice_design_compat import (
 
 
 def parse_args():
+    """解析一次 VoiceGenerator 请求的输入和输出文件。"""
     import argparse
 
     parser = argparse.ArgumentParser(description="One-shot MOSS VoiceGenerator worker")
@@ -33,6 +35,7 @@ def parse_args():
 
 
 def load_request(path: str) -> dict[str, Any]:
+    """读取并校验 JSON 对象请求。"""
     with open(path, encoding="utf-8") as file:
         return json.load(file)
 
@@ -45,6 +48,7 @@ def require_path(path: str, label: str) -> Path:
 
 
 def normalize_text(value: Any, label: str) -> str:
+    """校验文本字段并统一去除首尾空白。"""
     text = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", str(value or "").strip())
     if not text:
         raise ValueError(f"{label} 不能为空。")
@@ -52,6 +56,7 @@ def normalize_text(value: Any, label: str) -> str:
 
 
 def split_text(text: str, max_chars: int) -> list[str]:
+    """按标点切分音色设计文本，减少单次生成的上下文压力。"""
     if max_chars <= 0 or len(text) <= max_chars:
         return [text]
     chunks: list[str] = []
@@ -74,6 +79,7 @@ def split_text(text: str, max_chars: int) -> list[str]:
 
 
 def resolve_dtype(torch, value: str):
+    """把配置中的 dtype 名称转换为 torch 类型。"""
     requested = str(value or "auto").lower()
     if requested == "auto":
         return torch.bfloat16
@@ -84,6 +90,7 @@ def resolve_dtype(torch, value: str):
 
 
 def resolve_attention(torch, requested: str, dtype: Any) -> str:
+    """选择可用的 attention 后端，必要时回退到 SDPA。"""
     value = str(requested or "auto")
     if value != "auto":
         return value
@@ -98,6 +105,7 @@ def resolve_attention(torch, requested: str, dtype: Any) -> str:
 
 
 def decode_message(processor, outputs):
+    """从 MOSS 模型输出中解码出文本或音频 token 结果。"""
     install_moss_decode_compatibility(processor)
     messages = processor.decode(outputs)
     if not messages or messages[0] is None or not messages[0].audio_codes_list:
@@ -106,6 +114,7 @@ def decode_message(processor, outputs):
 
 
 def join_waveforms(waveforms: list[Any], sample_rate: int, pause_ms: int, torch) -> np.ndarray:
+    """在片段之间插入静音，并合并成可写入 WAV 的 numpy 波形。"""
     if not waveforms:
         raise RuntimeError("MOSS-VoiceGenerator 未返回音频。")
     segments = []
@@ -128,7 +137,7 @@ def join_waveforms(waveforms: list[Any], sample_rate: int, pause_ms: int, torch)
 
 
 def load_moss_processor(auto_processor, model_path: Path, codec_path: Path):
-    """Load the MOSS custom processor without leaking generic HF-only kwargs."""
+    """加载并兼容不同版本的 MOSS processor 参数。"""
     return auto_processor.from_pretrained(
         str(model_path),
         trust_remote_code=True,
@@ -138,6 +147,7 @@ def load_moss_processor(auto_processor, model_path: Path, codec_path: Path):
 
 
 def synthesize(request: dict[str, Any], output_wav: Path) -> None:
+    """加载 MOSS VoiceGenerator，生成音色设计音频并写出 WAV。"""
     try:
         import torch
         from transformers import AutoModel, AutoProcessor, processing_utils
@@ -211,6 +221,7 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
 
 
 def main() -> int:
+    """执行一次 worker，并在异常时返回非零状态。"""
     args = parse_args()
     try:
         synthesize(load_request(args.input_json), Path(args.output_wav).expanduser().resolve())

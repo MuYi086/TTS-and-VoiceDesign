@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""One-shot Step-Audio-EditX inference worker.
+"""Step-Audio-EditX 一次性推理 worker。
 
-Heavy imports intentionally stay inside ``synthesize``.  The parent HTTP
-service can therefore expose health and contract endpoints without CUDA.
+重型依赖刻意保留在 ``synthesize`` 内部导入，因此父 HTTP 服务无需 CUDA
+也可以提供健康检查和契约接口。
 """
 
 from __future__ import annotations
 
+# EditX 的 vLLM/ONNX 等重型依赖只在这里导入，父 API 无需 CUDA 环境即可健康检查。
 import gc
 import json
 import os
@@ -19,6 +20,7 @@ EDIT_TYPES = frozenset({"emotion", "style", "paralinguistic", "denoise", "vad", 
 
 
 def parse_args():
+    """解析编辑请求 JSON 和输出 WAV 路径。"""
     import argparse
 
     parser = argparse.ArgumentParser(description="One-shot Step-Audio-EditX worker")
@@ -28,6 +30,7 @@ def parse_args():
 
 
 def load_request(path: str) -> dict[str, Any]:
+    """读取并校验顶层为对象的编辑请求。"""
     with open(path, encoding="utf-8") as file:
         payload = json.load(file)
     if not isinstance(payload, dict):
@@ -36,6 +39,7 @@ def load_request(path: str) -> dict[str, Any]:
 
 
 def require_path(path: str, label: str, *, directory: bool = False) -> Path:
+    """校验文件或目录存在，并返回 Path 对象。"""
     resolved = Path(path).expanduser().resolve()
     if not resolved.exists() or (directory and not resolved.is_dir()):
         raise FileNotFoundError(f"{label}不存在：{resolved}")
@@ -43,6 +47,7 @@ def require_path(path: str, label: str, *, directory: bool = False) -> Path:
 
 
 def require_text(value: Any, label: str) -> str:
+    """读取非空文本字段，统一去除首尾空白。"""
     text = str(value or "").strip()
     if not text:
         raise ValueError(f"{label}不能为空。")
@@ -50,6 +55,7 @@ def require_text(value: Any, label: str) -> str:
 
 
 def parse_bool(value: Any, default: bool = False) -> bool:
+    """把 JSON 或环境风格的布尔值转换成 Python bool。"""
     if value is None:
         return default
     if isinstance(value, bool):
@@ -58,6 +64,7 @@ def parse_bool(value: Any, default: bool = False) -> bool:
 
 
 def load_upstream(code_path: Path):
+    """从本地 Step-Audio-EditX 源码加载上游推理入口。"""
     code_path = require_path(str(code_path), "Step-Audio-EditX 源码目录", directory=True)
     missing = [name for name in ("tts.py", "tokenizer.py") if not (code_path / name).is_file()]
     if missing:
@@ -78,6 +85,7 @@ def load_upstream(code_path: Path):
 
 
 def synthesize(request: dict[str, Any], output_wav: Path) -> None:
+    """加载 EditX 上游模型，执行编辑并把结果写入 WAV。"""
     if parse_bool(request.get("local_files_only"), True):
         os.environ["HF_HUB_OFFLINE"] = "1"
         os.environ["TRANSFORMERS_OFFLINE"] = "1"
@@ -153,6 +161,7 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
 
 
 def main() -> int:
+    """执行一次语音编辑 worker 并返回退出码。"""
     args = parse_args()
     try:
         synthesize(load_request(args.input_json), Path(args.output_wav).expanduser().resolve())

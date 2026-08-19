@@ -1,12 +1,12 @@
-"""Runtime helpers for the standalone dots.tts-soar uv service.
+"""独立 dots.tts-soar uv 服务的运行时辅助函数。
 
-The API process never imports the heavyweight model runtime.  It starts one
-worker with the same uv interpreter for each synthesis request, then validates
-the WAV and tears down the complete process group.
+API 进程不会导入重型模型运行时。每次合成请求都使用相同 uv 解释器启动
+一个 worker，随后校验 WAV 并拆除完整的进程组。
 """
 
 from __future__ import annotations
 
+# dots.tts 的重型依赖只允许出现在 worker；API 进程保持可测试、可诊断。
 import os
 import shutil
 import signal
@@ -20,7 +20,7 @@ from typing import Any
 
 @dataclass(frozen=True)
 class UvWorkerConfig:
-    """Settings for one-shot execution inside the current uv environment."""
+    """当前 uv 环境中一次性 worker 的启动参数。"""
 
     python_executable: str
     worker_script: str
@@ -34,7 +34,7 @@ class UvWorkerConfig:
 def persist_audio_bytes(
     audio_bytes: bytes, model_prefix: str, output_dir: str | os.PathLike[str]
 ) -> Path:
-    """Atomically persist a successful WAV response for local inspection."""
+    """原子保存成功的 WAV 响应，便于本地检查。"""
     if not audio_bytes:
         raise ValueError("cannot persist empty audio")
 
@@ -64,7 +64,7 @@ def persist_audio_bytes(
 
 
 def cuda_status() -> dict[str, Any]:
-    """Read GPU status without creating a CUDA context in the API process."""
+    """在不让 API 进程创建 CUDA 上下文的前提下读取 GPU 状态。"""
     status: dict[str, Any] = {"available": False, "source": "nvidia-smi"}
     nvidia_smi = shutil.which("nvidia-smi")
     if not nvidia_smi:
@@ -113,6 +113,7 @@ def cuda_status() -> dict[str, Any]:
 
 
 def process_is_running(process: Any) -> bool:
+    """判断子进程是否仍在运行，并兼容 unittest 使用的伪进程。"""
     if process is None:
         return False
     poll = getattr(process, "poll", None)
@@ -127,7 +128,7 @@ def terminate_process_group(
     terminate_timeout: float = 10,
     kill_timeout: float = 5,
 ) -> None:
-    """Ensure a one-shot worker and descendants have exited."""
+    """先发送 SIGTERM，超时后发送 SIGKILL，确保子进程组不会残留。"""
     if not process_is_running(process):
         return
 
@@ -180,11 +181,15 @@ def terminate_process_group(
             if callable(kill):
                 kill()
 
-    wait(timeout=kill_timeout)
+    try:
+        wait(timeout=kill_timeout)
+    except subprocess.TimeoutExpired:
+        # 清理阶段不能覆盖 worker 原始异常；SIGKILL 后仍未回收时交给系统继续回收。
+        pass
 
 
 def worker_error_excerpt(output: str, label: str) -> str:
-    """Keep the useful tail of a worker traceback for HTTP errors."""
+    """保留 worker traceback 的末尾关键信息，作为 HTTP 错误内容。"""
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     if not lines:
         return f"{label} worker 未输出错误信息。"
@@ -192,7 +197,7 @@ def worker_error_excerpt(output: str, label: str) -> str:
 
 
 def run_uv_worker(payload: dict[str, Any], config: UvWorkerConfig) -> bytes:
-    """Run one worker with the current uv interpreter and return WAV bytes."""
+    """在当前服务的 uv 环境中启动一次 worker 并读取生成的 WAV。"""
     python_executable = Path(config.python_executable)
     if not python_executable.is_file():
         raise RuntimeError(f"未找到 uv 环境 Python 解释器: {python_executable}")

@@ -1,7 +1,8 @@
-"""Small, dependency-light output cleanup helpers for generated WAV audio."""
+"""用于清理生成 WAV 输出的轻量音频工具。"""
 
 from __future__ import annotations
 
+# 使用轻量能量检测清理输出开头的静音，不把音频处理依赖带入 API 进程。
 from typing import Any
 
 LEADING_SILENCE_THRESHOLD_DB = -42.0
@@ -22,12 +23,11 @@ def trim_leading_silence(
     pre_roll_ms: int = LEADING_SILENCE_PRE_ROLL_MS,
     max_trim_ms: int = LEADING_SILENCE_MAX_TRIM_MS,
 ) -> tuple[Any, int]:
-    """Remove a substantial silent prefix while keeping a short onset guard.
+    """检测连续低能量窗口并裁剪前导静音，保留起音前的安全缓冲。
 
-    The input can be mono, ``(frames, channels)``, or ``(channels, frames)``.
-    Its original layout is retained so callers can write it straight back to a
-    WAV file.  A prefix shorter than ``min_silence_ms`` is left untouched to
-    avoid cutting natural speech onsets.
+    输入可以是单声道、``(frames, channels)`` 或 ``(channels, frames)``；
+    函数会保留原始布局，调用方可以直接将结果写回 WAV。短于
+    ``min_silence_ms`` 的前导部分保持不变，避免切掉自然语音起音。
     """
 
     audio = np.asarray(waveform, dtype=np.float32)

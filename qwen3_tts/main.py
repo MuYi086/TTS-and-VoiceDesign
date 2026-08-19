@@ -1,3 +1,12 @@
+"""Qwen3-TTS 本地语音克隆服务。
+
+HTTP 进程只负责校验请求、管理参考音频和启动一次性 worker；模型及
+CUDA 上下文始终留在独立子进程中，便于请求结束后彻底释放显存。
+"""
+
+from __future__ import annotations
+
+# 学习入口：上传参考音频后，API 解析 prompt，持有 GPU 锁，再启动一次性 worker。
 import fcntl
 import hashlib
 import importlib.util
@@ -35,6 +44,7 @@ PROJECT_DIR = os.path.dirname(SERVICE_DIR)
 
 
 def env_bool(name: str, default: bool = False) -> bool:
+    """解析服务启动所需的布尔环境变量。"""
     value = os.getenv(name)
     if value is None:
         return default
@@ -59,10 +69,12 @@ def env_optional_float(name: str, default: float | None = None) -> float | None:
 
 
 def expand_path(path: str) -> str:
+    """展开环境变量和用户目录，返回绝对路径。"""
     return os.path.abspath(os.path.expandvars(os.path.expanduser(path)))
 
 
 def normalize_optional_text(value: str | None) -> str | None:
+    """把可选文本统一成去首尾空白或 ``None``。"""
     if value is None:
         return None
     normalized = value.strip()
@@ -225,6 +237,7 @@ app = FastAPI(title="Unitale Qwen3-TTS Voice Clone API")
 
 
 class ForceCORS(BaseHTTPMiddleware):
+    """为本地 WebUI 请求添加跨域响应头。"""
     async def dispatch(self, request, call_next):
         if request.method == "OPTIONS":
             return Response(
@@ -259,7 +272,7 @@ def timbre_reference_map_path(filename: str) -> str:
 
 
 def prompt_audio_path(filename: str) -> str:
-    """Resolve clone uploads, or a timbre asset referenced for clone preview."""
+    """解析克隆上传，或解析克隆预览引用的音色设计资产。"""
     clone_path = clone_prompt_audio_path(filename)
     if os.path.isfile(clone_path):
         return clone_path
@@ -282,7 +295,7 @@ def file_sha256(path: str) -> str:
 
 
 def find_matching_timbre_audio(content: bytes) -> str | None:
-    """Find an existing designed voice without copying it into clone storage."""
+    """查找已有设计音频，避免将其复制到克隆存储目录。"""
     content_digest = hashlib.sha256(content).hexdigest()
     with os.scandir(TIMBRE_STORAGE_DIR) as entries:
         for entry in entries:
@@ -331,8 +344,8 @@ def store_uploaded_audio(
     clone_path = clone_prompt_audio_path(full_path)
     timbre_path = find_matching_timbre_audio(content)
     if timbre_path:
-        # The same designed voice may be uploaded again for clone preview. Keep
-        # the actual WAV only in timbre storage and persist a small resolver map.
+        # 同一份设计音色可能会再次上传用于克隆预览；实际 WAV 只保存在音色目录，
+        # 这里只持久化一份轻量的解析映射。
         if os.path.isfile(clone_path):
             os.remove(clone_path)
         clone_sidecar_path = os.path.join(PROMPTS_DIR, f"{hash_filename(full_path)}.prompt.txt")
@@ -404,6 +417,7 @@ def worker_error_excerpt(output: str) -> str:
 
 
 class Qwen3TtsSynthesizeRequest(CloneSynthesisRequest):
+    """Qwen3-TTS 克隆请求，补充模型专用的生成参数。"""
     text: str
     audio_path: str
     prompt_text: str | None = None
@@ -426,12 +440,14 @@ class Qwen3TtsSynthesizeRequest(CloneSynthesisRequest):
 
 
 class Qwen3TtsWorkerManager:
+    """管理参考音频解析、worker JSON 和一次性推理生命周期。"""
     def __init__(self):
         self.lock = threading.RLock()
         self.last_error: str | None = None
         self.last_output_path: str | None = None
 
     def build_worker_payload(self, request: Qwen3TtsSynthesizeRequest) -> dict:
+        """将请求字段、参考音频 sidecar 和服务默认值组合为 worker 输入。"""
         ref_audio_path = prompt_audio_path(request.audio_path)
         if not os.path.isfile(ref_audio_path):
             raise HTTPException(status_code=404, detail="音频不存在")
@@ -516,6 +532,7 @@ class Qwen3TtsWorkerManager:
         }
 
     def run_worker(self, payload: dict) -> bytes:
+        """启动当前 uv 环境中的 Qwen3-TTS worker，并读取结果 WAV。"""
         self.last_output_path = None
         python_executable = sys.executable
         if not python_executable or not os.path.isfile(python_executable):
@@ -612,6 +629,7 @@ manager = Qwen3TtsWorkerManager()
 
 @app.get("/v1/health")
 def health():
+    """返回服务配置和依赖状态，不加载 Qwen3-TTS 模型。"""
     cuda = cuda_status()
     return {
         "code": 200,
@@ -667,6 +685,7 @@ def health():
 
 @app.post("/internal/unload_all")
 def internal_unload_all(request: Request):
+    """保留本机控制接口；模型已由一次性 worker 自行释放。"""
     assert_local_request(request)
     with gpu_runtime_lock("qwen3_tts/unload"):
         with manager.lock:
@@ -680,12 +699,14 @@ async def upload_audio(
     full_path: str = Form(...),
     prompt_text: str | None = Form(None),
 ):
+    """在线程池中保存上传参考音频，避免阻塞 FastAPI 事件循环。"""
     content = await audio.read()
     return await run_in_threadpool(store_uploaded_audio, content, full_path, prompt_text)
 
 
 @app.get("/v1/check/audio")
 def check_audio_exists(file_name: str):
+    """检查逻辑路径对应的参考音频或音色引用是否存在。"""
     exists = os.path.isfile(prompt_audio_path(file_name))
     return {
         "code": 200 if exists else 404,
@@ -696,6 +717,7 @@ def check_audio_exists(file_name: str):
 
 @app.post("/v1/qwen/clone")
 def synthesize_v2(request: Qwen3TtsSynthesizeRequest):
+    """串行执行一次 Qwen3-TTS 克隆，并返回生成 WAV。"""
     with gpu_runtime_lock("qwen3_tts/synthesize"):
         with manager.lock:
             try:

@@ -1,7 +1,8 @@
-"""Persist successful TTS output WAV files for local inspection."""
+"""原子保存成功生成的 TTS WAV，便于本地检查。"""
 
 from __future__ import annotations
 
+# 克隆和音色设计共用原子落盘工具，避免并发请求看到不完整 WAV。
 import os
 import shutil
 import tempfile
@@ -12,7 +13,7 @@ PathLike = str | os.PathLike[str]
 
 
 def persist_audio_bytes(audio_bytes: bytes, model_prefix: str, output_dir: PathLike) -> Path:
-    """Atomically write generated audio bytes into the configured output directory."""
+    """原子保存生成的 TTS WAV，便于本地检查且不暴露半成品。"""
     if not audio_bytes:
         raise ValueError("cannot persist empty audio")
 
@@ -48,7 +49,7 @@ def persist_audio_bytes(audio_bytes: bytes, model_prefix: str, output_dir: PathL
 
 
 def persist_audio_file(source_path: PathLike, model_prefix: str, output_dir: PathLike) -> Path:
-    """Atomically copy a validated worker WAV into the output directory."""
+    """把 worker 已生成的 WAV 复制到业务输出目录并原子替换。"""
     output_directory = Path(output_dir)
     output_directory.mkdir(parents=True, exist_ok=True)
     timestamp = time.strftime("%Y%m%d_%H%M%S")

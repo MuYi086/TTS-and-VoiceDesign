@@ -1,7 +1,8 @@
-"""HTTP wrapper for one-shot dots.tts-soar voice cloning."""
+"""dots.tts-soar 一次性语音克隆的 HTTP 封装。"""
 
 from __future__ import annotations
 
+# 学习入口：dots 服务将每个请求序列化给当前 uv 环境的 worker，父进程不加载重型依赖。
 import fcntl
 import hashlib
 import importlib.util
@@ -30,6 +31,7 @@ PROJECT_DIR = os.path.dirname(SERVICE_DIR)
 
 
 def env_bool(name: str, default: bool = False) -> bool:
+    """解析启动配置中的布尔环境变量。"""
     value = os.getenv(name)
     if value is None:
         return default
@@ -37,10 +39,12 @@ def env_bool(name: str, default: bool = False) -> bool:
 
 
 def expand_path(path: str) -> str:
+    """展开环境变量和用户目录，返回绝对路径。"""
     return os.path.abspath(os.path.expandvars(os.path.expanduser(path)))
 
 
 def normalize_optional_text(value: str | None) -> str | None:
+    """把可选文本清理成字符串或 ``None``。"""
     if value is None:
         return None
     normalized = value.strip()
@@ -50,6 +54,7 @@ def normalize_optional_text(value: str | None) -> str | None:
 
 
 def normalize_synthesis_text(text: str) -> str:
+    """去除 Markdown 标题标记，避免额外格式被模型朗读。"""
     normalized = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", (text or "").strip())
     normalized = re.sub(r"(?m)^\s*[-*+]\s+", "", normalized)
     if not normalized:
@@ -188,6 +193,7 @@ app = FastAPI(title="Unitale dots.tts-soar Voice Clone API")
 
 
 class ForceCORS(BaseHTTPMiddleware):
+    """为本地 WebUI 提供跨域响应和 OPTIONS 预检支持。"""
     async def dispatch(self, request, call_next):
         if request.method == "OPTIONS":
             return Response(
@@ -356,7 +362,7 @@ def wait_after_cuda_release(label: str) -> None:
 
 
 class DotsTtsSoarSynthesizeRequest(CloneSynthesisRequest):
-    """dots.tts-soar official clone parameters."""
+    """dots.tts-soar 官方克隆参数及本项目兼容字段。"""
 
     text: str
     audio_path: str
@@ -390,11 +396,13 @@ DOTS_TTS_SOAR_WORKER = UvWorkerConfig(
 
 
 class DotsTtsSoarWorkerManager:
+    """管理 dots 参考音频解析、worker JSON 和进程清理。"""
     def __init__(self):
         self.lock = threading.RLock()
         self.last_error: str | None = None
 
     def build_worker_payload(self, request: DotsTtsSoarSynthesizeRequest) -> dict:
+        """把 HTTP 请求转换为 dots 一次性 worker 使用的参数字典。"""
         ref_audio_path = prompt_audio_path(request.audio_path)
         if not os.path.isfile(ref_audio_path):
             raise HTTPException(status_code=404, detail="音频不存在")
@@ -460,6 +468,7 @@ class DotsTtsSoarWorkerManager:
         }
 
     def run_worker(self, payload: dict) -> bytes:
+        """调用当前 uv 环境的 dots worker，并验证返回 WAV。"""
         try:
             audio = run_uv_worker(payload, DOTS_TTS_SOAR_WORKER)
             self.last_error = None
@@ -474,6 +483,7 @@ manager = DotsTtsSoarWorkerManager()
 
 @app.get("/v1/health")
 def health():
+    """返回 dots 模型、源码、worker 和 GPU 的就绪状态。"""
     cuda = cuda_status()
     required_files = {
         name: os.path.isfile(os.path.join(DOTS_TTS_SOAR_MODEL_DIR, name))
@@ -539,6 +549,7 @@ def health():
 
 @app.post("/internal/unload_all")
 def internal_unload_all(request: Request):
+    """保留本机控制接口；一次性 worker 已在请求结束时退出。"""
     assert_local_request(request)
     with gpu_runtime_lock("dots_tts_soar/unload"):
         with manager.lock:
@@ -552,12 +563,14 @@ async def upload_audio(
     full_path: str = Form(...),
     prompt_text: str | None = Form(None),
 ):
+    """在线程池中保存参考音频和可选的文本 sidecar。"""
     content = await audio.read()
     return await run_in_threadpool(store_uploaded_audio, content, full_path, prompt_text)
 
 
 @app.get("/v1/check/audio")
 def check_audio_exists(file_name: str):
+    """检查逻辑参考路径是否对应有效的本地音频。"""
     audio_path = prompt_audio_path(file_name)
     exists = os.path.isfile(audio_path)
     return {
@@ -571,6 +584,7 @@ def check_audio_exists(file_name: str):
 
 @app.post("/v2/dotsTTS/clone")
 def synthesize_v2(request: DotsTtsSoarSynthesizeRequest):
+    """串行执行 dots.tts-soar 克隆并返回生成 WAV。"""
     with gpu_runtime_lock("dots_tts_soar/synthesize"):
         with manager.lock:
             try:

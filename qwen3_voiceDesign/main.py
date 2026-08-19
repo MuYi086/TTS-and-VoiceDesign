@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Standalone HTTP service for Qwen3-TTS VoiceDesign."""
+"""独立 Qwen3-TTS VoiceDesign HTTP 服务。"""
 
 from __future__ import annotations
 
+# 学习入口：VoiceDesign API 不导入模型，只负责请求校验、锁、worker 和音频存储。
 import fcntl
 import importlib.util
 import json
@@ -32,6 +33,7 @@ REPOSITORY_DIR = PROJECT_DIR.parent
 
 
 def env_bool(name: str, default: bool = False) -> bool:
+    """解析启动脚本传入的布尔环境变量。"""
     value = os.getenv(name)
     if value is None:
         return default
@@ -39,6 +41,7 @@ def env_bool(name: str, default: bool = False) -> bool:
 
 
 def expand_path(path: str) -> str:
+    """展开用户目录和环境变量，返回绝对路径。"""
     return os.path.abspath(os.path.expandvars(os.path.expanduser(path)))
 
 
@@ -102,6 +105,7 @@ app = FastAPI(title="Unitale Qwen3-TTS VoiceDesign API")
 
 
 class ForceCORS(BaseHTTPMiddleware):
+    """给本地 WebUI 请求补充跨域响应头。"""
     async def dispatch(self, request, call_next):
         if request.method == "OPTIONS":
             return Response(
@@ -122,7 +126,7 @@ app.add_middleware(ForceCORS)
 
 
 class QwenDesignRequest(BaseModel):
-    """Request schema for the standalone VoiceDesign service."""
+    """独立 VoiceDesign 服务的请求参数，文本和音色描述均由 WebUI 提供。"""
 
     voice_description: str
     text: str = "这是生成的参考音频预览。"
@@ -139,6 +143,7 @@ class QwenDesignRequest(BaseModel):
 
 
 def module_available(module_name: str) -> bool:
+    """只检查模块规格，不实际导入重型依赖。"""
     try:
         return importlib.util.find_spec(module_name) is not None
     except (ImportError, ModuleNotFoundError, ValueError):
@@ -147,6 +152,7 @@ def module_available(module_name: str) -> bool:
 
 @contextmanager
 def gpu_runtime_lock(label: str):
+    """通过共享文件锁保证多个本地 GPU 服务不同时推理。"""
     with open(GPU_LOCK_FILE, "a+", encoding="utf-8") as lock_file:
         print(f"[GPU 锁] 等待进入: {label}")
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
@@ -159,6 +165,7 @@ def gpu_runtime_lock(label: str):
 
 
 def wait_after_cuda_release(label: str = "") -> None:
+    """worker 退出后等待 CUDA 资源归还，再允许下一个请求进入。"""
     if CUDA_RELEASE_DELAY <= 0:
         return
     if label:
@@ -174,6 +181,7 @@ def worker_error_excerpt(output: str) -> str:
 
 
 class QwenVoiceDesignWorkerManager:
+    """组装 VoiceDesign worker 请求并管理临时 JSON/WAV 文件。"""
     def __init__(self):
         self.lock = threading.RLock()
         self.last_error: str | None = None
@@ -183,6 +191,7 @@ class QwenVoiceDesignWorkerManager:
         return fallback if value is None else value
 
     def build_worker_payload(self, request: QwenDesignRequest) -> dict[str, Any]:
+        """将请求字段与环境默认值合并为 worker 输入字典。"""
         payload = request.model_dump()
         payload.update(
             {
@@ -204,6 +213,7 @@ class QwenVoiceDesignWorkerManager:
         return payload
 
     def run_worker(self, payload: dict[str, Any]) -> bytes:
+        """在 qwen3_voiceDesign uv 解释器中执行一次隔离推理。"""
         python_executable = sys.executable
         if not python_executable or not os.path.isfile(python_executable):
             raise RuntimeError("未找到 qwen3_voiceDesign uv 环境的 Python 解释器。")
@@ -299,6 +309,7 @@ manager = QwenVoiceDesignWorkerManager()
 
 @app.get("/v1/health")
 def health():
+    """返回 VoiceDesign 依赖和模型状态，不加载任何模型权重。"""
     cuda = cuda_status()
     return {
         "code": 200,
@@ -343,6 +354,7 @@ def health():
 
 @app.post("/internal/unload_all")
 def internal_unload_all(request: Request):
+    """保留内部控制契约；一次性 worker 已在请求结束时退出。"""
     client_host = request.client.host if request.client else ""
     if client_host not in {"127.0.0.1", "::1", "localhost"}:
         raise HTTPException(status_code=403, detail="仅允许本机访问内部接口")
@@ -351,6 +363,7 @@ def internal_unload_all(request: Request):
 
 @app.post("/v1/qwen/timbre")
 def qwen_design(request: QwenDesignRequest):
+    """串行执行一次音色设计，并将 WAV 保存到 timbre 目录。"""
     with gpu_runtime_lock("qwen/design"):
         with manager.lock:
             try:

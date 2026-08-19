@@ -1,7 +1,8 @@
-"""No-model regression tests for the 8300 control-plane service."""
+"""8300 控制面服务的无模型回归测试。"""
 
 from __future__ import annotations
 
+# 控制面测试确保 8300 只做存储、健康检查和 MiMo 转发，不加载模型。
 import importlib.util
 import os
 import sys

@@ -77,3 +77,13 @@ Python 使用 4 个空格缩进，函数和变量使用 `snake_case`，Pydantic 
 `moss_voiceGenerator` 的 `moss-tts` 本地源码路径是上文明确的唯一例外。
 `MIMO_API_KEY` 必须通过环境变量提供。Commit subject 使用简洁的 Conventional Commit 格式，
 例如 `feat:`、`fix:` 或 `docs:`。
+
+## Python 注释规范
+
+- Python 注释和 Docstring 默认使用简体中文。
+- Python 标识符、类型名、库名、API 名称和业内通用技术术语保持英文。
+- 公共函数、公共类及重要业务入口应提供 Docstring。
+- 复杂算法、进程生命周期、并发控制、GPU/CUDA 资源管理、
+  dtype/device 选择及兼容性 workaround 应说明“为什么这样做”。
+- 不为显而易见的赋值、简单条件判断和自解释代码添加逐行注释。
+- Docstring 遵循 Google Style 与 PEP 257。

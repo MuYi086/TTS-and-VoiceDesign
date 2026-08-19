@@ -1,3 +1,12 @@
+"""VoxCPM2 本地语音克隆与音色设计 HTTP 服务。
+
+API 层只承担输入校验、参考音频管理、GPU 文件锁和 worker 生命周期。
+真正的模型导入与推理由当前 uv 项目中的一次性子进程完成。
+"""
+
+from __future__ import annotations
+
+# 学习入口：VoxCPM2 同时支持克隆和音色设计，两条路径共用 GPU 锁与 worker 管理。
 import fcntl
 import hashlib
 import importlib.util
@@ -32,6 +41,7 @@ PROJECT_DIR = os.path.dirname(SERVICE_DIR)
 
 
 def env_bool(name: str, default: bool = False) -> bool:
+    """解析布尔环境变量。"""
     value = os.getenv(name)
     if value is None:
         return default
@@ -39,10 +49,12 @@ def env_bool(name: str, default: bool = False) -> bool:
 
 
 def expand_path(path: str) -> str:
+    """展开环境变量和用户目录，返回绝对路径。"""
     return os.path.abspath(os.path.expandvars(os.path.expanduser(path)))
 
 
 def normalize_optional_text(value: str | None) -> str | None:
+    """把可选文本规范化为去空白字符串或 ``None``。"""
     if value is None:
         return None
     normalized = value.strip()
@@ -89,9 +101,8 @@ VOXCPM2_EXTERNAL_HELPER_PATHS = {
 
 def resolve_voxcpm2_helper_script(configured_path: str | None) -> str:
     helper_path = expand_path(configured_path or VOXCPM2_HELPER_DEFAULT)
-    # Earlier versions exported a helper from the adjacent timbre-design
-    # project. Fall back only when one of those known stale paths is missing,
-    # while keeping arbitrary user-provided helper overrides intact.
+    # 旧版本曾从相邻的音色设计项目导出辅助脚本。只有已知的过期路径缺失时才回退，
+    # 同时保留用户任意指定辅助脚本路径的覆盖能力。
     if helper_path in VOXCPM2_EXTERNAL_HELPER_PATHS and not os.path.isfile(helper_path):
         return VOXCPM2_HELPER_DEFAULT
     return helper_path
@@ -169,6 +180,7 @@ app = FastAPI(title="Unitale VoxCPM2 Voice Clone API")
 
 
 class ForceCORS(BaseHTTPMiddleware):
+    """为本地 WebUI 提供跨域响应和预检处理。"""
     async def dispatch(self, request, call_next):
         if request.method == "OPTIONS":
             return Response(
@@ -189,6 +201,7 @@ app.add_middleware(ForceCORS)
 
 
 def hash_filename(filename: str) -> str:
+    """使用逻辑路径哈希生成安全且稳定的参考音频文件名。"""
     ext = os.path.splitext(filename)[1] or ".wav"
     h = hashlib.md5(filename.encode("utf-8")).hexdigest()
     return f"{h}{ext}"
@@ -271,7 +284,7 @@ def store_uploaded_audio(
     full_path: str,
     prompt_text: str | None,
 ) -> dict[str, object]:
-    """同步保存参考音频和 sidecar，避免阻塞异步请求处理。"""
+    """保存普通克隆上传，或为已设计音色写入轻量引用映射。"""
     clone_path = clone_prompt_audio_path(full_path)
     timbre_path = find_matching_timbre_audio(content)
     if timbre_path:
@@ -307,21 +320,21 @@ def module_available(module_name: str) -> bool:
 
 
 def persist_generated_audio(source_path: str, operation: str = "clone") -> str:
-    """Copy a validated worker WAV into its semantic storage category."""
+    """将校验后的 worker WAV 保存到对应业务目录，而不是混用存储空间。"""
     output_dir = VOXCPM2_TIMBRE_OUTPUT_DIR if operation == "voice_design" else VOXCPM2_OUTPUT_DIR
     prefix = "voxcpm2_voicedesign" if operation == "voice_design" else "voxcpm2"
     return str(persist_audio_file(source_path, prefix, output_dir))
 
 
 def persist_generated_audio_bytes(audio_bytes: bytes, operation: str = "clone") -> str:
-    """Persist route output, including bytes returned by a mocked worker."""
+    """保存路由输出，包括测试替身直接返回的 WAV 字节。"""
     output_dir = VOXCPM2_TIMBRE_OUTPUT_DIR if operation == "voice_design" else VOXCPM2_OUTPUT_DIR
     prefix = "voxcpm2_voicedesign" if operation == "voice_design" else "voxcpm2"
     return str(persist_audio_bytes(audio_bytes, prefix, output_dir))
 
 
 def sha256_file(path: str) -> str:
-    """Return the content hash used to detect stale same-name uploads."""
+    """返回用于检测同名旧上传的内容哈希。"""
     digest = hashlib.sha256()
     with open(path, "rb") as file_obj:
         for chunk in iter(lambda: file_obj.read(1024 * 1024), b""):
@@ -330,6 +343,7 @@ def sha256_file(path: str) -> str:
 
 
 def assert_local_request(request: Request) -> None:
+    """限制内部 worker 控制接口只能由本机访问。"""
     client_host = request.client.host if request.client else ""
     if client_host not in {"127.0.0.1", "::1", "localhost"}:
         raise HTTPException(status_code=403, detail="仅允许本机访问内部接口")
@@ -337,6 +351,7 @@ def assert_local_request(request: Request) -> None:
 
 @contextmanager
 def gpu_runtime_lock(label: str):
+    """通过共享文件锁串行化克隆和音色设计推理。"""
     with open(GPU_LOCK_FILE, "a+", encoding="utf-8") as lock_file:
         print(f"[GPU 锁] 等待进入: {label}")
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
@@ -349,6 +364,7 @@ def gpu_runtime_lock(label: str):
 
 
 def wait_after_cuda_release(label: str = "") -> None:
+    """worker 退出后等待显存释放，再允许下一个请求进入。"""
     if CUDA_RELEASE_DELAY <= 0:
         return
     if label:
@@ -357,6 +373,7 @@ def wait_after_cuda_release(label: str = "") -> None:
 
 
 def normalize_synthesis_text(text: str) -> str:
+    """清理 WebUI 文本中的 Markdown 标题标记，避免被模型当作内容朗读。"""
     normalized = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", (text or "").strip())
     normalized = re.sub(r"(?m)^\s*[-*+]\s+", "", normalized)
     if not normalized:
@@ -405,6 +422,7 @@ def contains_nonverbal_tag_marker(text: str | None) -> bool:
 
 
 class VoxCpm2SynthesizeRequest(CloneSynthesisRequest):
+    """VoxCPM2 克隆请求及其可选控制参数。"""
     text: str
     audio_path: str
     prompt_text: str | None = None
@@ -452,11 +470,13 @@ class VoxCpm2SynthesizeRequest(CloneSynthesisRequest):
 
 
 class VoxCpm2WorkerManager:
+    """管理 VoxCPM2 克隆 worker 和输出文件的生命周期。"""
     def __init__(self):
         self.lock = threading.RLock()
         self.last_error: str | None = None
 
     def build_worker_payload(self, request: VoxCpm2SynthesizeRequest) -> dict:
+        """解析参考音频并构造一次性 worker 所需的 JSON。"""
         ref_audio_path = prompt_audio_path(request.audio_path)
         if not os.path.isfile(ref_audio_path):
             raise HTTPException(status_code=404, detail="音频不存在")
@@ -608,6 +628,7 @@ class VoxCpm2WorkerManager:
                     pass
 
     def run_worker(self, payload: dict, worker_script: str | None = None) -> bytes:
+        """执行克隆 worker；异常时保留错误摘要并清理进程组。"""
         try:
             audio_bytes = self._run_worker_once(payload, worker_script=worker_script)
             self.last_error = None
@@ -659,6 +680,7 @@ def voice_design_is_ready() -> bool:
 
 @app.get("/v1/health")
 def health():
+    """返回 VoxCPM2、音色设计 worker 和 GPU 的就绪状态。"""
     cuda = cuda_status()
     return {
         "code": 200,
@@ -723,6 +745,7 @@ def health():
 
 
 def voxcpm2_design(request: VoxCpm2VoiceDesignRequest):
+    """串行执行无参考音频的 VoxCPM2 音色设计。"""
     with gpu_runtime_lock("voxcpm2/design"):
         try:
             payload = build_voice_design_worker_payload(request)
@@ -748,6 +771,7 @@ def voxcpm2_design(request: VoxCpm2VoiceDesignRequest):
 
 @app.post("/internal/unload_all")
 def internal_unload_all(request: Request):
+    """保留本机控制契约；一次性 worker 退出后没有常驻模型。"""
     assert_local_request(request)
     with gpu_runtime_lock("voxcpm2/unload"):
         with manager.lock:
@@ -761,12 +785,14 @@ async def upload_audio(
     full_path: str = Form(...),
     prompt_text: str | None = Form(None),
 ):
+    """在线程池中保存克隆参考音频，避免阻塞事件循环。"""
     content = await audio.read()
     return await run_in_threadpool(store_uploaded_audio, content, full_path, prompt_text)
 
 
 @app.get("/v1/check/audio")
 def check_audio_exists(file_name: str):
+    """检查逻辑参考路径是否已映射到本地音频。"""
     audio_path = prompt_audio_path(file_name)
     exists = os.path.isfile(audio_path)
     return {
@@ -779,6 +805,7 @@ def check_audio_exists(file_name: str):
 
 
 def synthesize_voxcpm2_payload(data: object) -> Response:
+    """在共享 GPU 锁内执行同步克隆流程并持久化结果。"""
     with gpu_runtime_lock("voxcpm2/synthesize"):
         try:
             with manager.lock:
@@ -800,7 +827,7 @@ def synthesize_voxcpm2_payload(data: object) -> Response:
 
 @app.post("/v1/voxcpm2/clone")
 async def synthesize_v2(request: Request) -> Response:
-    """Parse the async request body, then run the blocking clone lifecycle in a worker thread."""
+    """解析异步请求体，再在线程池中执行阻塞的克隆生命周期。"""
     data = await request.json()
     return await run_in_threadpool(synthesize_voxcpm2_payload, data)
 

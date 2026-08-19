@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Standalone HTTP service for MOSS-VoiceGenerator VoiceDesign."""
+"""独立 MOSS-VoiceGenerator VoiceDesign HTTP 服务。"""
 
 from __future__ import annotations
 
+# 学习入口：MOSS VoiceGenerator 的模型只在一次性 worker 中加载，API 进程保持轻量。
 import fcntl
 import importlib.util
 import json
@@ -33,6 +34,7 @@ REPOSITORY_DIR = PROJECT_DIR.parent
 
 
 def env_bool(name: str, default: bool = False) -> bool:
+    """解析启动配置中的布尔环境变量。"""
     value = os.getenv(name)
     if value is None:
         return default
@@ -40,6 +42,7 @@ def env_bool(name: str, default: bool = False) -> bool:
 
 
 def expand_path(path: str) -> str:
+    """展开环境变量和用户目录，返回绝对路径。"""
     return os.path.abspath(os.path.expandvars(os.path.expanduser(path)))
 
 
@@ -108,6 +111,7 @@ app = FastAPI(title="Unitale MOSS-VoiceGenerator VoiceDesign API")
 
 
 class ForceCORS(BaseHTTPMiddleware):
+    """为本地 WebUI 提供跨域响应和预检处理。"""
     async def dispatch(self, request, call_next):
         if request.method == "OPTIONS":
             return Response(
@@ -128,7 +132,7 @@ app.add_middleware(ForceCORS)
 
 
 class MossDesignRequest(BaseModel):
-    """Request schema for the standalone MOSS VoiceGenerator endpoint."""
+    """独立 MOSS VoiceGenerator 音色设计接口的请求参数。"""
 
     voice_description: str
     text: str = "这是生成的参考音频预览。"
@@ -153,6 +157,7 @@ def module_available(module_name: str) -> bool:
 
 @contextmanager
 def gpu_runtime_lock(label: str):
+    """通过共享文件锁串行化 MOSS 的 GPU 推理。"""
     with open(GPU_LOCK_FILE, "a+", encoding="utf-8") as lock_file:
         print(f"[GPU 锁] 等待进入: {label}")
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
@@ -165,6 +170,7 @@ def gpu_runtime_lock(label: str):
 
 
 def wait_after_cuda_release(label: str = "") -> None:
+    """worker 退出后等待 CUDA 释放，再允许下一个请求进入。"""
     if CUDA_RELEASE_DELAY <= 0:
         return
     if label:
@@ -180,6 +186,7 @@ def worker_error_excerpt(output: str) -> str:
 
 
 class MossVoiceGeneratorWorkerManager:
+    """组装音色设计请求，并管理一次性 worker 的临时文件。"""
     def __init__(self):
         self.lock = threading.RLock()
         self.last_error: str | None = None
@@ -189,6 +196,7 @@ class MossVoiceGeneratorWorkerManager:
         return fallback if value is None else value
 
     def build_worker_payload(self, request: MossDesignRequest) -> dict[str, Any]:
+        """将请求字段与环境默认值组合成 worker JSON。"""
         payload = request.model_dump()
         payload.update(
             {
@@ -215,6 +223,7 @@ class MossVoiceGeneratorWorkerManager:
         return payload
 
     def run_worker(self, payload: dict[str, Any]) -> bytes:
+        """在 MOSS 项目解释器中执行一次 VoiceGenerator 推理。"""
         python_executable = sys.executable
         if not python_executable or not os.path.isfile(python_executable):
             raise RuntimeError("未找到 moss_voiceGenerator uv 环境的 Python 解释器。")
@@ -306,6 +315,7 @@ manager = MossVoiceGeneratorWorkerManager()
 
 @app.get("/v1/health")
 def health():
+    """返回 MOSS 模型、tokenizer、worker 和 GPU 的状态。"""
     cuda = cuda_status()
     return {
         "code": 200,
@@ -350,6 +360,7 @@ def health():
 
 @app.post("/internal/unload_all")
 def internal_unload_all(request: Request):
+    """保留本机控制契约；一次性 worker 已经自行释放模型。"""
     client_host = request.client.host if request.client else ""
     if client_host not in {"127.0.0.1", "::1", "localhost", "testclient"}:
         raise HTTPException(status_code=403, detail="仅允许本机访问内部接口")
@@ -358,6 +369,7 @@ def internal_unload_all(request: Request):
 
 @app.post("/v1/moss/timbre")
 def moss_design(request: MossDesignRequest):
+    """串行执行 MOSS 音色设计，并将 WAV 保存到 timbre 目录。"""
     with gpu_runtime_lock("moss/design"):
         with manager.lock:
             try:

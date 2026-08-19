@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""One-shot Stable Audio 3 Medium inference worker.
+"""Stable Audio 3 Medium 一次性推理 worker。
 
-The worker owns the heavyweight model lifecycle.  It runs inside the same
-Python 3.12 uv project as the API, writes one WAV, clears CUDA allocations and
-exits.  The upstream runtime can use flex-attention/SDPA when FlashAttention
-is absent; strict FlashAttention validation is available by configuration.
+worker 负责重型模型的完整生命周期，在与 API 相同的 Python 3.12 uv 项目中运行，
+写出一个 WAV、清理 CUDA 分配并退出。缺少 FlashAttention 时，上游运行时可以使用
+flex-attention/SDPA；也可以通过配置启用严格的 FlashAttention 校验。
 """
 
 from __future__ import annotations
 
+# Stable Audio 的 torch、diffusers 和上游源码只在此子进程导入。
 import argparse
 import copy
 import gc
@@ -29,6 +29,7 @@ REQUIRED_MODEL_FILES = (
 
 
 def parse_args() -> argparse.Namespace:
+    """解析声效请求、输出 WAV 路径和运行参数。"""
     parser = argparse.ArgumentParser(description="Run one Stable Audio 3 Medium request")
     parser.add_argument("--input-json", required=True)
     parser.add_argument("--output-wav", required=True)
@@ -36,6 +37,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def read_payload(path: str) -> dict[str, Any]:
+    """读取并校验一个 JSON 对象请求。"""
     with open(path, encoding="utf-8") as file:
         payload = json.load(file)
     if not isinstance(payload, dict):
@@ -59,6 +61,7 @@ def positive_float(payload: dict[str, Any], key: str, *, maximum: float | None =
 
 
 def require_model_path(path: str) -> Path:
+    """确认 Stable Audio 本地权重目录存在且包含必需文件。"""
     model_path = Path(path).expanduser().resolve()
     if not model_path.is_dir():
         raise FileNotFoundError(
@@ -74,6 +77,7 @@ def require_model_path(path: str) -> Path:
 
 
 def maybe_add_upstream_path(upstream_path: Path) -> None:
+    """将本地 stable-audio-3 源码加入 sys.path，避免动态下载。"""
     upstream_path = upstream_path.expanduser().resolve()
     if not (upstream_path / "stable_audio_3").is_dir():
         raise FileNotFoundError(
@@ -100,7 +104,7 @@ def import_runtime(upstream_path: Path):
 
 
 def check_flash_attention(torch: Any, required: bool) -> bool:
-    """Validate FlashAttention when strict mode is enabled, otherwise report fallback."""
+    """严格模式校验 FlashAttention，否则说明将使用上游 SDPA 回退。"""
     try:
         import flash_attn
         from flash_attn import flash_attn_func
@@ -125,7 +129,7 @@ def check_flash_attention(torch: Any, required: bool) -> bool:
 
 
 def require_cuda(torch: Any) -> None:
-    """Apply Stable Audio 3 Medium's GPU requirement."""
+    """执行 Stable Audio 3 Medium 对 GPU 的要求检查。"""
     if not torch.cuda.is_available():
         raise RuntimeError(
             "Stable Audio 3 Medium requires an NVIDIA CUDA GPU, but "
@@ -153,7 +157,7 @@ def resolve_model_half(dtype: str) -> bool:
 
 
 def patch_local_text_encoder_path(model_config: dict[str, Any], model_path: Path) -> dict[str, Any]:
-    """Replace the upstream Hub text-encoder path with the local checkpoint."""
+    """把上游 Hub 文本编码器路径替换为本地 checkpoint。"""
     local_config = copy.deepcopy(model_config)
     conditioning = local_config.get("model", {}).get("conditioning", {})
     prompt_configs = [
@@ -177,6 +181,7 @@ def load_local_model(
     device: str,
     model_half: bool,
 ):
+    """从本地配置和权重构造 Stable Audio 模型。"""
     StableAudioModel, load_diffusion_cond, _, _ = import_runtime(upstream_path)
     model_config = json.loads((model_path / "model_config.json").read_text(encoding="utf-8"))
     model_config = patch_local_text_encoder_path(model_config, model_path)
@@ -208,6 +213,7 @@ def model_sample_size(model: Any) -> int:
 
 
 def audio_to_numpy(audio: Any, torch: Any):
+    """把模型输出从 torch tensor 整理成 soundfile 需要的帧优先数组。"""
     waveform = audio.detach().to(torch.float32).cpu().numpy()
     if waveform.ndim == 3:
         if waveform.shape[0] != 1:
@@ -216,13 +222,13 @@ def audio_to_numpy(audio: Any, torch: Any):
     if waveform.ndim == 1:
         return waveform[:, None]
     if waveform.ndim == 2:
-        # Stable Audio returns (channels, samples); soundfile writes (samples, channels).
+        # Stable Audio 返回 (channels, samples)，而 soundfile 写入 (samples, channels)。
         return waveform.T if waveform.shape[0] <= 8 else waveform
     raise RuntimeError(f"Unexpected generated waveform shape: {waveform.shape}.")
 
 
 def clear_cuda_cache(torch: Any) -> None:
-    """Release the worker allocator without hiding inference outcomes."""
+    """清理 worker allocator，但不覆盖推理阶段的原始异常。"""
     gc.collect()
     if not torch.cuda.is_available():
         return
@@ -238,7 +244,7 @@ def clear_cuda_cache(torch: Any) -> None:
 
 
 def configure_runtime_cache(payload: dict[str, Any]) -> None:
-    """Set isolated Hugging Face and XDG caches before model imports."""
+    """在导入模型前配置隔离的 Hugging Face 与 XDG 缓存。"""
     cache_dir = payload.get("runtime_cache_dir")
     if isinstance(cache_dir, str) and cache_dir.strip():
         base = Path(cache_dir).expanduser()
@@ -261,6 +267,7 @@ def configure_runtime_cache(payload: dict[str, Any]) -> None:
 
 
 def main() -> None:
+    """加载 Stable Audio，执行一次生成并写出 WAV。"""
     args = parse_args()
     payload = read_payload(args.input_json)
     configure_runtime_cache(payload)

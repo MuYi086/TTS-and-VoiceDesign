@@ -1,12 +1,12 @@
-"""Standalone uv HTTP service for LongCat-AudioDiT-3.5B voice cloning.
+"""独立 uv HTTP 服务，提供 LongCat-AudioDiT-3.5B 语音克隆。
 
-This module owns the LongCat API and launches worker.py with the current uv
-Python. The former Conda API/worker implementation has been removed after the
-uv migration was confirmed by the real GPU and HTTP canaries.
+本模块负责 LongCat API，并使用当前 uv Python 启动 worker.py。旧的 Conda
+API/worker 实现已移除，uv 迁移已经通过真实 GPU 和 HTTP 金丝雀验证。
 """
 
 from __future__ import annotations
 
+# 学习入口：LongCat API 只管理参考音频、GPU 锁和 uv worker，不在父进程加载模型。
 import fcntl
 import hashlib
 import importlib.util
@@ -40,6 +40,7 @@ REPOSITORY_DIR = PROJECT_DIR.parent
 
 
 def env_bool(name: str, default: bool = False) -> bool:
+    """解析启动配置中的布尔环境变量。"""
     value = os.getenv(name)
     if value is None:
         return default
@@ -47,6 +48,7 @@ def env_bool(name: str, default: bool = False) -> bool:
 
 
 def expand_path(path: str | os.PathLike[str]) -> str:
+    """展开环境变量和用户目录，返回绝对路径。"""
     return os.path.abspath(os.path.expandvars(os.path.expanduser(str(path))))
 
 
@@ -58,6 +60,7 @@ def module_available(module_name: str) -> bool:
 
 
 def normalize_optional_text(value: str | None) -> str | None:
+    """把可选文本清理成字符串或 ``None``。"""
     if value is None:
         return None
     normalized = value.strip()
@@ -108,8 +111,7 @@ LONGCAT_AUDIODIT_OUTPUT_DIR = expand_path(
     )
 )
 
-# LongCat clone defaults. Environment variables remain available for deployment
-# and canary experiments without changing the WebUI contract.
+# LongCat 克隆默认值。环境变量仍可用于部署和金丝雀实验，但不会改变 WebUI 契约。
 LONGCAT_AUDIODIT_MAX_CHARS_PER_CHUNK_DEFAULT = 180
 LONGCAT_AUDIODIT_PAUSE_MS_DEFAULT = 250
 LONGCAT_AUDIODIT_NFE_DEFAULT = 16
@@ -184,6 +186,7 @@ app = FastAPI(title="Unitale LongCat-AudioDiT-3.5B Voice Clone API")
 
 
 class ForceCORS(BaseHTTPMiddleware):
+    """为本地 WebUI 请求提供跨域响应和预检处理。"""
     async def dispatch(self, request, call_next):
         if request.method == "OPTIONS":
             return Response(
@@ -204,6 +207,7 @@ app.add_middleware(ForceCORS)
 
 
 def hash_filename(filename: str) -> str:
+    """把 WebUI 逻辑路径哈希成安全的本地文件名。"""
     ext = os.path.splitext(filename)[1] or ".wav"
     digest = hashlib.md5(filename.encode("utf-8")).hexdigest()
     return f"{digest}{ext}"
@@ -286,7 +290,7 @@ def store_uploaded_audio(
     full_path: str,
     prompt_text: str | None,
 ) -> dict[str, object]:
-    """同步保存参考音频和 sidecar，避免阻塞异步请求处理。"""
+    """保存普通克隆音频，或记录 timbre 设计音频的引用映射。"""
     clone_path = clone_prompt_audio_path(full_path)
     timbre_path = find_matching_timbre_audio(content)
     if timbre_path:
@@ -361,6 +365,7 @@ def sha256_file(path: str) -> str:
 
 
 def normalize_synthesis_text(text: str) -> str:
+    """去除 Markdown 标题标记，减少 WebUI 文本被误读的机会。"""
     normalized = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", (text or "").strip())
     normalized = re.sub(r"(?m)^\s*[-*+]\s+", "", normalized)
     if not normalized:
@@ -369,6 +374,7 @@ def normalize_synthesis_text(text: str) -> str:
 
 
 def assert_local_request(request: Request) -> None:
+    """限制内部控制接口只能由本机调用。"""
     client_host = request.client.host if request.client else ""
     if client_host not in {"127.0.0.1", "::1", "localhost"}:
         raise HTTPException(status_code=403, detail="仅允许本机访问内部接口")
@@ -376,6 +382,7 @@ def assert_local_request(request: Request) -> None:
 
 @contextmanager
 def gpu_runtime_lock(label: str):
+    """通过共享文件锁串行化 LongCat 的 GPU 推理。"""
     with open(GPU_LOCK_FILE, "a+", encoding="utf-8") as lock_file:
         print(f"[GPU 锁] 等待进入: {label}")
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
@@ -388,6 +395,7 @@ def gpu_runtime_lock(label: str):
 
 
 def wait_after_cuda_release(label: str = "") -> None:
+    """worker 退出后等待显存释放，再释放共享 GPU 锁。"""
     if CUDA_RELEASE_DELAY <= 0:
         return
     if label:
@@ -396,7 +404,7 @@ def wait_after_cuda_release(label: str = "") -> None:
 
 
 class CloneSynthesisRequest(BaseModel):
-    """Compatibility base for local reference-audio clone endpoints."""
+    """本地参考音频克隆接口共用的兼容请求基类。"""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -423,11 +431,13 @@ class LongCatAudioDitSynthesizeRequest(CloneSynthesisRequest):
 
 
 class LongCatAudioDitWorkerManager:
+    """管理 LongCat 参考音频解析、worker 启动和临时文件清理。"""
     def __init__(self):
         self.lock = threading.RLock()
         self.last_error: str | None = None
 
     def build_worker_payload(self, request: LongCatAudioDitSynthesizeRequest) -> dict[str, object]:
+        """把克隆请求和服务默认值转换为 worker JSON。"""
         ref_audio_path = prompt_audio_path(request.audio_path)
         if not os.path.isfile(ref_audio_path):
             raise HTTPException(status_code=404, detail="音频不存在")
@@ -482,6 +492,7 @@ class LongCatAudioDitWorkerManager:
         }
 
     def run_worker(self, payload: dict[str, object]) -> bytes:
+        """在 LongCat uv 项目中执行一次隔离推理并读取 WAV。"""
         python_executable = sys.executable
         if not python_executable or not os.path.isfile(python_executable):
             raise RuntimeError("未找到 LongCat uv 环境的 Python 解释器。")
@@ -578,6 +589,7 @@ manager = LongCatAudioDitWorkerManager()
 
 @app.get("/v1/health")
 def health():
+    """返回 LongCat 模型、源码、worker 和 GPU 的就绪信息。"""
     cuda = cuda_status()
     model_required = all(
         os.path.isfile(os.path.join(LONGCAT_AUDIODIT_MODEL_DIR, name))
@@ -641,6 +653,7 @@ def health():
 
 @app.post("/internal/unload_all")
 def internal_unload_all(request: Request):
+    """保留本机控制接口；一次性 worker 退出后没有常驻模型。"""
     assert_local_request(request)
     with gpu_runtime_lock("longcat_audiodit/unload"):
         with manager.lock:
@@ -654,12 +667,14 @@ async def upload_audio(
     full_path: str = Form(...),
     prompt_text: str | None = Form(None),
 ):
+    """在线程池中保存克隆参考音频和可选文本 sidecar。"""
     content = await audio.read()
     return await run_in_threadpool(store_uploaded_audio, content, full_path, prompt_text)
 
 
 @app.get("/v1/check/audio")
 def check_audio_exists(file_name: str):
+    """检查逻辑参考路径是否已保存，并返回 sidecar 状态。"""
     audio_path = prompt_audio_path(file_name)
     exists = os.path.isfile(audio_path)
     return {
@@ -673,6 +688,7 @@ def check_audio_exists(file_name: str):
 
 @app.post("/v1/longCat/clone")
 def synthesize_v2(request: LongCatAudioDitSynthesizeRequest):
+    """串行执行 LongCat 克隆并返回生成 WAV。"""
     with gpu_runtime_lock("longcat_audiodit/synthesize"):
         with manager.lock:
             try:

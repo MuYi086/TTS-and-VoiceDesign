@@ -1,7 +1,8 @@
-"""Runtime helpers for the standalone LongCat-AudioDiT uv service."""
+"""独立 LongCat-AudioDiT uv 服务的运行时辅助函数。"""
 
 from __future__ import annotations
 
+# LongCat 的 HTTP 层不加载模型；本文件只处理 GPU 状态和 worker 生命周期。
 import os
 import shutil
 import signal
@@ -10,7 +11,7 @@ from typing import Any
 
 
 def cuda_status() -> dict[str, Any]:
-    """Read GPU status without creating a CUDA context in the API process."""
+    """在不让 API 进程创建 CUDA 上下文的前提下读取 GPU 状态。"""
     status: dict[str, Any] = {"available": False, "source": "nvidia-smi"}
     nvidia_smi = shutil.which("nvidia-smi")
     if not nvidia_smi:
@@ -60,6 +61,7 @@ def cuda_status() -> dict[str, Any]:
 
 
 def process_is_running(process: Any) -> bool:
+    """兼容真实进程和测试替身，判断 worker 是否仍在运行。"""
     if process is None:
         return False
     poll = getattr(process, "poll", None)
@@ -74,7 +76,7 @@ def terminate_process_group(
     terminate_timeout: float = 10,
     kill_timeout: float = 5,
 ) -> None:
-    """Ensure a one-shot worker and descendants have exited."""
+    """按优雅终止、超时后强杀的顺序回收 worker 进程组。"""
     if not process_is_running(process):
         return
 
@@ -127,4 +129,8 @@ def terminate_process_group(
             if callable(kill):
                 kill()
 
-    wait(timeout=kill_timeout)
+    try:
+        wait(timeout=kill_timeout)
+    except subprocess.TimeoutExpired:
+        # 清理阶段不能覆盖 worker 原始异常；SIGKILL 后仍未回收时交给系统继续回收。
+        pass

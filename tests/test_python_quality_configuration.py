@@ -1,7 +1,8 @@
-"""No-model regression tests for the repository's Python quality baseline."""
+"""仓库 Python 代码质量基线的无模型回归测试。"""
 
 from __future__ import annotations
 
+# 配置测试确保各 uv 项目有锁文件、统一 Ruff 基线且不在启动时同步依赖。
 import tomllib
 import unittest
 from pathlib import Path
@@ -64,6 +65,14 @@ class PythonQualityConfigurationTests(unittest.TestCase):
         self.assertIn('path = "/home/muyi086/tts-depency/MOSS-TTS"', moss_configuration)
         self.assertIn("editable = true", moss_configuration)
         self.assertNotIn('git = "https://github.com/OpenMOSS/MOSS-TTS"', moss_configuration)
+
+    def test_startup_uses_locked_environments_without_runtime_sync(self) -> None:
+        start_script = (REPOSITORY_DIR / "start.sh").read_text(encoding="utf-8")
+
+        self.assertEqual(start_script.count("setsid uv run --no-sync --project"), 12)
+        self.assertNotIn("setsid uv run --project", start_script)
+        self.assertEqual(start_script.count('for pid in "${pids[@]}"; do'), 3)
+        self.assertNotIn('wait "$qwen3_tts_pid"', start_script)
 
 
 if __name__ == "__main__":

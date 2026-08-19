@@ -1,7 +1,8 @@
-"""No-model regression tests for the standalone MOSS-SoundEffect uv service."""
+"""独立 MOSS-SoundEffect uv 服务的无模型回归测试。"""
 
 from __future__ import annotations
 
+# 声效迁移测试不启动 GPU，只验证 MOSS-SoundEffect 的 uv worker 和最终路由。
 import importlib.util
 import os
 import sys

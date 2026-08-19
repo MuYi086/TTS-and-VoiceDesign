@@ -1,7 +1,8 @@
-"""No-model regression tests for the standalone Step-Audio-EditX service."""
+"""独立 Step-Audio-EditX 服务的无模型回归测试。"""
 
 from __future__ import annotations
 
+# EditX 测试保护编辑字段、上传路径和子进程清理逻辑，不导入真实模型。
 import importlib.util
 import os
 import subprocess

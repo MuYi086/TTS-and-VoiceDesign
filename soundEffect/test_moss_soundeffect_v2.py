@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Generate one sound effect with OpenMOSS MOSS-SoundEffect v2.0.
+"""使用 OpenMOSS MOSS-SoundEffect v2.0 生成一段音效。
 
-Edit the configuration constants below, then run:
+修改下方配置常量后运行：
 
     uv run --project moss_soundEffect python soundEffect/test_moss_soundeffect_v2.py
 
-The first invocation downloads the model weights into the Hugging Face cache and
-may compile CUDA kernels.  It therefore takes substantially longer than later
-runs.
+首次运行会将模型权重下载到 Hugging Face 缓存，并可能编译 CUDA 内核，
+因此耗时通常明显长于后续运行。
 """
+
+# 这是唯一面向真实 GPU 的示例脚本；普通回归测试不会调用它。
 
 from __future__ import annotations
 
@@ -17,10 +18,10 @@ import sys
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Debug configuration — change these values directly for an individual test.
+# 调试配置：单独测试时可以直接修改这些值。
 # ---------------------------------------------------------------------------
-# Use the downloaded local model by default. Set MOSS_SOUNDEFFECT_MODEL_DIR
-# before launching to override it, or edit LOCAL_MODEL_DIR for another disk.
+# 默认使用已下载的本地模型。启动前设置 MOSS_SOUNDEFFECT_MODEL_DIR 可覆盖路径，
+# 也可以修改 LOCAL_MODEL_DIR 指向其他磁盘。
 LOCAL_MODEL_DIR = Path("/home/muyi086/hf-mirror/OpenMOSS-Team/MOSS-SoundEffect-v2.0")
 MODEL_ID = os.environ.get("MOSS_SOUNDEFFECT_MODEL_DIR", str(LOCAL_MODEL_DIR))
 LOCAL_CODE_DIR = Path.home() / "tts-depency/MOSS-TTS"
@@ -36,12 +37,12 @@ TORCH_DTYPE = "bfloat16"
 OUTPUT_PATH = Path(__file__).resolve().parent / "outputs" / "dog_barking_park.wav"
 DISABLE_TORCHDYNAMO = True
 
-# MOSS-SoundEffect v2.0 supports a maximum output duration of 30 seconds.
+# MOSS-SoundEffect v2.0 支持的最大输出时长为 30 秒。
 MAX_SECONDS = 30.0
 
 
 def validate_configuration() -> None:
-    """Fail before the expensive model load when a setting is invalid."""
+    """配置无效时在加载耗时模型前立即失败。"""
     if not PROMPT.strip():
         raise ValueError("PROMPT must not be empty.")
     if not 0 < SECONDS <= MAX_SECONDS:
@@ -64,8 +65,8 @@ def main() -> None:
     validate_configuration()
     sys.path.insert(0, str(CODE_DIR.resolve()))
 
-    # Upstream recommends disabling TorchDynamo when Triton/CUDA graph
-    # compilation is unstable. Keep it configurable with the other test knobs.
+    # 当 Triton/CUDA Graph 编译不稳定时，上游建议禁用 TorchDynamo；这里与其他
+    # 测试开关保持一致，允许通过配置控制。
     if DISABLE_TORCHDYNAMO:
         os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
 
@@ -101,7 +102,7 @@ def main() -> None:
         local_files_only=Path(MODEL_ID).expanduser().is_dir(),
     )
 
-    # Keep the requested call arguments together and editable at the top.
+    # 将本次调用参数集中放在上方，便于直接编辑。
     audio = pipe(
         prompt=PROMPT,
         seconds=SECONDS,
@@ -112,9 +113,8 @@ def main() -> None:
     )
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    # torchaudio.save() requires TorchCodec in newer Torchaudio releases.
-    # SoundFile is already a core MOSS v2 dependency and writes the generated
-    # (B, C, T) tensor without that optional runtime dependency.
+    # 新版 Torchaudio 的 torchaudio.save() 需要 TorchCodec；SoundFile 已是 MOSS v2
+    # 的核心依赖，可以直接写出生成的 (B, C, T) 张量，不依赖这个可选运行时。
     waveform = audio[0].detach().to(torch.float32).cpu().transpose(0, 1).numpy()
     sf.write(str(OUTPUT_PATH), waveform, pipe.sample_rate)
     print(f"[OK] Saved {OUTPUT_PATH}")

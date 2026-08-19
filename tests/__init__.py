@@ -1,1 +1,3 @@
-"""Regression tests for the local backend."""
+"""本地后端的回归测试。"""
+
+# 这些测试不加载模型，重点保护路由契约、进程边界、存储布局和配置约束。

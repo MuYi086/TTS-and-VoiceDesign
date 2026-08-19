@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Small control-plane API for shared storage and runtime diagnostics.
+"""用于共享存储和运行时诊断的轻量控制面 API。
 
-Model inference does not live here. Dedicated model services own their
-inference lifecycles; this process only keeps the existing 8300
-health/upload/check utilities used by the surrounding WebUI.
+模型推理不在这里执行。各模型服务自行管理推理生命周期；本进程只保留
+周边 WebUI 使用的 8300 端口健康检查、上传和文件检查工具。
 """
 
 from __future__ import annotations
@@ -27,6 +26,7 @@ PROJECT_DIR = MAIN_DIR.parent
 
 
 def expand_path(path: str) -> str:
+    """展开环境变量和用户目录，统一得到可用于存储配置的绝对路径。"""
     return os.path.abspath(os.path.expandvars(os.path.expanduser(path)))
 
 
@@ -73,6 +73,8 @@ app = FastAPI(title="Unitale AI Control Plane")
 
 
 class ForceCORS(BaseHTTPMiddleware):
+    """为 WebUI 请求补充宽松的跨域响应头，并快速处理预检请求。"""
+
     async def dispatch(self, request, call_next):
         if request.method == "OPTIONS":
             return Response(
@@ -93,7 +95,7 @@ app.add_middleware(ForceCORS)
 
 
 def forward_mimo_design_request(body: bytes, accept: str) -> tuple[int, bytes, str]:
-    """Forward the final control-plane MiMo route to the standalone service."""
+    """将控制面最终保留的 MiMo 路由转发到独立服务。"""
     headers = {
         "Content-Type": "application/json",
         "Accept": accept or "*/*",
@@ -123,13 +125,14 @@ def forward_mimo_design_request(body: bytes, accept: str) -> tuple[int, bytes, s
 
 
 def hash_filename(filename: str) -> str:
+    """将 WebUI 的逻辑路径映射为稳定文件名，避免直接使用用户输入作路径。"""
     extension = os.path.splitext(filename)[1] or ".wav"
     digest = hashlib.md5(filename.encode("utf-8")).hexdigest()
     return f"{digest}{extension}"
 
 
 def prompt_audio_path(filename: str) -> Path:
-    """Resolve a normal clone upload or a timbre asset used for preview."""
+    """解析普通克隆上传，或解析预览时引用的音色设计音频。"""
     clone_path = Path(PROMPTS_DIR) / hash_filename(filename)
     if clone_path.is_file():
         return clone_path
@@ -142,7 +145,7 @@ def prompt_audio_path(filename: str) -> Path:
 
 
 def find_matching_timbre_audio(content: bytes) -> Path | None:
-    """Avoid copying a designed voice into clone storage when it is re-uploaded."""
+    """重新上传设计音频时避免将其复制到克隆存储目录。"""
     content_digest = hashlib.sha256(content).hexdigest()
     for timbre_path in Path(TIMBRE_STORAGE_DIR).glob("*.wav"):
         if hashlib.sha256(timbre_path.read_bytes()).hexdigest() == content_digest:
@@ -169,6 +172,7 @@ def store_uploaded_audio(content: bytes, full_path: str) -> dict[str, object]:
 @app.get("/v1/health")
 @app.get("/v1/control")
 def health():
+    """返回控制面、存储目录和 GPU 可见性的诊断信息。"""
     cuda = cuda_status()
     return {
         "code": 200,
@@ -201,7 +205,7 @@ def health():
 
 @app.post("/v1/mimo/timbre")
 async def mimo_design_proxy(request: Request):
-    """Keep the old 8300 route while MiMo inference stays in ``mimo_tts``."""
+    """在 MiMo 推理位于 ``mimo_tts`` 时保留 8300 控制面路由。"""
     body = await request.body()
     try:
         status_code, response_body, content_type = await asyncio.to_thread(
@@ -221,7 +225,7 @@ async def mimo_design_proxy(request: Request):
 
 @app.post("/v1/upload_audio")
 async def upload_audio(audio: UploadFile = File(...), full_path: str = Form(...)):
-    """Upload clone references without copying an existing timbre asset."""
+    """上传克隆参考音频，但不复制已有的音色设计资产。"""
     content = await audio.read()
     return await run_in_threadpool(store_uploaded_audio, content, full_path)
 

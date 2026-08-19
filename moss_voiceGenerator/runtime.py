@@ -1,7 +1,8 @@
-"""Runtime helpers shared by the standalone MOSS VoiceGenerator service."""
+"""独立 MOSS VoiceGenerator 服务共用的运行时辅助函数。"""
 
 from __future__ import annotations
 
+# VoiceGenerator API 不加载模型；这里集中处理轻量 GPU 状态和进程回收。
 import os
 import shutil
 import signal
@@ -10,7 +11,7 @@ from typing import Any
 
 
 def cuda_status() -> dict[str, Any]:
-    """Read GPU status without creating a CUDA context in the API process."""
+    """读取 GPU 状态，且不在 API 进程中创建 CUDA 上下文。"""
     status: dict[str, Any] = {"available": False, "source": "nvidia-smi"}
     nvidia_smi = shutil.which("nvidia-smi")
     if not nvidia_smi:
@@ -57,6 +58,7 @@ def cuda_status() -> dict[str, Any]:
 
 
 def process_is_running(process: Any) -> bool:
+    """判断 worker 是否仍运行，保持真实进程和 mock 的行为一致。"""
     if process is None:
         return False
     poll = getattr(process, "poll", None)
@@ -71,7 +73,7 @@ def terminate_process_group(
     terminate_timeout: float = 10,
     kill_timeout: float = 5,
 ) -> None:
-    """Ensure a one-shot worker and its descendants have exited."""
+    """回收整个 worker 进程组，避免 CUDA 子进程在请求后残留。"""
     if not process_is_running(process):
         return
     pid: int | None = getattr(process, "pid", None)
@@ -122,4 +124,8 @@ def terminate_process_group(
             kill = getattr(process, "kill", None)
             if callable(kill):
                 kill()
-    wait(timeout=kill_timeout)
+    try:
+        wait(timeout=kill_timeout)
+    except subprocess.TimeoutExpired:
+        # 清理阶段不能覆盖 worker 原始异常；SIGKILL 后仍未回收时交给系统继续回收。
+        pass

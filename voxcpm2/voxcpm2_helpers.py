@@ -1,11 +1,12 @@
-"""Shared VoxCPM2 runtime helpers used by the one-shot worker.
+"""一次性 worker 使用的 VoxCPM2 运行时共用辅助函数。
 
-Runtime-heavy dependencies are imported lazily so the API process and unit
-tests do not need the VoxCPM2 model runtime.
+重型运行时依赖采用延迟导入，因此 API 进程和单元测试不需要加载 VoxCPM2
+模型运行时。
 """
 
 from __future__ import annotations
 
+# 这些 helper 在 worker 中延迟导入官方 VoxCPM2 依赖，API 和无模型测试不会触发它们。
 import inspect
 import random
 from pathlib import Path
@@ -13,6 +14,7 @@ from typing import Any
 
 
 def import_runtime():
+    """导入 numpy、soundfile、torch 和 VoxCPM2 官方包。"""
     try:
         import numpy as np
         import soundfile as sf
@@ -27,7 +29,7 @@ def import_runtime():
 
 
 def set_seed(seed: int, np: Any, torch: Any) -> None:
-    """Seed all runtimes only when the caller explicitly requests reproducibility."""
+    """设置 numpy、Python 和 torch 的随机种子。"""
     if seed < 0:
         return
     random.seed(seed)
@@ -38,7 +40,7 @@ def set_seed(seed: int, np: Any, torch: Any) -> None:
 
 
 def from_pretrained_kwargs(VoxCPM: Any, args: Any) -> dict[str, Any]:
-    """Build loading options supported by the installed voxcpm version."""
+    """根据官方构造函数签名筛选兼容的加载参数。"""
     signature = inspect.signature(VoxCPM.from_pretrained)
     options = {
         "load_denoiser": args.load_denoiser,
@@ -54,13 +56,13 @@ def from_pretrained_kwargs(VoxCPM: Any, args: Any) -> dict[str, Any]:
 
 
 def apply_control_instruction(text: str, control_instruction: str | None) -> str:
-    """Encode VoxCPM2 controllable-cloning instructions in its documented text form."""
+    """把 controllable 模式的指令追加到模型文本。"""
     instruction = (control_instruction or "").strip()
     return f"({instruction}){text}" if instruction else text
 
 
 def apply_nonverbal_tags(text: str, nonverbal_tags: list[str] | None) -> str:
-    """将 API 已校验的官方标签仅拼接到 VoxCPM2 的模型目标文本前。"""
+    """按配置补充笑声、停顿等非语言标签。"""
     tags = nonverbal_tags or []
     return "".join(f"[{tag}]" for tag in tags) + text
 
@@ -82,7 +84,7 @@ def generate_kwargs(
     ref_audio: Path,
     prompt_text: str | None,
 ) -> dict[str, Any]:
-    """Build voice-cloning arguments supported by the installed version."""
+    """从请求参数生成官方推理函数可接受的 kwargs。"""
     options = {
         # VoxCPM2 将可控克隆指令写在目标文本前；Ultimate Cloning 则由 prompt_* 参数决定。
         "text": build_model_text(
@@ -111,6 +113,7 @@ def generate_kwargs(
 
 
 def to_mono_float32(waveform: Any, np: Any):
+    """将各种声道布局统一为单声道 float32 波形。"""
     audio = np.asarray(waveform, dtype=np.float32)
     if audio.ndim == 2:
         audio = audio.mean(axis=1)
@@ -118,6 +121,7 @@ def to_mono_float32(waveform: Any, np: Any):
 
 
 def join_waveforms(waveforms: list[Any], sample_rate: int, pause_ms: int, np: Any):
+    """用静音连接多个分段波形。"""
     if not waveforms:
         raise RuntimeError("VoxCPM2 未返回任何音频片段。")
 
@@ -136,6 +140,7 @@ def join_waveforms(waveforms: list[Any], sample_rate: int, pause_ms: int, np: An
 
 
 def resolve_sample_rate(model: Any) -> int:
+    """从模型配置中解析采样率，并在缺失时抛出明确错误。"""
     tts_model = getattr(model, "tts_model", None)
     sample_rate = getattr(tts_model, "sample_rate", None)
     if sample_rate is None:

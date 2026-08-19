@@ -1,3 +1,7 @@
+"""验证 Stable Audio 迁移后不再残留旧的集中式 API/worker 文件。"""
+
+from __future__ import annotations
+
 import unittest
 from pathlib import Path
 

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""One-shot dots.tts-soar voice-cloning worker.
+"""dots.tts-soar 一次性语音克隆 worker。
 
-The HTTP service deliberately does not import the heavyweight dots.tts
-runtime.  It serializes one request into this project's uv environment and
-the process exits after the request, which releases the model's CUDA context.
+HTTP 服务刻意不导入重型 dots.tts 运行时，而是将单个请求序列化后交给本项目
+uv 环境执行；请求完成后进程退出，从而释放模型的 CUDA 上下文。
 """
 
 from __future__ import annotations
 
+# dots.tts 的重型运行时只在此进程导入；worker 退出后释放模型 CUDA 上下文。
 import argparse
 import gc
 import json
@@ -22,6 +22,7 @@ from audio_trim import trim_leading_silence
 
 
 def parse_args() -> argparse.Namespace:
+    """解析一次 dots 请求的 JSON 和输出 WAV 路径。"""
     parser = argparse.ArgumentParser(description="One-shot dots.tts-soar worker")
     parser.add_argument("--input-json", required=True, help="Request JSON file path")
     parser.add_argument("--output-wav", required=True, help="Output WAV file path")
@@ -29,11 +30,13 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_request(path: str) -> dict[str, Any]:
+    """读取并校验 JSON 对象请求。"""
     with open(path, encoding="utf-8") as file:
         return json.load(file)
 
 
 def require_path(path: str, label: str) -> Path:
+    """确认参考音频、模型或脚本路径存在。"""
     resolved = Path(path).expanduser().resolve()
     if not resolved.exists():
         raise FileNotFoundError(f"{label}不存在：{resolved}")
@@ -41,6 +44,7 @@ def require_path(path: str, label: str) -> Path:
 
 
 def normalize_optional_text(value: Any) -> str | None:
+    """把可选字段规范化为字符串或 ``None``。"""
     if value is None:
         return None
     normalized = str(value).strip()
@@ -50,6 +54,7 @@ def normalize_optional_text(value: Any) -> str | None:
 
 
 def normalize_text(text: str) -> str:
+    """清理待合成文本，避免空片段进入模型。"""
     normalized = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", (text or "").strip())
     normalized = re.sub(r"(?m)^\s*[-*+]\s+", "", normalized)
     if not normalized:
@@ -58,6 +63,7 @@ def normalize_text(text: str) -> str:
 
 
 def split_text(text: str, max_chars: int) -> list[str]:
+    """优先按标点切分长文本，控制 dots 模型单次输入长度。"""
     if max_chars <= 0 or len(text) <= max_chars:
         return [text]
 
@@ -86,6 +92,7 @@ def split_text(text: str, max_chars: int) -> list[str]:
 
 
 def split_long_sentence(text: str, max_chars: int) -> list[str]:
+    """对没有标点的超长句做硬切分。"""
     parts = re.findall(r".+?[，,、：:]|.+$", text, flags=re.S)
     chunks: list[str] = []
     current = ""
@@ -113,6 +120,7 @@ def split_long_sentence(text: str, max_chars: int) -> list[str]:
 
 
 def import_runtime():
+    """延迟导入官方 dots runtime，保持 API 进程无模型依赖。"""
     try:
         import numpy as np
         import soundfile as sf
@@ -129,7 +137,7 @@ def import_runtime():
 
 
 def clear_cuda_cache(torch: Any) -> None:
-    """Release allocator blocks before the worker process exits."""
+    """清空 CUDA cache；最终释放由 worker 进程退出保证。"""
     gc.collect()
     try:
         if not torch.cuda.is_available():
@@ -146,6 +154,7 @@ def clear_cuda_cache(torch: Any) -> None:
 
 
 def prepare_environment(request: dict[str, Any]) -> None:
+    """设置离线模式、模型缓存和 CUDA allocator 环境变量。"""
     runtime_cache_dir = str(
         request.get("runtime_cache_dir") or Path(__file__).resolve().parent / ".cache/runtime"
     )
@@ -176,6 +185,7 @@ def to_mono_float32(audio: Any, np: Any) -> Any:
 
 
 def join_waveforms(waveforms: list[Any], sample_rate: int, pause_ms: int, np: Any) -> Any:
+    """在分段波形之间插入静音并拼接。"""
     if not waveforms:
         raise RuntimeError("dots.tts-soar 未返回音频片段。")
 
@@ -200,7 +210,7 @@ def trim_generated_waveform(
     *,
     label: str,
 ) -> Any:
-    """Remove a model-generated silent prefix before a segment is joined."""
+    """在拼接片段前裁剪模型生成的前导静音。"""
     trimmed_waveform, trimmed_samples = trim_leading_silence(
         waveform,
         sample_rate=sample_rate,
@@ -212,6 +222,7 @@ def trim_generated_waveform(
 
 
 def synthesize(request: dict[str, Any], output_wav: Path) -> None:
+    """加载 dots 模型，按文本片段生成克隆语音并写出 WAV。"""
     if str(request.get("operation") or "clone") != "clone":
         raise RuntimeError("dots.tts-soar worker 只接受 operation=clone。")
 
@@ -319,6 +330,7 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
 
 
 def main() -> int:
+    """执行一次 dots worker，并在失败时返回非零退出码。"""
     args = parse_args()
     try:
         synthesize(load_request(args.input_json), Path(args.output_wav))

@@ -1,7 +1,8 @@
-"""Atomically persist generated sound-effect audio."""
+"""原子保存生成的音效音频。"""
 
 from __future__ import annotations
 
+# 声效生成结果也使用原子替换，避免播放器读到未完成的文件。
 import os
 import tempfile
 import time
@@ -11,7 +12,7 @@ PathLike = str | os.PathLike[str]
 
 
 def persist_audio_bytes(audio_bytes: bytes, model_prefix: str, output_dir: PathLike) -> Path:
-    """Write a successful generated WAV without exposing partial output."""
+    """原子写入成功生成的声效 WAV。"""
     if not audio_bytes:
         raise ValueError("cannot persist empty audio")
 

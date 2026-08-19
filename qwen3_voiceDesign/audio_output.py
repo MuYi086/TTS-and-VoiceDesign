@@ -1,7 +1,8 @@
-"""Atomically persist generated audio for the VoiceDesign service."""
+"""原子保存 VoiceDesign 服务生成的音频。"""
 
 from __future__ import annotations
 
+# 音色设计结果先写临时文件，再替换到 timbre 目录，防止读取到半成品。
 import os
 import tempfile
 import time
@@ -11,7 +12,7 @@ PathLike = str | os.PathLike[str]
 
 
 def persist_audio_bytes(audio_bytes: bytes, model_prefix: str, output_dir: PathLike) -> Path:
-    """Write a successful generated WAV without leaving partial files."""
+    """原子写入成功生成的音色 WAV。"""
     if not audio_bytes:
         raise ValueError("cannot persist empty audio")
 

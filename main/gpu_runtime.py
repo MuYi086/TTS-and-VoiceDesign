@@ -4,9 +4,11 @@ import signal
 import subprocess
 from typing import Any
 
+# 该模块只使用 nvidia-smi 查询状态，不导入 torch，避免控制面意外创建 CUDA 上下文。
+
 
 def cuda_status() -> dict:
-    """Read GPU status without creating a CUDA context in the API process."""
+    """在不让 API 进程创建 CUDA 上下文的前提下读取 GPU 状态。"""
     status: dict[str, Any] = {
         "available": False,
         "source": "nvidia-smi",
@@ -48,8 +50,8 @@ def cuda_status() -> dict:
                     "free_mib": float(free_mib),
                     "total_mib": float(total_mib),
                     "used_mib": float(used_mib),
-                    # Kept for response compatibility. These values used to be
-                    # API-process allocator counters, not total GPU usage.
+                    # 保留这些字段是为了兼容响应格式；它们过去表示 API 进程的
+                    # allocator 计数，并不代表 GPU 总使用量。
                     "allocated_mib": None,
                     "reserved_mib": None,
                 },
@@ -61,6 +63,7 @@ def cuda_status() -> dict:
 
 
 def process_is_running(process: Any) -> bool:
+    """兼容真实子进程和测试替身，判断进程是否仍未退出。"""
     if process is None:
         return False
     poll = getattr(process, "poll", None)
@@ -75,7 +78,7 @@ def terminate_process_group(
     terminate_timeout: float = 10,
     kill_timeout: float = 5,
 ) -> None:
-    """Ensure a one-shot worker and its descendants have exited."""
+    """先优雅终止，再强制终止一次性 worker 及其子进程组。"""
     if not process_is_running(process):
         return
 
@@ -128,4 +131,8 @@ def terminate_process_group(
             if callable(kill):
                 kill()
 
-    wait(timeout=kill_timeout)
+    try:
+        wait(timeout=kill_timeout)
+    except subprocess.TimeoutExpired:
+        # 清理阶段不能覆盖 worker 原始异常；SIGKILL 后仍未回收时交给系统继续回收。
+        pass

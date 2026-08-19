@@ -1,7 +1,8 @@
-"""No-model regression tests for the standalone dots.tts-soar uv service."""
+"""独立 dots.tts-soar uv 服务的无模型回归测试。"""
 
 from __future__ import annotations
 
+# 这些用例只 mock worker 和文件系统，验证 dots 的最终接口及一次性生命周期。
 import hashlib
 import importlib.util
 import io
@@ -36,8 +37,8 @@ os.environ.update(
     }
 )
 
-# The service is intentionally a flat uv application.  Load its local helper
-# modules before the similarly named modules from another standalone service.
+# 该服务特意采用扁平 uv 应用结构；先加载本服务的辅助模块，避免误用
+# 其他独立服务中同名的模块。
 sys.path.insert(0, str(SERVICE_DIR))
 for module_name in ("runtime", "synthesis_request", "audio_trim"):
     sys.modules.pop(module_name, None)

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""HTTP wrapper for the standalone MOSS-SoundEffect v2 uv service."""
+"""独立 MOSS-SoundEffect v2 uv 服务的 HTTP 封装。"""
 
 from __future__ import annotations
 
+# 学习入口：API 进程只处理参数和生命周期，MOSS 模型在一次性 uv worker 中运行。
 import fcntl
 import importlib.util
 import os
@@ -28,10 +29,12 @@ REPOSITORY_DIR = PROJECT_DIR.parent
 
 
 def expand_path(value: str) -> Path:
+    """展开环境变量和用户目录，得到绝对路径。"""
     return Path(os.path.abspath(os.path.expandvars(os.path.expanduser(value))))
 
 
 def env_bool(name: str, default: bool = False) -> bool:
+    """把环境变量解析为统一的布尔值。"""
     value = os.getenv(name)
     if value is None:
         return default
@@ -116,6 +119,7 @@ for directory in (
 
 
 class ForceCORS(BaseHTTPMiddleware):
+    """为本地 WebUI 提供跨域响应和 OPTIONS 预检支持。"""
     async def dispatch(self, request, call_next):
         if request.method == "OPTIONS":
             return Response(
@@ -133,6 +137,7 @@ class ForceCORS(BaseHTTPMiddleware):
 
 
 class SoundEffectGenerateRequest(BaseModel):
+    """MOSS-SoundEffect v2 的文本、时长和扩散参数请求模型。"""
     prompt: str = Field(min_length=1, max_length=2_000)
     seconds: float = Field(default=MOSS_SOUNDEFFECT_DEFAULT_SECONDS, gt=0, le=30)
     num_inference_steps: int = Field(default=MOSS_SOUNDEFFECT_DEFAULT_STEPS, gt=0, le=500)
@@ -153,6 +158,7 @@ class SoundEffectGenerateRequest(BaseModel):
 
 @contextmanager
 def gpu_runtime_lock(label: str):
+    """使用仓库级 GPU 文件锁串行化声效生成。"""
     with open(GPU_LOCK_FILE, "a+", encoding="utf-8") as lock_file:
         print(f"[GPU 锁] 等待进入: {label}")
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
@@ -171,17 +177,20 @@ def wait_after_cuda_release() -> None:
 
 
 def assert_local_request(request: Request) -> None:
+    """限制内部卸载接口只能从本机调用。"""
     client_host = request.client.host if request.client else ""
     if client_host not in {"127.0.0.1", "::1", "localhost"}:
         raise HTTPException(status_code=403, detail="仅允许本机访问内部接口")
 
 
 class SoundEffectWorkerManager:
+    """把声效请求转换为 worker JSON，并集中记录 worker 错误。"""
     def __init__(self) -> None:
         self.lock = threading.RLock()
         self.last_error: str | None = None
 
     def build_worker_payload(self, request: SoundEffectGenerateRequest) -> dict[str, Any]:
+        """合并请求参数与环境默认值，生成 worker 输入。"""
         return {
             "prompt": request.prompt,
             "seconds": request.seconds,
@@ -198,6 +207,7 @@ class SoundEffectWorkerManager:
         }
 
     def run_worker(self, payload: dict[str, Any]) -> bytes:
+        """在当前 uv 环境启动一次 MOSS 声效推理并读取 WAV。"""
         config = UvWorkerConfig(
             python_executable=sys.executable,
             worker_script=str(WORKER_SCRIPT),
@@ -224,6 +234,7 @@ manager = SoundEffectWorkerManager()
 
 @app.get("/v1/health")
 def health() -> dict[str, Any]:
+    """在不加载模型的情况下报告源码、权重和 GPU 状态。"""
     cuda = cuda_status()
     flash_attn_available = any(
         importlib.util.find_spec(name) is not None
@@ -279,6 +290,7 @@ def health() -> dict[str, Any]:
 
 @app.post("/internal/unload_all")
 def internal_unload_all(request: Request) -> JSONResponse:
+    """保留控制面兼容接口；一次性 worker 不需要常驻卸载。"""
     assert_local_request(request)
     with gpu_runtime_lock("soundeffect/unload"):
         with manager.lock:
@@ -293,6 +305,7 @@ def internal_unload_all(request: Request) -> JSONResponse:
 
 @app.post("/v1/moss/soundEffect")
 def generate(request: SoundEffectGenerateRequest) -> Response:
+    """串行调用 worker、保存生成音效并返回 WAV 响应。"""
     with gpu_runtime_lock("soundeffect/generate"):
         with manager.lock:
             try:

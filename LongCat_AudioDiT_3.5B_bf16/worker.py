@@ -1,12 +1,12 @@
-"""One-shot LongCat-AudioDiT-3.5B voice-cloning worker.
+"""LongCat-AudioDiT-3.5B 一次性语音克隆 worker。
 
-This worker is intentionally separate from the FastAPI process. It imports the
-official audiodit source only after a request starts, writes one WAV, clears
-CUDA state, and exits so the existing one-request/one-worker lifecycle remains.
+该 worker 刻意与 FastAPI 进程分离，只在请求开始后导入官方 audiodit 源码，
+写出一个 WAV、清理 CUDA 状态并退出，从而保持“一请求一 worker”的生命周期。
 """
 
 from __future__ import annotations
 
+# LongCat 的官方源码和 torch 延迟到 worker 导入，API 父进程不持有模型显存。
 import argparse
 import gc
 import json
@@ -28,6 +28,7 @@ DEFAULT_REPO_CANDIDATES = (
 
 
 def load_request(path: str | Path) -> dict[str, Any]:
+    """读取一次请求 JSON，并确认顶层结构为对象。"""
     with open(path, encoding="utf-8") as file:
         value = json.load(file)
     if not isinstance(value, dict):
@@ -36,7 +37,7 @@ def load_request(path: str | Path) -> dict[str, Any]:
 
 
 def maybe_add_repo_path(repo_path: str | Path | None) -> None:
-    """Make the external repository containing audiodit importable."""
+    """把本地 LongCat 上游源码加入 import 路径。"""
     candidates = [Path(repo_path).expanduser()] if repo_path else list(DEFAULT_REPO_CANDIDATES)
     for candidate in candidates:
         resolved = candidate.resolve()
@@ -46,6 +47,7 @@ def maybe_add_repo_path(repo_path: str | Path | None) -> None:
 
 
 def require_path(path: str | Path, label: str) -> Path:
+    """校验文件或目录存在，统一返回绝对 Path。"""
     resolved = Path(path).expanduser().resolve()
     if not resolved.exists():
         raise FileNotFoundError(f"{label} does not exist: {resolved}")
@@ -53,6 +55,7 @@ def require_path(path: str | Path, label: str) -> Path:
 
 
 def require_model_path(path: str | Path) -> Path:
+    """检查 LongCat 模型目录是否存在。"""
     model_path = require_path(path, "LongCat model path")
     if not model_path.is_dir():
         raise NotADirectoryError(f"LongCat model path is not a directory: {model_path}")
@@ -68,12 +71,14 @@ def require_model_path(path: str | Path) -> Path:
 
 
 def normalize_text(text: str) -> str:
+    """清理输入文本，避免空白片段进入 tokenizer。"""
     normalized = (text or "").lower()
     normalized = re.sub(r'["“”‘’]', " ", normalized)
     return re.sub(r"\s+", " ", normalized).strip()
 
 
 def split_text(text: str, max_chars: int) -> list[str]:
+    """优先按标点切分长文本，控制单次 LongCat 推理长度。"""
     if not text:
         raise ValueError("synthesis text is empty")
     if max_chars <= 0 or len(text) <= max_chars:
@@ -106,6 +111,7 @@ def split_text(text: str, max_chars: int) -> list[str]:
 
 
 def split_long_sentence(text: str, max_chars: int) -> list[str]:
+    """对没有标点的超长句执行硬切分。"""
     parts = re.findall(r".+?[，,、：:]|.+$", text, flags=re.S)
     chunks: list[str] = []
     current = ""
@@ -135,6 +141,7 @@ def split_long_sentence(text: str, max_chars: int) -> list[str]:
 
 
 def approx_duration_from_text(text: str, max_duration: float = 30.0) -> float:
+    """根据文本长度估算时长，并限制在模型安全范围内。"""
     en_dur_per_char = 0.082
     zh_dur_per_char = 0.21
     compact_text = re.sub(r"\s+", "", text)
@@ -157,6 +164,7 @@ def approx_duration_from_text(text: str, max_duration: float = 30.0) -> float:
 
 
 def prepare_environment(request: dict[str, Any]) -> None:
+    """设置 Hugging Face、Numba 和 CUDA allocator 的运行环境。"""
     runtime_cache_dir = Path(
         request.get("runtime_cache_dir")
         or Path(__file__).resolve().parents[1] / "storage/.cache/runtime"
@@ -180,8 +188,9 @@ def prepare_environment(request: dict[str, Any]) -> None:
 
 
 def import_runtime():
+    """延迟导入 LongCat 官方运行时，确保 API 进程无模型依赖。"""
     try:
-        import audiodit  # noqa: F401  # registers AudioDiT with Transformers
+        import audiodit  # noqa: F401  # 向 Transformers 注册 AudioDiT
         import librosa
         import numpy as np
         import soundfile as sf
@@ -200,6 +209,7 @@ def import_runtime():
 
 
 def load_tokenizer(auto_tokenizer: Any, source: str, local_files_only: bool):
+    """从本地 tokenizer 路径加载 tokenizer，并遵守离线配置。"""
     kwargs = {"local_files_only": local_files_only, "fix_mistral_regex": True}
     try:
         return auto_tokenizer.from_pretrained(source, **kwargs)
@@ -225,12 +235,14 @@ def resolve_tokenizer_source(
 
 
 def require_cuda(torch: Any) -> str:
+    """确认 CUDA 可用并返回 worker 使用的设备名称。"""
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA GPU is required for LongCat-AudioDiT-3.5B voice cloning.")
     return "cuda"
 
 
 def set_seed(torch: Any, seed: int) -> None:
+    """同时设置 CPU/CUDA 随机种子，保证请求级结果可复现。"""
     if seed < 0:
         return
     torch.manual_seed(seed)
@@ -304,6 +316,7 @@ def to_mono_float32(waveform: Any, np: Any):
 
 
 def join_waveforms(waveforms: list[Any], sample_rate: int, pause_ms: int, np: Any):
+    """拼接分段波形并插入片段间静音。"""
     if not waveforms:
         raise RuntimeError("LongCat-AudioDiT returned no audio segments.")
     segments = [to_mono_float32(waveform, np) for waveform in waveforms]
@@ -338,7 +351,7 @@ def trim_generated_waveform(
 
 
 def release_cuda_memory(torch: Any) -> None:
-    """Release allocator caches without masking an inference exception."""
+    """同步并清空 CUDA 缓存，最终释放依赖 worker 退出。"""
     gc.collect()
     cuda = getattr(torch, "cuda", None)
     if cuda is None:
@@ -361,6 +374,7 @@ def release_cuda_memory(torch: Any) -> None:
 
 
 def synthesize(request: dict[str, Any], output_wav: Path) -> None:
+    """加载 LongCat、按文本片段克隆语音并写出单个 WAV。"""
     model = tokenizer = prompt_audio = inputs = output = None
     waveforms: list[Any] = []
     prepare_environment(request)
@@ -510,6 +524,7 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
 
 
 def parse_args() -> argparse.Namespace:
+    """解析一次 worker 的 JSON 输入和 WAV 输出路径。"""
     parser = argparse.ArgumentParser(description="LongCat-AudioDiT one-shot worker")
     parser.add_argument("--input-json", type=Path, required=True)
     parser.add_argument("--output-wav", type=Path, required=True)
@@ -517,6 +532,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    """执行 LongCat worker，并在失败时返回非零退出码。"""
     args = parse_args()
     try:
         synthesize(load_request(args.input_json), args.output_wav.expanduser().resolve())

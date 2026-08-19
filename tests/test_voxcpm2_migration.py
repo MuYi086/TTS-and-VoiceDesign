@@ -1,7 +1,8 @@
-"""No-model regression tests for the standalone VoxCPM2 uv service."""
+"""独立 VoxCPM2 uv 服务的无模型回归测试。"""
 
 from __future__ import annotations
 
+# VoxCPM2 测试覆盖克隆/音色设计分流、sidecar 以及 worker 错误清理。
 import hashlib
 import importlib.util
 import io
@@ -36,8 +37,7 @@ os.environ.update(
     }
 )
 
-# Ensure flat local imports resolve to this service rather than another
-# standalone project's same-named helper modules.
+# 确保扁平目录下的本地导入解析到本服务，而不是其他独立项目中的同名辅助模块。
 sys.path.insert(0, str(SERVICE_DIR))
 for module_name in (
     "audio_output",

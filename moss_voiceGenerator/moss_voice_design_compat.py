@@ -1,4 +1,4 @@
-"""Compatibility helpers for the published MOSS VoiceGenerator processor."""
+"""已发布 MOSS VoiceGenerator processor 的兼容辅助函数。"""
 
 from __future__ import annotations
 
@@ -74,7 +74,7 @@ def _validate_codec_weights(codec_path: Path) -> None:
 
 
 def validate_moss_codec_path(codec_path: str | Path) -> None:
-    """Validate the local v1 codec before Transformers loads remote code."""
+    """在 Transformers 加载远程代码前校验本地 v1 codec。"""
     path = Path(codec_path).expanduser().resolve()
     config = _read_codec_config(path)
     if config.get("model_type") != MOSS_V1_CODEC_MODEL_TYPE:
@@ -110,7 +110,7 @@ def is_moss_codec_path_ready(codec_path: str | Path) -> bool:
 
 
 def split_sizes_from_break_positions(total_size: int, break_positions: Any) -> list[int]:
-    """Convert torch.where break positions into torch.split sizes."""
+    """将 torch.where 得到的断点位置转换为 torch.split 所需的长度。"""
     if total_size < 0:
         raise ValueError("total_size 不能为负数。")
     if hasattr(break_positions, "tolist"):
@@ -125,7 +125,7 @@ def split_sizes_from_break_positions(total_size: int, break_positions: Any) -> l
 
 
 def validate_moss_codec_compatibility(processor: Any) -> None:
-    """Reject a codec checkpoint incompatible with VoiceGenerator."""
+    """拒绝与 VoiceGenerator 不兼容的 codec checkpoint。"""
     model_config = processor.model_config
     codec = processor.audio_tokenizer
     codec_config = getattr(codec, "config", None)
@@ -178,7 +178,7 @@ def _parse_audio_codes_with_fixed_segments(self, start_length, audio_codes):
 
 
 def install_moss_decode_compatibility(processor: Any) -> None:
-    """Patch only this processor instance, not the cached upstream source."""
+    """只修补当前 processor 实例，不修改缓存的上游源码。"""
     if getattr(processor, "_unitale_fixed_audio_parser", False):
         return
     processor._parse_audio_codes = MethodType(

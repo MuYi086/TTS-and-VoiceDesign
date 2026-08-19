@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""One-shot Qwen3-TTS VoiceDesign inference worker."""
+"""Qwen3-TTS VoiceDesign 一次性推理 worker。"""
 
 from __future__ import annotations
 
+# 只有此进程导入 Qwen3-TTS 和 torch；请求结束后进程退出以释放 CUDA 上下文。
 import gc
 import importlib.util
 import json
@@ -18,6 +19,7 @@ import soundfile as sf
 
 
 def parse_args():
+    """解析 VoiceDesign 请求文件和输出 WAV 路径。"""
     import argparse
 
     parser = argparse.ArgumentParser(description="One-shot Qwen3-TTS VoiceDesign worker")
@@ -27,11 +29,13 @@ def parse_args():
 
 
 def load_request(path: str) -> dict[str, Any]:
+    """读取 JSON 请求并确认顶层结构为对象。"""
     with open(path, encoding="utf-8") as file:
         return json.load(file)
 
 
 def normalize_text(value: Any, label: str) -> str:
+    """校验必须有内容的文本字段并去掉首尾空白。"""
     text = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", str(value or "").strip())
     if not text:
         raise ValueError(f"{label} 不能为空。")
@@ -39,6 +43,7 @@ def normalize_text(value: Any, label: str) -> str:
 
 
 def split_long_sentence(text: str, max_chars: int) -> list[str]:
+    """没有足够标点时按字符上限切开长句。"""
     parts = re.findall(r".+?[，,、：:]|.+$", text, flags=re.S)
     chunks: list[str] = []
     current = ""
@@ -66,6 +71,7 @@ def split_long_sentence(text: str, max_chars: int) -> list[str]:
 
 
 def split_text(text: str, max_chars: int) -> list[str]:
+    """优先按中文/英文标点切分，保证每段适合模型上下文。"""
     if max_chars <= 0 or len(text) <= max_chars:
         return [text]
     chunks: list[str] = []
@@ -92,6 +98,7 @@ def split_text(text: str, max_chars: int) -> list[str]:
 
 
 def resolve_dtype(torch, value: str):
+    """把配置中的 dtype 名称解析成 torch 类型。"""
     requested = str(value or "auto").lower()
     if requested == "auto":
         return torch.bfloat16
@@ -102,6 +109,7 @@ def resolve_dtype(torch, value: str):
 
 
 def resolve_attention(torch, requested: str, dtype: Any) -> str:
+    """选择 FlashAttention 或 SDPA，避免 API 进程导入 CUDA 扩展。"""
     value = str(requested or "auto")
     if value != "auto":
         return value
@@ -116,6 +124,7 @@ def resolve_attention(torch, requested: str, dtype: Any) -> str:
 
 
 def join_waveforms(waveforms: list[Any], sample_rate: int, pause_ms: int) -> np.ndarray:
+    """在多个生成片段之间插入静音并合并为一个 numpy 波形。"""
     if not waveforms:
         raise RuntimeError("Qwen3-TTS VoiceDesign 未返回音频。")
 
@@ -139,6 +148,7 @@ def join_waveforms(waveforms: list[Any], sample_rate: int, pause_ms: int) -> np.
 
 
 def synthesize(request: dict[str, Any], output_wav: Path) -> None:
+    """加载 VoiceDesign 模型，按文本片段生成并保存参考音色 WAV。"""
     try:
         import torch
         from qwen_tts import Qwen3TTSModel
@@ -205,6 +215,7 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
 
 
 def main() -> int:
+    """执行一次 VoiceDesign worker，并报告可读的错误摘要。"""
     args = parse_args()
     try:
         synthesize(load_request(args.input_json), Path(args.output_wav).expanduser().resolve())

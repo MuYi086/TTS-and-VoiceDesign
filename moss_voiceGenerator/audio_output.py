@@ -1,7 +1,8 @@
-"""Atomically persist generated VoiceGenerator audio."""
+"""原子保存 VoiceGenerator 生成的音频。"""
 
 from __future__ import annotations
 
+# VoiceGenerator 结果统一原子落盘，失败时自动删除临时文件。
 import os
 import tempfile
 import time
@@ -11,7 +12,7 @@ PathLike = str | os.PathLike[str]
 
 
 def persist_audio_bytes(audio_bytes: bytes, model_prefix: str, output_dir: PathLike) -> Path:
-    """Write a successful generated WAV without exposing partial output."""
+    """原子写入成功生成的音色 WAV。"""
     if not audio_bytes:
         raise ValueError("cannot persist empty audio")
 

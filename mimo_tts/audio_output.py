@@ -1,7 +1,8 @@
-"""Atomically persist successful MiMo VoiceDesign audio."""
+"""原子保存 MiMo VoiceDesign 成功生成的音频。"""
 
 from __future__ import annotations
 
+# 生成结果先写临时文件并原子替换，避免 WebUI 读到尚未写完的 WAV。
 import os
 import tempfile
 import time
@@ -11,7 +12,7 @@ PathLike = str | os.PathLike[str]
 
 
 def persist_audio_bytes(audio_bytes: bytes, model_prefix: str, output_dir: PathLike) -> Path:
-    """Write generated audio without exposing a partially-written WAV."""
+    """原子写入生成音频，避免暴露半成品 WAV。"""
     if not audio_bytes:
         raise ValueError("cannot persist empty audio")
 

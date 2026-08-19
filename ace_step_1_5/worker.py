@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""One-shot ACE-Step 1.5 XL Turbo inference worker."""
+"""ACE-Step 1.5 XL Turbo 一次性推理 worker。"""
 
 from __future__ import annotations
 
+# 只有 worker 导入 torch/diffusers；请求结束后进程退出以彻底释放显存。
 import argparse
 import gc
 import json
@@ -25,6 +26,7 @@ REQUIRED_MODEL_PATHS = (
 
 
 def parse_args() -> argparse.Namespace:
+    """解析 BGM 请求文件、输出 WAV 和元数据路径。"""
     parser = argparse.ArgumentParser(description="Run one ACE-Step 1.5 BGM request")
     parser.add_argument("--input-json", required=True)
     parser.add_argument("--output-wav", required=True)
@@ -33,6 +35,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def read_payload(path: str) -> dict[str, Any]:
+    """读取 JSON 对象并拒绝错误的请求结构。"""
     with open(path, encoding="utf-8") as file:
         payload = json.load(file)
     if not isinstance(payload, dict):
@@ -41,7 +44,7 @@ def read_payload(path: str) -> dict[str, Any]:
 
 
 def configure_runtime_cache(payload: dict[str, Any]) -> None:
-    """Set offline/cache controls before importing Hugging Face libraries."""
+    """在导入 Hugging Face 库前设置离线模式和隔离缓存目录。"""
     cache_dir = payload.get("runtime_cache_dir")
     if cache_dir:
         cache_path = Path(str(cache_dir)).expanduser()
@@ -64,7 +67,7 @@ def configure_runtime_cache(payload: dict[str, Any]) -> None:
 
 
 def validate_model(model_path: Path) -> Path:
-    """Validate model components without assuming a single weight filename."""
+    """检查模型组件，不假设 transformer 只有一个权重文件。"""
     model_path = model_path.expanduser().resolve()
     if not model_path.is_dir():
         raise FileNotFoundError(f"Local ACE-Step model directory is missing: {model_path}")
@@ -98,7 +101,7 @@ def load_pipeline(
     offload: str,
     vae_tiling: bool,
 ):
-    """Load ACE-Step only inside the short-lived worker process."""
+    """只在短生命周期 worker 中加载 ACE-Step pipeline。"""
     import torch
     from diffusers import AceStepPipeline
 
@@ -133,7 +136,7 @@ def load_pipeline(
 
 
 def run_generation(pipe: Any, torch: Any, payload: dict[str, Any]):
-    """Generate pure instrumental music with the ACE-Step text2music task."""
+    """使用 text2music 任务生成纯音乐，并返回实际使用的随机种子。"""
     seed = int(payload.get("seed", -1))
     if seed < 0:
         seed = secrets.randbelow(2**31 - 1)
@@ -162,7 +165,7 @@ def run_generation(pipe: Any, torch: Any, payload: dict[str, Any]):
 
 
 def write_audio(result: Any, pipe: Any, output_path: Path) -> tuple[int, int]:
-    """Write the pipeline's native 48 kHz stereo output as a float WAV."""
+    """把 pipeline 输出规范化为 48 kHz 双声道浮点 WAV。"""
     import numpy as np
     import soundfile as sf
 
@@ -196,7 +199,7 @@ def write_audio(result: Any, pipe: Any, output_path: Path) -> tuple[int, int]:
 
 
 def clear_cuda(torch: Any) -> None:
-    """Release allocator state before the worker process exits."""
+    """清理 CUDA allocator；最终上下文释放仍由 worker 进程退出保证。"""
     gc.collect()
     if not torch.cuda.is_available():
         return
@@ -212,6 +215,7 @@ def clear_cuda(torch: Any) -> None:
 
 
 def write_metadata(path: Path, *, seed: int, sample_rate: int, channels: int) -> None:
+    """写出供 API 添加响应头的生成元数据。"""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
@@ -228,6 +232,7 @@ def write_metadata(path: Path, *, seed: int, sample_rate: int, channels: int) ->
 
 
 def main() -> None:
+    """执行一次 ACE-Step BGM 生成 worker。"""
     args = parse_args()
     payload = read_payload(args.input_json)
     configure_runtime_cache(payload)

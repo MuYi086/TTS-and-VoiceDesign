@@ -1,7 +1,8 @@
-"""No-network regression tests for the standalone MiMo VoiceDesign service."""
+"""独立 MiMo VoiceDesign 服务的无网络回归测试。"""
 
 from __future__ import annotations
 
+# MiMo 测试 mock 网络边界，重点验证切分、重试、WAV 拼接和本地存储契约。
 import importlib.util
 import os
 import sys

@@ -1,11 +1,12 @@
-"""Runtime helpers for the Stable Audio 3 Medium uv service.
+"""Stable Audio 3 Medium uv 服务的运行时辅助函数。
 
-The HTTP process stays lightweight.  Heavy model imports happen only inside a
-one-shot worker launched with this project's own Python interpreter.
+HTTP 进程保持轻量；重型模型只在本项目 Python 解释器启动的一次性 worker
+中导入。
 """
 
 from __future__ import annotations
 
+# Stable Audio 的模型生命周期只存在于一次性 worker；API 进程不触碰 torch。
 import json
 import os
 import shutil
@@ -23,7 +24,7 @@ from typing import Any
 
 @dataclass(frozen=True)
 class WorkerConfig:
-    """Configuration for one uv worker invocation."""
+    """一次 uv worker 调用所需的脚本、临时目录和超时配置。"""
 
     worker_script: Path
     temp_dir: Path
@@ -33,7 +34,7 @@ class WorkerConfig:
 
 
 def module_available(module_name: str) -> bool:
-    """Return whether a module can be found without importing it."""
+    """在不实际导入模块的情况下判断其是否可查找到。"""
     try:
         import importlib.util
 
@@ -43,7 +44,7 @@ def module_available(module_name: str) -> bool:
 
 
 def cuda_status() -> dict[str, Any]:
-    """Read GPU status without creating a CUDA context in the API process."""
+    """在不让 API 进程创建 CUDA 上下文的前提下读取 GPU 状态。"""
     status: dict[str, Any] = {"available": False, "source": "nvidia-smi"}
     nvidia_smi = shutil.which("nvidia-smi")
     if not nvidia_smi:
@@ -93,7 +94,7 @@ def cuda_status() -> dict[str, Any]:
 
 
 def process_is_running(process: Any) -> bool:
-    """Handle both real Popen objects and the small process mocks used in tests."""
+    """判断 worker 是否仍存活，允许测试传入轻量伪进程。"""
     if process is None:
         return False
     poll = getattr(process, "poll", None)
@@ -108,7 +109,7 @@ def terminate_process_group(
     terminate_timeout: float = 10,
     kill_timeout: float = 5,
 ) -> None:
-    """Terminate a worker and all descendants, escalating to SIGKILL if needed."""
+    """终止 worker 及其全部子进程，必要时升级为 SIGKILL。"""
     if not process_is_running(process):
         return
 
@@ -161,11 +162,15 @@ def terminate_process_group(
             if callable(kill):
                 kill()
 
-    wait(timeout=kill_timeout)
+    try:
+        wait(timeout=kill_timeout)
+    except subprocess.TimeoutExpired:
+        # 清理阶段不能覆盖 worker 原始异常；SIGKILL 后仍未回收时交给系统继续回收。
+        pass
 
 
 def worker_error_excerpt(output: str, label: str) -> str:
-    """Keep the useful tail of a worker traceback for an HTTP error response."""
+    """保留 worker traceback 的末尾关键信息，作为 HTTP 错误响应内容。"""
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     if not lines:
         return f"{label} worker 未输出错误信息。"
@@ -173,7 +178,7 @@ def worker_error_excerpt(output: str, label: str) -> str:
 
 
 def run_local_worker(payload: dict[str, Any], config: WorkerConfig) -> bytes:
-    """Run one worker in this uv environment and return non-empty WAV bytes."""
+    """在 Stable Audio 项目的 uv 解释器中完成一次隔离推理。"""
     if not config.worker_script.is_file():
         raise RuntimeError(f"{config.label} worker 脚本不存在: {config.worker_script}")
 
@@ -245,7 +250,7 @@ def run_local_worker(payload: dict[str, Any], config: WorkerConfig) -> bytes:
 
 @contextmanager
 def gpu_runtime_lock(lock_path: Path, label: str) -> Iterator[None]:
-    """Serialize GPU workers using the repository-wide advisory lock."""
+    """持有共享 GPU 文件锁，保证模型请求不会并行争抢显存。"""
     import fcntl
 
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -261,7 +266,7 @@ def gpu_runtime_lock(lock_path: Path, label: str) -> Iterator[None]:
 
 
 def persist_audio_bytes(audio_bytes: bytes, model_prefix: str, output_dir: Path) -> Path:
-    """Atomically persist a successful WAV response for local inspection."""
+    """原子保存成功的 WAV 响应，便于本地检查。"""
     if not audio_bytes:
         raise ValueError("cannot persist empty audio")
 

@@ -1,7 +1,8 @@
-"""Atomically persist generated Step-Audio-EditX audio."""
+"""原子保存 Step-Audio-EditX 生成的音频。"""
 
 from __future__ import annotations
 
+# 编辑结果采用原子替换，确保 WebUI 只看到完整 WAV。
 import os
 import tempfile
 import time
@@ -11,7 +12,7 @@ PathLike = str | os.PathLike[str]
 
 
 def persist_audio_bytes(audio_bytes: bytes, model_prefix: str, output_dir: PathLike) -> Path:
-    """Write a successful generated WAV without exposing partial output."""
+    """原子写入成功生成的编辑 WAV。"""
     if not audio_bytes:
         raise ValueError("cannot persist empty audio")
 

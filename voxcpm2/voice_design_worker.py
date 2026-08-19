@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+# 音色设计使用独立 worker，刻意不读取参考音频，避免与克隆流程混淆。
 import inspect
 import sys
 import time
@@ -35,7 +36,7 @@ def build_voice_design_generate_kwargs(
     text: str,
     seed: int,
 ) -> dict[str, Any]:
-    """按已安装 VoxCPM 版本的签名构造官方音色设计 ``generate`` 调用。"""
+    """把请求中的可选控制项整理成官方 ``generate`` 参数。"""
     options = {
         "text": text,
         "cfg_value": args.cfg_value,
@@ -61,7 +62,7 @@ def build_voice_design_generate_kwargs(
 
 
 def synthesize_voice_design(request: dict[str, Any], output_wav: Path) -> None:
-    """生成单段无参考音频的 VoxCPM2 设计音色。"""
+    """加载 VoxCPM2 VoiceDesign 能力，生成无参考音频的音色样例。"""
     prepare_environment(request)
 
     helper_script = str(request.get("voxcpm2_helper_script") or "")
@@ -132,6 +133,7 @@ def synthesize_voice_design(request: dict[str, Any], output_wav: Path) -> None:
 
 
 def main() -> int:
+    """执行一次音色设计 worker，并清理 CUDA 状态。"""
     args = parse_args()
     request = load_request(args.input_json)
     try:

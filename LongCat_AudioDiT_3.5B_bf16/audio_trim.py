@@ -1,7 +1,8 @@
-"""Dependency-light leading-silence trimming for generated WAV audio."""
+"""用于裁剪生成 WAV 前导静音的轻量工具。"""
 
 from __future__ import annotations
 
+# 该算法只依赖 numpy：worker 在写 WAV 前去除过长的前导静音，减少试听延迟。
 from typing import Any
 
 LEADING_SILENCE_THRESHOLD_DB = -42.0
@@ -22,7 +23,7 @@ def trim_leading_silence(
     pre_roll_ms: int = LEADING_SILENCE_PRE_ROLL_MS,
     max_trim_ms: int = LEADING_SILENCE_MAX_TRIM_MS,
 ) -> tuple[Any, int]:
-    """Remove a substantial silent prefix while retaining a short onset guard."""
+    """按短窗能量检测前导静音，并保留少量 pre-roll 防止切掉起音。"""
     audio = np.asarray(waveform, dtype=np.float32)
     if audio.size == 0 or audio.ndim not in {1, 2}:
         return audio, 0

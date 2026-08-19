@@ -1,7 +1,8 @@
-"""No-model API contract tests for the ACE-Step 1.5 service."""
+"""ACE-Step 1.5 服务的无模型 API 契约测试。"""
 
 from __future__ import annotations
 
+# API 合约测试只检查 Pydantic、健康接口和 mock 生成结果，不加载 ACE-Step。
 import os
 import sys
 import tempfile

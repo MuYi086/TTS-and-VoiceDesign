@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Unitale Stable Audio 3 Medium HTTP service.
+"""Unitale Stable Audio 3 Medium HTTP 服务。
 
-The API process validates requests and owns the GPU lock, while a fresh worker
-process loads the heavyweight model for each request and exits before the
-response is returned.
+API 进程负责校验请求并持有 GPU 锁；每个请求由全新的 worker 进程加载重型模型，
+并在返回响应前退出。
 """
 
 from __future__ import annotations
 
+# 学习入口：请求先经过 Pydantic 校验，再持有共享 GPU 锁，最后交给一次性 worker。
 import logging
 import os
 import shutil
@@ -46,12 +46,12 @@ MAX_SECONDS = 380.0
 
 
 def expand_path(value: str) -> Path:
-    """Expand environment variables and ``~`` into an absolute path."""
+    """展开环境变量与 ``~``，把配置路径统一转换为绝对路径。"""
     return Path(os.path.abspath(os.path.expandvars(os.path.expanduser(value))))
 
 
 def env_bool(name: str, default: bool = False) -> bool:
-    """Read a conventional boolean environment variable."""
+    """读取常见形式的布尔环境变量。"""
     value = os.getenv(name)
     if value is None:
         return default
@@ -59,7 +59,7 @@ def env_bool(name: str, default: bool = False) -> bool:
 
 
 def local_model_is_complete(model_dir: Path) -> bool:
-    """Check the minimum files required by the local worker."""
+    """只检查 worker 必需的最小权重文件集合，不在健康检查时加载模型。"""
     return all((model_dir / name).is_file() for name in REQUIRED_MODEL_FILES)
 
 
@@ -100,9 +100,9 @@ STABLE_AUDIO_3_MEDIUM_REQUEST_TIMEOUT = float(
 STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR = expand_path(
     os.getenv("STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR", str(SOUNDEFFECT_STORAGE_DIR))
 )
-# The upstream runtime has a tested SDPA/flex-attention fallback.  Keep it as
-# the uv default because the old cp310 FlashAttention wheel cannot be reused by
-# Python 3.12; deployments can set this to 1 for the strict official path.
+# 上游运行时已经验证过 SDPA/flex-attention 回退方案。由于旧的 cp310
+# FlashAttention wheel 不能用于 Python 3.12，这里将回退方案作为 uv 默认值；
+# 部署环境可以设为 1，强制使用官方路径。
 STABLE_AUDIO_3_MEDIUM_REQUIRE_FLASH_ATTN = env_bool(
     "STABLE_AUDIO_3_MEDIUM_REQUIRE_FLASH_ATTN", False
 )
@@ -123,7 +123,7 @@ if LOCAL_FILES_ONLY:
 
 
 class ForceCORS(BaseHTTPMiddleware):
-    """Preserve the permissive CORS behavior used by the local WebUI."""
+    """保留本地 WebUI 所需的宽松跨域行为，并处理 OPTIONS 预检。"""
 
     async def dispatch(self, request, call_next):
         if request.method == "OPTIONS":
@@ -142,7 +142,7 @@ class ForceCORS(BaseHTTPMiddleware):
 
 
 class StableAudio3MediumGenerateRequest(BaseModel):
-    """Stable Audio 3 Medium text-to-audio request."""
+    """Stable Audio 3 Medium 文本生成音频的请求参数。"""
 
     prompt: str = Field(min_length=1, max_length=2_000)
     seconds: float | None = Field(default=None, gt=0, le=MAX_SECONDS)
@@ -173,14 +173,14 @@ class StableAudio3MediumGenerateRequest(BaseModel):
 
 
 def assert_local_request(request: Request) -> None:
-    """Restrict internal control endpoints to the local machine."""
+    """限制内部控制接口只能由本机调用，避免远程触发 worker 管理动作。"""
     client_host = request.client.host if request.client else ""
     if client_host not in {"127.0.0.1", "::1", "localhost"}:
         raise HTTPException(status_code=403, detail="仅允许本机访问内部接口")
 
 
 def wait_after_cuda_release() -> None:
-    """Allow the terminated worker's CUDA context to disappear before unlock."""
+    """worker 退出后短暂等待 CUDA 上下文消失，再释放共享 GPU 锁。"""
     if CUDA_RELEASE_DELAY > 0:
         print(
             f"[CUDA] 等待 {CUDA_RELEASE_DELAY:.1f}s，确保 Stable Audio 3 Medium worker 显存已释放"
@@ -189,7 +189,7 @@ def wait_after_cuda_release() -> None:
 
 
 def flash_attention_status() -> dict[str, object]:
-    """Report availability without importing a compiled CUDA extension in the API."""
+    """不导入编译扩展，直接报告 FlashAttention 与回退实现的可用性。"""
     available = module_available("flash_attn")
     return {
         "available": available,
@@ -212,13 +212,14 @@ STABLE_AUDIO_3_MEDIUM_WORKER = WorkerConfig(
 
 
 class StableAudio3MediumWorkerManager:
-    """Validate local assets, run one worker, and persist successful output."""
+    """校验本地资源、启动一次 worker，并记录最近一次错误。"""
 
     def __init__(self) -> None:
         self.lock = threading.RLock()
         self.last_error: str | None = None
 
     def build_worker_payload(self, request: StableAudio3MediumGenerateRequest) -> dict:
+        """把 HTTP 请求与服务级默认配置合并成 worker JSON。"""
         return {
             "prompt": request.prompt,
             "seconds": request.seconds,
@@ -236,6 +237,7 @@ class StableAudio3MediumWorkerManager:
         }
 
     def run_worker(self, payload: dict) -> bytes:
+        """确认本地权重和上游源码完整后执行一次隔离推理。"""
         if not local_model_is_complete(STABLE_AUDIO_3_MEDIUM_MODEL_DIR):
             missing = [
                 name
@@ -267,7 +269,7 @@ manager = StableAudio3MediumWorkerManager()
 
 @app.get("/v1/health")
 def health() -> dict:
-    """Report service readiness without loading model weights."""
+    """在不加载权重的前提下返回服务、模型文件和 GPU 就绪状态。"""
     cuda = cuda_status()
     required_files = {
         name: (STABLE_AUDIO_3_MEDIUM_MODEL_DIR / name).is_file() for name in REQUIRED_MODEL_FILES
@@ -286,7 +288,7 @@ def health() -> dict:
             "worker_python": os.environ.get("STABLE_AUDIO_3_MEDIUM_PYTHON", os.sys.executable),
         },
         "available": {
-            # Kept for health-schema compatibility; Conda is no longer required.
+            # 保留此字段是为了兼容健康检查响应格式；当前不再要求 Conda。
             "conda": bool(shutil.which("conda")),
             "uv": bool(shutil.which("uv")) or Path(os.sys.executable).is_file(),
             "model_dir": STABLE_AUDIO_3_MEDIUM_MODEL_DIR.is_dir(),
@@ -327,7 +329,7 @@ def health() -> dict:
 
 @app.post("/internal/unload_all")
 def internal_unload_all(request: Request) -> JSONResponse:
-    """Keep the old control route even though no model remains resident."""
+    """保留内部控制契约；由于模型按请求加载，这里无需常驻模型卸载。"""
     assert_local_request(request)
     with gpu_runtime_lock(GPU_LOCK_FILE, "stable_audio_3_medium/unload"):
         with manager.lock:
@@ -342,7 +344,7 @@ def internal_unload_all(request: Request) -> JSONResponse:
 
 @app.post("/v1/stableAudio/soundEffect")
 def generate(request: StableAudio3MediumGenerateRequest) -> Response:
-    """Generate a WAV while serializing access to the shared GPU."""
+    """串行持有共享 GPU 锁，生成 WAV 并写入 soundEffect 存储目录。"""
     with gpu_runtime_lock(GPU_LOCK_FILE, "stable_audio_3_medium/generate"):
         with manager.lock:
             try:

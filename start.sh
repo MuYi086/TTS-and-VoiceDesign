@@ -3,11 +3,11 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MAIN_DIR="$PROJECT_DIR/main"
+# 所有服务共享同一个存储根目录；启动脚本只做路由和运行环境配置。
 STORAGE_DIR="${STORAGE_DIR:-$PROJECT_DIR/storage}"
 export STORAGE_DIR
 MIMO_TTS_PROJECT_DIR="${MIMO_TTS_PROJECT_DIR:-$PROJECT_DIR/mimo_tts}"
-# The control-plane wrappers use the Qwen3-TTS uv environment, while
-# heavyweight workers use their model-specific environments below.
+# 控制面 wrapper 使用 Qwen3-TTS 的 uv 环境；重型 worker 使用各自项目环境。
 MOSS_SOUNDEFFECT_PROJECT_DIR="${MOSS_SOUNDEFFECT_PROJECT_DIR:-$PROJECT_DIR/moss_soundEffect}"
 QWEN3_TTS_PROJECT_DIR="${QWEN3_TTS_PROJECT_DIR:-$PROJECT_DIR/qwen3_tts}"
 QWEN3_VOICEDESIGN_PROJECT_DIR="${QWEN3_VOICEDESIGN_PROJECT_DIR:-$PROJECT_DIR/qwen3_voiceDesign}"
@@ -136,6 +136,7 @@ export HF_MODULES_CACHE="${HF_MODULES_CACHE:-$RUNTIME_CACHE_DIR/hf_modules}"
 export NUMBA_CACHE_DIR="${NUMBA_CACHE_DIR:-$RUNTIME_CACHE_DIR/numba}"
 export MPLCONFIGDIR="${MPLCONFIGDIR:-$RUNTIME_CACHE_DIR/matplotlib}"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$RUNTIME_CACHE_DIR/xdg}"
+# 先创建运行目录，避免服务第一次接收请求时才触发目录创建竞争。
 mkdir -p "$TIMBRE_STORAGE_DIR" "$SOUNDEFFECT_STORAGE_DIR" "$BGM_STORAGE_DIR" "$CLONE_STORAGE_DIR" "$PROMPTS_DIR" "$HF_MODULES_CACHE" "$NUMBA_CACHE_DIR" "$MPLCONFIGDIR" "$XDG_CACHE_HOME" "$(dirname "$GPU_LOCK_FILE")"
 
 echo "=================================================="
@@ -256,9 +257,23 @@ step_audio_editx_pid=""
 
 cleanup() {
   local status=$?
+  local pids=(
+    "$main_pid"
+    "$mimo_tts_pid"
+    "$soundeffect_pid"
+    "$stable_audio_3_medium_pid"
+    "$acestep_pid"
+    "$qwen3_tts_pid"
+    "$qwen_voicedesign_pid"
+    "$moss_voicegenerator_pid"
+    "$step_audio_editx_pid"
+    "$voxcpm2_pid"
+    "$longcat_audiodit_pid"
+    "$dots_tts_soar_pid"
+  )
   trap - INT TERM EXIT
 
-  for pid in "$main_pid" "$mimo_tts_pid" "$soundeffect_pid" "$stable_audio_3_medium_pid" "$acestep_pid" "$qwen3_tts_pid" "$qwen_voicedesign_pid" "$moss_voicegenerator_pid" "$step_audio_editx_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid"; do
+  for pid in "${pids[@]}"; do
     if [[ -n "$pid" ]] && kill -0 -- "-$pid" 2>/dev/null; then
       kill -TERM -- "-$pid" 2>/dev/null || true
     fi
@@ -266,34 +281,24 @@ cleanup() {
 
   sleep 1
 
-  for pid in "$main_pid" "$mimo_tts_pid" "$soundeffect_pid" "$stable_audio_3_medium_pid" "$acestep_pid" "$qwen3_tts_pid" "$qwen_voicedesign_pid" "$moss_voicegenerator_pid" "$step_audio_editx_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid"; do
+  for pid in "${pids[@]}"; do
     if [[ -n "$pid" ]] && kill -0 -- "-$pid" 2>/dev/null; then
       kill -KILL -- "-$pid" 2>/dev/null || true
     fi
   done
 
-  wait "$main_pid" 2>/dev/null || true
-  wait "$mimo_tts_pid" 2>/dev/null || true
-  wait "$soundeffect_pid" 2>/dev/null || true
-  wait "$stable_audio_3_medium_pid" 2>/dev/null || true
-  wait "$acestep_pid" 2>/dev/null || true
-  wait "$qwen3_tts_pid" 2>/dev/null || true
-  wait "$qwen_voicedesign_pid" 2>/dev/null || true
-  wait "$moss_voicegenerator_pid" 2>/dev/null || true
-  wait "$step_audio_editx_pid" 2>/dev/null || true
-  wait "$voxcpm2_pid" 2>/dev/null || true
-  wait "$longcat_audiodit_pid" 2>/dev/null || true
-  wait "$dots_tts_soar_pid" 2>/dev/null || true
+  for pid in "${pids[@]}"; do
+    wait "$pid" 2>/dev/null || true
+  done
   exit "$status"
 }
 
 trap cleanup INT TERM EXIT
 
-# The main control plane owns the 8300 control routes and uses the
-# Qwen3-TTS uv environment only for its lightweight HTTP dependencies.
+# 主控制面负责 8300 控制路由，只使用 Qwen3-TTS uv 环境中的轻量 HTTP 依赖。
 setsid uv run --no-sync --project "$QWEN3_TTS_PROJECT_DIR" python "$MAIN_DIR/main.py" &
 main_pid=$!
-# MiMo is a cloud-backed VoiceDesign service with its own health and cache.
+# MiMo 是基于云端的 VoiceDesign 服务，拥有独立的健康检查和缓存。
 MIMO_TTS_HOST="$MIMO_TTS_HOST" MIMO_TTS_PORT="$MIMO_TTS_PORT" \
   HOST="$MIMO_TTS_HOST" PORT="$MIMO_TTS_PORT" \
   setsid uv run --no-sync --project "$MIMO_TTS_PROJECT_DIR" \
@@ -304,30 +309,30 @@ HOST="$SOUNDEFFECT_HOST" PORT="$SOUNDEFFECT_PORT" \
   setsid uv run --no-sync --project "$MOSS_SOUNDEFFECT_PROJECT_DIR" \
   python "$MOSS_SOUNDEFFECT_PROJECT_DIR/main.py" &
 soundeffect_pid=$!
-# Stable Audio 3 Medium is fully migrated to its standalone uv project.
+# Stable Audio 3 Medium 已完整迁移到独立 uv 项目。
 HOST="$STABLE_AUDIO_3_MEDIUM_HOST" PORT="$STABLE_AUDIO_3_MEDIUM_PORT" \
   setsid uv run --no-sync --project "$STABLE_AUDIO_3_MEDIUM_PROJECT_DIR" \
   python "$STABLE_AUDIO_3_MEDIUM_PROJECT_DIR/main.py" &
 stable_audio_3_medium_pid=$!
-# ACE-Step 1.5 is a separate one-shot-worker uv service.  Dependencies must be
-# synchronized manually before startup; --no-sync keeps startup offline.
+# ACE-Step 1.5 是独立的一次性 worker uv 服务；启动前必须手动同步依赖，
+# --no-sync 确保启动过程保持离线。
 HOST="$ACESTEP_HOST" PORT="$ACESTEP_PORT" \
   setsid uv run --no-sync --project "$ACESTEP_PROJECT_DIR" \
   python "$ACESTEP_PROJECT_DIR/main.py" &
 acestep_pid=$!
 # Qwen3-TTS uv 服务：使用最终约定的 8321 端口和克隆路由。
-HOST="$QWEN3_TTS_HOST" PORT="$QWEN3_TTS_PORT" setsid uv run --project "$QWEN3_TTS_PROJECT_DIR" python "$QWEN3_TTS_PROJECT_DIR/main.py" &
+HOST="$QWEN3_TTS_HOST" PORT="$QWEN3_TTS_PORT" setsid uv run --no-sync --project "$QWEN3_TTS_PROJECT_DIR" python "$QWEN3_TTS_PROJECT_DIR/main.py" &
 qwen3_tts_pid=$!
 # Qwen3-TTS VoiceDesign 独立 uv 服务：使用最终约定的 8301 端口。
 QWEN_VOICEDESIGN_HOST="$QWEN_VOICEDESIGN_HOST" QWEN_VOICEDESIGN_PORT="$QWEN_VOICEDESIGN_PORT" \
   HOST="$QWEN_VOICEDESIGN_HOST" PORT="$QWEN_VOICEDESIGN_PORT" \
-  setsid uv run --project "$QWEN3_VOICEDESIGN_PROJECT_DIR" \
+  setsid uv run --no-sync --project "$QWEN3_VOICEDESIGN_PROJECT_DIR" \
   python "$QWEN3_VOICEDESIGN_PROJECT_DIR/main.py" &
 qwen_voicedesign_pid=$!
 # MOSS VoiceGenerator 独立 uv 服务：使用最终约定的 8302 端口。
 MOSS_VOICEGENERATOR_HOST="$MOSS_VOICEGENERATOR_HOST" MOSS_VOICEGENERATOR_PORT="$MOSS_VOICEGENERATOR_PORT" \
   HOST="$MOSS_VOICEGENERATOR_HOST" PORT="$MOSS_VOICEGENERATOR_PORT" \
-  setsid uv run --project "$MOSS_VOICEGENERATOR_PROJECT_DIR" \
+  setsid uv run --no-sync --project "$MOSS_VOICEGENERATOR_PROJECT_DIR" \
   python "$MOSS_VOICEGENERATOR_PROJECT_DIR/main.py" &
 moss_voicegenerator_pid=$!
 # Step-Audio-EditX 独立 uv 服务：完整提供上传、检查和编辑接口。

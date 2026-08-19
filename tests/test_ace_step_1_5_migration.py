@@ -1,7 +1,8 @@
-"""Static migration checks for the standalone ACE-Step 1.5 service."""
+"""独立 ACE-Step 1.5 服务的静态迁移检查。"""
 
 from __future__ import annotations
 
+# 迁移测试确认 ACE-Step 已独立成 uv 服务，且控制面没有重新接管模型推理。
 import unittest
 from pathlib import Path
 

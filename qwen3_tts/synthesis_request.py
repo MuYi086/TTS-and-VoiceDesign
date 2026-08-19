@@ -1,4 +1,4 @@
-"""Shared request contract for voice-cloning synthesis endpoints."""
+"""语音克隆合成接口共用的请求契约。"""
 
 from collections.abc import Mapping
 from typing import Any
@@ -7,14 +7,12 @@ from pydantic import BaseModel, ConfigDict, model_validator
 
 
 class CloneSynthesisRequest(BaseModel):
-    """Base schema for ``/v1/qwen/clone`` voice-cloning requests.
+    """``/v1/qwen/clone`` 语音克隆请求的基础模型。
 
-    The WebUI may send model-specific compatibility fields, so unknown fields
-    remain ignored.  ``style_prompt`` is deliberately an exception: synthesis
-    is only for cloning an uploaded reference voice, not voice design, and a
-    style prompt can be mistaken for text that should be spoken.  Reference
-    transcripts are model capabilities, so models that consume ``prompt_text``
-    declare it explicitly in their own request schema.
+    WebUI 可能发送不同模型共用的兼容字段，因此未知字段会被忽略。
+    ``style_prompt`` 是特例：此接口只克隆上传的参考音频，不进行音色设计；
+    如果误将风格提示当成待朗读文本，会改变合成结果。参考音频转写属于
+    具体模型能力，因此支持 ``prompt_text`` 的模型应在自己的请求模型中声明。
     """
 
     model_config = ConfigDict(extra="ignore")

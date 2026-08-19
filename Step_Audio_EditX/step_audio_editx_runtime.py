@@ -1,7 +1,8 @@
-"""Runtime helpers for the standalone Step-Audio-EditX service."""
+"""独立 Step-Audio-EditX 服务的运行时辅助函数。"""
 
 from __future__ import annotations
 
+# EditX 的模型依赖仅在 worker 中导入；API 进程因此可在无 CUDA 环境启动。
 import fcntl
 import os
 import shutil
@@ -14,6 +15,7 @@ from typing import Any
 
 
 def env_bool(name: str, default: bool = False) -> bool:
+    """读取常见形式的布尔环境变量，统一启动配置的语义。"""
     value = os.getenv(name)
     if value is None:
         return default
@@ -25,7 +27,7 @@ def expand_path(path: str) -> str:
 
 
 def cuda_status() -> dict[str, Any]:
-    """Read GPU status without importing Torch or creating a CUDA context."""
+    """不导入 Torch，也不创建 CUDA 上下文，直接读取 GPU 状态。"""
 
     status: dict[str, Any] = {"available": False, "source": "nvidia-smi"}
     nvidia_smi = shutil.which("nvidia-smi")
@@ -74,6 +76,7 @@ def cuda_status() -> dict[str, Any]:
 
 @contextmanager
 def gpu_runtime_lock(lock_file_path: str, label: str) -> Iterator[None]:
+    """通过仓库共享文件锁串行化 EditX 的 GPU 推理。"""
     os.makedirs(os.path.dirname(lock_file_path) or ".", exist_ok=True)
     with open(lock_file_path, "a+", encoding="utf-8") as lock_file:
         print(f"[GPU 锁] 等待进入: {label}")
@@ -95,6 +98,7 @@ def wait_after_cuda_release(delay: float, label: str = "") -> None:
 
 
 def process_is_running(process: Any) -> bool:
+    """判断 worker 是否存活，兼容 subprocess 和测试用伪进程。"""
     if process is None:
         return False
     poll = getattr(process, "poll", None)
@@ -109,7 +113,7 @@ def terminate_process_group(
     terminate_timeout: float = 10,
     kill_timeout: float = 5,
 ) -> None:
-    """Terminate a worker and all descendants, including timeout cleanup."""
+    """先优雅终止、超时后强杀 worker 及其全部子进程。"""
 
     if not process_is_running(process):
         return
@@ -161,4 +165,8 @@ def terminate_process_group(
             kill = getattr(process, "kill", None)
             if callable(kill):
                 kill()
-    wait(timeout=kill_timeout)
+    try:
+        wait(timeout=kill_timeout)
+    except subprocess.TimeoutExpired:
+        # 清理阶段不能覆盖 worker 原始异常；SIGKILL 后仍未回收时交给系统继续回收。
+        pass

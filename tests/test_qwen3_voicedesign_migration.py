@@ -1,7 +1,8 @@
-"""No-model regression tests for the standalone Qwen3 VoiceDesign service."""
+"""独立 Qwen3 VoiceDesign 服务的无模型回归测试。"""
 
 from __future__ import annotations
 
+# VoiceDesign 测试验证音色输出只进入 timbre 目录且 worker 使用正确 uv 环境。
 import importlib.util
 import os
 import sys

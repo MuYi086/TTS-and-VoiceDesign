@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
+"""Qwen3-TTS 一次性语音克隆 worker。
+
+该进程从 JSON 请求文件读取参数，按文本切分执行推理，写出一个 WAV，
+最后清理临时文件并退出；模型不在 FastAPI 父进程中加载。
+"""
 
 from __future__ import annotations
 
+# worker 才导入 torch、transformers 和 Qwen3-TTS，父进程因此可以保持无模型启动。
 import argparse
 import gc
 import importlib.util
@@ -16,6 +22,7 @@ from typing import Any
 
 
 def parse_args() -> argparse.Namespace:
+    """解析父进程传入的请求 JSON、输出 WAV 和可选运行参数。"""
     parser = argparse.ArgumentParser(description="One-shot Qwen3-TTS worker")
     parser.add_argument("--input-json", required=True, help="Request JSON file path")
     parser.add_argument("--output-wav", required=True, help="Output wav file path")
@@ -23,6 +30,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_request(path: str) -> dict[str, Any]:
+    """读取并校验一个 JSON 对象，拒绝数组或空请求。"""
     with open(path, encoding="utf-8") as f:
         return json.load(f)
 
@@ -35,6 +43,7 @@ def require_path(path: str, label: str) -> Path:
 
 
 def normalize_text(text: str) -> str:
+    """清理文本空白，保证后续切分不会产生空片段。"""
     normalized = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", (text or "").strip())
     normalized = re.sub(r"(?m)^\s*[-*+]\s+", "", normalized)
     if not normalized:
@@ -43,6 +52,7 @@ def normalize_text(text: str) -> str:
 
 
 def split_text(text: str, max_chars: int) -> list[str]:
+    """按句号、逗号等边界切分长文本，控制单次模型上下文长度。"""
     if max_chars <= 0 or len(text) <= max_chars:
         return [text]
 
@@ -75,6 +85,7 @@ def split_text(text: str, max_chars: int) -> list[str]:
 
 
 def split_long_sentence(text: str, max_chars: int) -> list[str]:
+    """对没有自然标点的超长句做硬切分。"""
     parts = re.findall(r".+?[，,、：:]|.+$", text, flags=re.S)
     chunks: list[str] = []
     current = ""
@@ -113,6 +124,7 @@ def normalize_optional_text(value: Any) -> str | None:
 
 
 def resolve_dtype(torch: Any, dtype_name: Any, device: str) -> Any:
+    """把配置字符串转换成 torch dtype，并处理 CPU 不适合的精度。"""
     normalized = str(dtype_name or "auto").strip().lower()
     if normalized == "auto":
         return torch.bfloat16 if device == "cuda" else torch.float32
@@ -126,6 +138,7 @@ def resolve_dtype(torch: Any, dtype_name: Any, device: str) -> Any:
 
 
 def resolve_attn_implementation(torch: Any, requested: Any, device: str, dtype: Any) -> str:
+    """选择可用的 attention 后端，缺少编译扩展时回退到 SDPA。"""
     normalized = str(requested or "auto").strip().lower()
     if normalized != "auto":
         return normalized
@@ -194,6 +207,7 @@ def trim_leading_silence(
 
 
 def join_waveforms(waveforms: list[Any], sample_rate: int, pause_ms: int, np: Any) -> Any:
+    """在分段波形之间插入静音并沿帧轴拼接。"""
     if not waveforms:
         raise RuntimeError("Qwen3-TTS 未返回音频片段。")
 
@@ -227,6 +241,7 @@ def clear_cuda_cache(torch: Any) -> None:
 
 
 def prepare_environment(request: dict[str, Any]) -> None:
+    """设置 Hugging Face、Numba 等缓存目录，避免污染仓库源码目录。"""
     runtime_cache_dir = str(
         request.get("runtime_cache_dir") or Path(__file__).resolve().parent / ".cache/runtime"
     )
@@ -293,6 +308,7 @@ def load_qwen3_model_class(qwen_libs_path: str | None):
 
 
 def import_runtime(request: dict[str, Any]):
+    """延迟导入 Qwen 运行时，并按配置选择仓库内或 sidecar 实现。"""
     try:
         import numpy as np
         import soundfile as sf
@@ -316,6 +332,7 @@ def import_runtime(request: dict[str, Any]):
 
 
 def build_generation_kwargs(request: dict[str, Any]) -> dict[str, Any]:
+    """把可选生成参数整理成模型 ``generate_voice`` 可接受的 kwargs。"""
     kwargs: dict[str, Any] = {"max_new_tokens": int(request.get("max_new_tokens") or 2048)}
 
     top_p = request.get("top_p")
@@ -330,6 +347,7 @@ def build_generation_kwargs(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def synthesize(request: dict[str, Any], output_wav: Path) -> None:
+    """加载一次 Qwen3-TTS，按片段生成语音、拼接并写出 WAV。"""
     prepare_environment(request)
     Qwen3TTSModel, np, sf, torch = import_runtime(request)
 
@@ -482,6 +500,7 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
 
 
 def main() -> int:
+    """执行 worker 入口，并把异常转换为非零退出码。"""
     args = parse_args()
     request = load_request(args.input_json)
     try:

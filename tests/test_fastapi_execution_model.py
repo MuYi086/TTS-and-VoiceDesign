@@ -1,13 +1,13 @@
-"""Regression checks for blocking FastAPI handlers.
+"""阻塞式 FastAPI 处理函数的回归检查。
 
-Every model request starts a one-shot worker, takes the shared GPU file lock,
-or performs a blocking upstream HTTP call.  FastAPI must execute those
-handlers in its worker thread pool so they cannot stall an application's event
-loop and prevent health checks or uploads from being served.
+模型请求可能启动一次性 worker、获取共享 GPU 文件锁，或执行阻塞式上游
+HTTP 调用。FastAPI 必须在线程池中执行这些处理函数，避免它们阻塞事件循环，
+导致健康检查或上传接口无法响应。
 """
 
 from __future__ import annotations
 
+# 静态检查阻塞路由是否交给线程池，避免模型请求卡住健康检查和上传。
 import ast
 import unittest
 from pathlib import Path
@@ -16,7 +16,7 @@ REPOSITORY_DIR = Path(__file__).resolve().parents[1]
 
 
 def route_handler_kinds(source_path: Path) -> dict[str, str]:
-    """Return whether each decorated application route is sync or async."""
+    """返回每个带装饰器的应用路由是同步函数还是异步函数。"""
     module = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
     handlers: dict[str, str] = {}
 
@@ -37,7 +37,7 @@ def route_handler_kinds(source_path: Path) -> dict[str, str]:
 
 
 class FastApiExecutionModelTests(unittest.TestCase):
-    """Keep blocking work off FastAPI event loops without changing API contracts."""
+    """确保阻塞任务不占用 FastAPI 事件循环，同时不改变 API 契约。"""
 
     def test_blocking_routes_use_sync_handlers(self) -> None:
         expected_routes = {
@@ -47,7 +47,12 @@ class FastApiExecutionModelTests(unittest.TestCase):
                 "/v1/voice-design/providers",
                 "/v1/mimo/timbre",
             },
-            "qwen3_tts/main.py": {"/v1/health", "/internal/unload_all", "/v1/check/audio", "/v1/qwen/clone"},
+            "qwen3_tts/main.py": {
+                "/v1/health",
+                "/internal/unload_all",
+                "/v1/check/audio",
+                "/v1/qwen/clone",
+            },
             "voxcpm2/main.py": {"/v1/health", "/internal/unload_all", "/v1/check/audio"},
             "LongCat_AudioDiT_3.5B_bf16/main.py": {
                 "/v1/health",
@@ -90,7 +95,9 @@ class FastApiExecutionModelTests(unittest.TestCase):
                 )
 
         voxcpm2_source = (REPOSITORY_DIR / "voxcpm2/main.py").read_text(encoding="utf-8")
-        self.assertIn("return await run_in_threadpool(synthesize_voxcpm2_payload, data)", voxcpm2_source)
+        self.assertIn(
+            "return await run_in_threadpool(synthesize_voxcpm2_payload, data)", voxcpm2_source
+        )
 
     def test_async_upload_routes_offload_filesystem_work(self) -> None:
         upload_sources = {

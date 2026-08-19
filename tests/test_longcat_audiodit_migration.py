@@ -1,7 +1,8 @@
-"""No-model regression tests for the standalone LongCat uv service."""
+"""独立 LongCat uv 服务的无模型回归测试。"""
 
 from __future__ import annotations
 
+# 迁移测试保护 LongCat 的 uv 项目、最终路由和 worker 解释器选择。
 import hashlib
 import importlib.util
 import io

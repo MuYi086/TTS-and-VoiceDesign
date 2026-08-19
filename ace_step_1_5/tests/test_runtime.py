@@ -1,7 +1,9 @@
-"""No-model runtime lifecycle tests for the ACE-Step 1.5 service."""
+"""ACE-Step 1.5 服务的无模型运行时生命周期测试。"""
 
 from __future__ import annotations
 
+# runtime 测试用伪进程验证超时回收、错误摘要和临时文件清理。
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +15,25 @@ FAKE_WAV = b"RIFF\x24\x00\x00\x00WAVEfmt "
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_termination_cleanup_does_not_mask_final_wait_timeout(self) -> None:
+        class StubbornProcess:
+            pid = None
+            returncode = None
+
+            def poll(self):
+                return None
+
+            def terminate(self):
+                return None
+
+            def kill(self):
+                return None
+
+            def wait(self, timeout=None):
+                raise subprocess.TimeoutExpired("worker", timeout)
+
+        runtime.terminate_process_group(StubbornProcess(), "test", 0, 0)
+
     def test_worker_uses_ace_step_python_and_cleans_temp_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             temp_dir = Path(directory)

@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
-"""Standalone HTTP service for Step-Audio-EditX.
+"""独立 Step-Audio-EditX HTTP 服务。
 
-The API process deliberately imports no Torch, vLLM, ONNX Runtime, or upstream
-model code.  Those heavy dependencies are loaded only by ``worker.py`` in a
-one-shot child process so health checks remain useful on machines without the
-model environment.
+API 进程刻意不导入 Torch、vLLM、ONNX Runtime 或上游模型代码。重型依赖只
+由 ``worker.py`` 在一次性子进程中加载，因此没有模型环境的机器也能执行健康检查。
 """
 
 from __future__ import annotations
 
+# 学习入口：EditX API 只负责参考音频、参数校验和 worker 生命周期，不导入模型依赖。
 import hashlib
 import importlib.util
 import json
@@ -98,6 +97,7 @@ app = FastAPI(title="Unitale Step-Audio-EditX API")
 
 
 class ForceCORS(BaseHTTPMiddleware):
+    """为本地 WebUI 提供跨域响应和 OPTIONS 预检处理。"""
     async def dispatch(self, request, call_next):
         if request.method == "OPTIONS":
             return Response(
@@ -118,7 +118,7 @@ app.add_middleware(ForceCORS)
 
 
 class StepAudioEditXEditRequest(BaseModel):
-    """Request schema for the standalone Step-Audio-EditX route."""
+    """Step-Audio-EditX 编辑接口的请求参数与输入约束。"""
 
     prompt_text: str | None = None
     prompt_audio: str = Field(
@@ -153,12 +153,14 @@ def module_available(module_name: str) -> bool:
 
 
 def hash_filename(filename: str) -> str:
+    """用逻辑路径哈希生成安全稳定的参考音频文件名。"""
     extension = os.path.splitext(filename)[1] or ".wav"
     digest = hashlib.md5(filename.encode("utf-8")).hexdigest()
     return f"{digest}{extension}"
 
 
 def prompt_audio_path(filename: str) -> Path:
+    """把 WebUI 逻辑路径解析为 clone 存储目录中的本地文件。"""
     return Path(PROMPTS_DIR) / hash_filename(filename)
 
 
@@ -176,7 +178,7 @@ def worker_error_excerpt(output: str) -> str:
 
 
 class StepAudioEditXWorkerManager:
-    """Run one upstream model process per request using this uv interpreter."""
+    """使用当前 uv 解释器为每个请求启动一个上游 EditX worker。"""
 
     def __init__(self) -> None:
         self.lock = threading.RLock()
@@ -191,6 +193,7 @@ class StepAudioEditXWorkerManager:
         request: StepAudioEditXEditRequest,
         prompt_wav_path: Path,
     ) -> dict[str, Any]:
+        """合并编辑请求与环境默认值，生成 worker JSON。"""
         if not prompt_wav_path.is_file():
             raise FileNotFoundError(f"Step-Audio-EditX prompt 音频不存在：{prompt_wav_path}")
         return {
@@ -213,6 +216,7 @@ class StepAudioEditXWorkerManager:
         }
 
     def run_worker(self, payload: dict[str, Any]) -> bytes:
+        """启动一次 EditX 推理，校验输出并清理临时文件。"""
         python_executable = sys.executable
         if not python_executable or not os.path.isfile(python_executable):
             raise RuntimeError("未找到 Step_Audio_EditX uv 环境的 Python 解释器。")
@@ -314,6 +318,7 @@ def step_audio_editx_is_ready() -> bool:
 
 @app.get("/v1/health")
 def health():
+    """返回 EditX 源码、模型、worker 和 GPU 的就绪状态。"""
     cuda = cuda_status()
     return {
         "code": 200,
@@ -362,6 +367,7 @@ def health():
 
 @app.post("/internal/unload_all")
 def internal_unload_all(request: Request):
+    """保留本机控制契约；一次性 worker 退出后不存在常驻模型。"""
     client_host = request.client.host if request.client else ""
     if client_host not in {"127.0.0.1", "::1", "localhost", "testclient"}:
         raise HTTPException(status_code=403, detail="仅允许本机访问内部接口")
@@ -370,18 +376,21 @@ def internal_unload_all(request: Request):
 
 @app.post("/v1/upload_audio")
 async def upload_audio(audio: UploadFile = File(...), full_path: str = Form(...)):
+    """在线程池中保存编辑用参考音频，避免阻塞事件循环。"""
     content = await audio.read()
     return await run_in_threadpool(store_uploaded_audio, content, full_path)
 
 
 @app.get("/v1/check/audio")
 def check_audio_exists(file_name: str):
+    """检查编辑请求引用的逻辑音频路径是否存在。"""
     exists = prompt_audio_path(file_name).is_file()
     return {"code": 200 if exists else 404, "exists": exists}
 
 
 @app.post("/v1/stepAudioEditx/edit")
 def step_audio_editx_edit(request: StepAudioEditXEditRequest):
+    """串行执行一次语音编辑，并返回保存后的 WAV。"""
     prompt_path = prompt_audio_path(request.prompt_audio)
     with gpu_runtime_lock(GPU_LOCK_FILE, "step-audio-editx/edit"):
         with manager.lock:

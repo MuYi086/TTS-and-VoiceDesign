@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""One-shot MOSS-SoundEffect v2 inference worker."""
+"""MOSS-SoundEffect v2 一次性推理 worker。"""
 
 from __future__ import annotations
 
+# 声效模型只在子进程中加载；进程退出是释放 MOSS CUDA 上下文的最后保障。
 import argparse
 import gc
 import json
@@ -15,6 +16,7 @@ MAX_SECONDS = 30.0
 
 
 def parse_args() -> argparse.Namespace:
+    """解析一次声效请求的 JSON、输出 WAV 和本地源码路径。"""
     parser = argparse.ArgumentParser(description="Run one MOSS-SoundEffect v2 request")
     parser.add_argument("--input-json", required=True)
     parser.add_argument("--output-wav", required=True)
@@ -22,6 +24,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def read_payload(path: str) -> dict[str, Any]:
+    """读取 JSON 对象，并拒绝结构错误的请求。"""
     with open(path, encoding="utf-8") as file:
         payload = json.load(file)
     if not isinstance(payload, dict):
@@ -30,6 +33,7 @@ def read_payload(path: str) -> dict[str, Any]:
 
 
 def required_text(payload: dict[str, Any], key: str) -> str:
+    """读取必须非空的文本字段。"""
     value = payload.get(key)
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{key} must be a non-empty string.")
@@ -42,6 +46,7 @@ def positive_float(
     *,
     maximum: float | None = None,
 ) -> float:
+    """读取正数参数，并在需要时施加最大值限制。"""
     value = float(payload[key])
     if value <= 0 or (maximum is not None and value > maximum):
         bound = f" and <= {maximum}" if maximum is not None else ""
@@ -50,7 +55,7 @@ def positive_float(
 
 
 def add_upstream_source(code_path: Path) -> None:
-    """Make the audited local MOSS-TTS checkout importable without machine paths."""
+    """把本地 MOSS-TTS 源码放到 import 路径，避免运行时下载依赖。"""
     package_dir = code_path / "moss_soundeffect_v2"
     if package_dir.is_dir():
         import_root = code_path
@@ -62,6 +67,7 @@ def add_upstream_source(code_path: Path) -> None:
 
 
 def cleanup_cuda(torch: Any) -> None:
+    """尽力清空 CUDA 缓存；最终释放仍依赖 worker 进程退出。"""
     gc.collect()
     if not torch.cuda.is_available():
         return
@@ -77,6 +83,7 @@ def cleanup_cuda(torch: Any) -> None:
 
 
 def main() -> None:
+    """加载 MOSS-SoundEffect、生成 WAV，并在 finally 中清理资源。"""
     args = parse_args()
     payload = read_payload(args.input_json)
 

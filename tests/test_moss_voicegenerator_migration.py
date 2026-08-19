@@ -1,7 +1,8 @@
-"""No-model regression tests for the standalone MOSS VoiceGenerator service."""
+"""独立 MOSS VoiceGenerator 服务的无模型回归测试。"""
 
 from __future__ import annotations
 
+# 音色设计测试保护 tokenizer 兼容层、worker 生命周期和 timbre 存储目录。
 import importlib.util
 import os
 import sys

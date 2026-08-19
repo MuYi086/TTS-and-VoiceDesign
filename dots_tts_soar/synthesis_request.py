@@ -1,4 +1,4 @@
-"""Shared request contract for the standalone dots.tts-soar service."""
+"""独立 dots.tts-soar 服务共用的请求契约。"""
 
 from __future__ import annotations
 
@@ -9,11 +9,10 @@ from pydantic import BaseModel, ConfigDict, model_validator
 
 
 class CloneSynthesisRequest(BaseModel):
-    """Base schema for ``/v2/dotsTTS/clone`` reference-audio cloning requests.
+    """``/v2/dotsTTS/clone`` 参考音频克隆请求的基础模型。
 
-    The WebUI sends compatibility fields shared by several local TTS models,
-    so unknown fields remain ignored.  A style prompt is rejected because
-    this endpoint is cloning an uploaded voice, not designing a new voice.
+    WebUI 会发送多个本地 TTS 模型共用的兼容字段，因此未知字段会被忽略。
+    此接口只克隆上传的声音，不进行音色设计，所以会拒绝风格提示。
     """
 
     model_config = ConfigDict(extra="ignore")

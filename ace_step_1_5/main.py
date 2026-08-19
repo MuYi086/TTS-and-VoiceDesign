@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Unitale ACE-Step 1.5 XL Turbo BGM HTTP service.
+"""Unitale ACE-Step 1.5 XL Turbo BGM HTTP 服务。
 
-The API process stays lightweight.  Each generation acquires the shared GPU
-lock, starts one worker, returns its WAV, and releases the lock only after the
-worker process has exited.
+API 进程保持轻量。每次生成都会获取共享 GPU 锁、启动一个 worker、返回 WAV，
+并且只在 worker 进程退出后释放锁。
 """
 
 from __future__ import annotations
 
+# 学习入口：BGM 请求走“校验 -> GPU 文件锁 -> 一次性 worker -> WAV 落盘”流程。
 import logging
 import os
 import shutil
@@ -52,12 +52,12 @@ REQUIRED_MODEL_PATHS = (
 
 
 def expand_path(value: str) -> Path:
-    """Expand environment variables and ``~`` into an absolute path."""
+    """展开环境变量与用户目录，统一得到绝对路径。"""
     return Path(os.path.abspath(os.path.expandvars(os.path.expanduser(value))))
 
 
 def env_bool(name: str, default: bool = False) -> bool:
-    """Read a conventional boolean environment variable."""
+    """读取常见形式的布尔环境变量。"""
     value = os.getenv(name)
     if value is None:
         return default
@@ -102,7 +102,7 @@ if LOCAL_FILES_ONLY:
 
 
 class ForceCORS(BaseHTTPMiddleware):
-    """Preserve the permissive CORS behavior used by the local WebUI."""
+    """保留本地 WebUI 所需的宽松跨域行为。"""
 
     async def dispatch(self, request, call_next):
         if request.method == "OPTIONS":
@@ -121,7 +121,7 @@ class ForceCORS(BaseHTTPMiddleware):
 
 
 class AceStepBgmRequest(BaseModel):
-    """Text-to-music parameters exposed to the audiobook BGM workflow."""
+    """有声内容 BGM 工作流使用的文本生成音乐参数。"""
 
     prompt: str = Field(min_length=1, max_length=2_000)
     seconds: float = Field(default=ACESTEP_DEFAULT_SECONDS, ge=MIN_SECONDS, le=MAX_SECONDS)
@@ -149,14 +149,14 @@ class AceStepBgmRequest(BaseModel):
 
 
 def assert_local_request(request: Request) -> None:
-    """Restrict the internal control endpoint to the local machine."""
+    """限制内部控制接口只能由本机访问。"""
     client_host = request.client.host if request.client else ""
     if client_host not in {"127.0.0.1", "::1", "localhost"}:
         raise HTTPException(status_code=403, detail="仅允许本机访问内部接口")
 
 
 def model_status() -> dict[str, object]:
-    """Check model components and transformer shards without loading them."""
+    """检查模型目录、分片和运行依赖，不触发模型加载。"""
     required = {
         name: (
             (ACESTEP_MODEL_DIR / name).is_file()
@@ -175,7 +175,7 @@ def model_status() -> dict[str, object]:
 
 
 def wait_after_cuda_release() -> None:
-    """Allow a terminated worker's CUDA context to disappear before unlock."""
+    """等待已终止 worker 的 CUDA 上下文消失后再释放 GPU 锁。"""
     if CUDA_RELEASE_DELAY > 0:
         print(f"[CUDA] 等待 {CUDA_RELEASE_DELAY:.1f}s，确保 ACE-Step worker 显存已释放")
         time.sleep(CUDA_RELEASE_DELAY)
@@ -191,13 +191,14 @@ ACESTEP_WORKER = WorkerConfig(
 
 
 class AceStepWorkerManager:
-    """Validate local assets, invoke one worker, and retain the last error."""
+    """负责组装请求、启动一次 worker 并保存最近一次错误。"""
 
     def __init__(self) -> None:
         self.lock = threading.RLock()
         self.last_error: str | None = None
 
     def build_worker_payload(self, request: AceStepBgmRequest) -> dict[str, object]:
+        """将经过校验的 BGM 参数和环境默认值序列化给 worker。"""
         return {
             "prompt": request.prompt,
             "seconds": request.seconds,
@@ -217,6 +218,7 @@ class AceStepWorkerManager:
         }
 
     def run_worker(self, payload: dict[str, object]) -> WorkerResult:
+        """在当前 ACE-Step uv 项目中执行一次隔离生成。"""
         status = model_status()
         if not status["complete"]:
             missing = [name for name, present in status["required"].items() if not present]
@@ -242,7 +244,7 @@ manager = AceStepWorkerManager()
 
 @app.get("/v1/health")
 def health() -> dict[str, object]:
-    """Report readiness without importing or instantiating the model."""
+    """返回 BGM 服务的依赖、模型、GPU 和运行参数状态。"""
     cuda = cuda_status()
     return {
         "code": 200,
@@ -292,7 +294,7 @@ def health() -> dict[str, object]:
 
 @app.post("/internal/unload_all")
 def internal_unload_all(request: Request) -> JSONResponse:
-    """Keep the shared control protocol without owning a resident pipeline."""
+    """保留控制面接口；一次性 worker 退出后不存在常驻模型可卸载。"""
     assert_local_request(request)
     with gpu_runtime_lock(GPU_LOCK_FILE, "ace_step_1_5/unload"):
         with manager.lock:
@@ -307,7 +309,7 @@ def internal_unload_all(request: Request) -> JSONResponse:
 
 @app.post("/v1/aceStep/bgm")
 def generate_bgm(request: AceStepBgmRequest) -> Response:
-    """Generate and persist one audiobook BGM WAV."""
+    """串行执行一次 ACE-Step 生成，并将 WAV 保存到 BGM 目录。"""
     with gpu_runtime_lock(GPU_LOCK_FILE, "ace_step_1_5/generate"):
         with manager.lock:
             try:

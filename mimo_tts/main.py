@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Standalone MiMo TTS VoiceDesign HTTP service.
+"""独立 MiMo TTS VoiceDesign HTTP 服务。
 
-MiMo is a cloud provider, so this service contains only request orchestration,
-retry/chunk handling, WAV concatenation, and local timbre caching.  It does
-not import Torch or depend on the repository control-plane API.
+MiMo 是云端 provider，因此本服务只负责请求编排、重试与分段处理、WAV 拼接
+以及本地音色缓存；不会导入 Torch，也不依赖仓库控制面 API。
 """
 
 from __future__ import annotations
 
+# 学习入口：MiMo 不加载本地模型，而是负责文本切分、云端重试、WAV 拼接和 timbre 落盘。
 import base64
 import io
 import json
@@ -33,6 +33,7 @@ REPOSITORY_DIR = PROJECT_DIR.parent
 
 
 def expand_path(path: str) -> str:
+    """展开环境变量和用户目录，返回绝对路径。"""
     return os.path.abspath(os.path.expandvars(os.path.expanduser(path)))
 
 
@@ -67,6 +68,7 @@ app = FastAPI(title="Unitale MiMo TTS VoiceDesign API")
 
 
 class ForceCORS(BaseHTTPMiddleware):
+    """为本地 WebUI 请求提供跨域响应和预检处理。"""
     async def dispatch(self, request, call_next):
         if request.method == "OPTIONS":
             return Response(
@@ -87,6 +89,7 @@ app.add_middleware(ForceCORS)
 
 
 class MimoDesignRequest(BaseModel):
+    """MiMo VoiceDesign 请求，包含音色描述、文本和生成控制参数。"""
     voice_description: str
     text: str = "这是生成的参考音频预览。"
     save_as: str | None = "designed_voice.wav"
@@ -105,6 +108,7 @@ class MimoDesignRequest(BaseModel):
 
 
 class MiMoHTTPError(RuntimeError):
+    """记录 MiMo HTTP 状态、响应体和可选的 Retry-After 信息。"""
     def __init__(self, status_code: int, body: str, retry_after: float | None = None):
         self.status_code = status_code
         self.body = body
@@ -113,13 +117,14 @@ class MiMoHTTPError(RuntimeError):
 
 
 class MiMoTransportError(RuntimeError):
-    """MiMo API cannot be reached from this backend process."""
+    """表示本地后端无法连接 MiMo API。"""
 
 
 MIMO_REQUEST_LOCK = threading.Lock()
 
 
 def split_long_voice_design_text(text: str, max_chars: int) -> list[str]:
+    """按标点优先切分超长文本，同时尽量保持句子完整。"""
     parts = re.findall(r".+?[，,、：:]|.+$", text, flags=re.S)
     chunks: list[str] = []
     current = ""
@@ -147,6 +152,7 @@ def split_long_voice_design_text(text: str, max_chars: int) -> list[str]:
 
 
 def split_voice_design_text(text: str, max_chars: int) -> list[str]:
+    """根据配置决定是否切分文本，返回适合单次云端请求的片段。"""
     if max_chars <= 0 or len(text) <= max_chars:
         return [text]
 
@@ -175,6 +181,7 @@ def split_voice_design_text(text: str, max_chars: int) -> list[str]:
 
 
 def resolve_mimo_api_key(api_key: str | None) -> str:
+    """优先使用请求传入的 key，否则读取 MIMO_API_KEY 环境变量。"""
     resolved = api_key or os.getenv("MIMO_API_KEY")
     if not resolved:
         raise RuntimeError("MiMo API key 缺失。请设置 MIMO_API_KEY，或在请求中传入 api_key。")
@@ -220,6 +227,7 @@ def mimo_parse_retry_after(value: str | None) -> float | None:
 def mimo_post_json(
     url: str, payload: dict[str, Any], headers: dict[str, str], timeout: float
 ) -> dict[str, Any]:
+    """向 MiMo 发起一次 JSON 请求，并把 HTTP/网络错误转换为本地异常。"""
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
@@ -268,6 +276,7 @@ def mimo_post_json_with_retry(
     retry_max_seconds: float,
     chunk_label: str,
 ) -> dict[str, Any]:
+    """按退避策略重试可恢复的 MiMo HTTP 错误。"""
     with MIMO_REQUEST_LOCK:
         for attempt in range(1, max_retries + 2):
             try:
@@ -299,6 +308,7 @@ def mimo_post_json_with_retry(
 
 
 def mimo_extract_audio_bytes(response: dict[str, Any]) -> bytes:
+    """从 MiMo 响应中解析 base64 音频并转换为字节。"""
     try:
         encoded = response["choices"][0]["message"]["audio"]["data"]
     except (KeyError, IndexError, TypeError) as exc:
@@ -315,6 +325,7 @@ def read_wav_params(audio_bytes: bytes) -> wave._wave_params:
 
 
 def join_wav_bytes(chunks: list[bytes], pause_ms: int) -> bytes:
+    """在片段之间插入静音并拼成一个合法 WAV。"""
     if not chunks:
         raise RuntimeError("MiMo 未返回音频片段。")
 
@@ -343,6 +354,7 @@ def join_wav_bytes(chunks: list[bytes], pause_ms: int) -> bytes:
 
 
 def run_mimo_voice_design(request_data: dict[str, Any]) -> bytes:
+    """执行 MiMo 音色设计主流程：切分、请求、重试、拼接和返回。"""
     text = str(request_data.get("text") or "").strip()
     if not text:
         raise RuntimeError("text 不能为空。")
@@ -432,6 +444,7 @@ def run_mimo_voice_design(request_data: dict[str, Any]) -> bytes:
 
 @app.get("/v1/health")
 def health():
+    """返回 MiMo 服务配置和云端 provider 状态，不发起真实请求。"""
     return {
         "code": 200,
         "paths": {
@@ -458,6 +471,7 @@ def health():
 
 @app.get("/v1/voice-design/providers")
 def voice_design_providers():
+    """列出当前可用的音色设计 provider 及其路由信息。"""
     return {
         "code": 200,
         "providers": [
@@ -474,6 +488,7 @@ def voice_design_providers():
 
 @app.post("/v1/mimo/timbre")
 def mimo_design(request: MimoDesignRequest):
+    """校验请求、调用 MiMo 并把生成 WAV 原子保存到 timbre 目录。"""
     try:
         audio_bytes = run_mimo_voice_design(request.model_dump())
     except MiMoHTTPError as exc:

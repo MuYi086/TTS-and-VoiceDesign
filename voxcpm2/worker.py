@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
+"""VoxCPM2 语音克隆的一次性推理 worker。
+
+worker 负责加载模型、切分长文本、拼接分段音频并清理 CUDA 状态。
+父进程通过 JSON 文件传入请求，避免在 HTTP 进程中常驻模型依赖。
+"""
 
 # 官方文档: https://voxcpm.readthedocs.io/zh-cn/latest/cookbook.html
 from __future__ import annotations
 
+# VoxCPM2 模型和音频依赖只在一次性 worker 中导入，结束后由进程退出释放 CUDA。
 import argparse
 import gc
 import importlib.util
@@ -20,6 +26,7 @@ from audio_trim import trim_leading_silence
 
 
 def parse_args() -> argparse.Namespace:
+    """解析克隆请求 JSON、输出 WAV 和 helper 脚本参数。"""
     parser = argparse.ArgumentParser(description="One-shot VoxCPM2 worker")
     parser.add_argument("--input-json", required=True, help="Request JSON file path")
     parser.add_argument("--output-wav", required=True, help="Output wav file path")
@@ -27,11 +34,13 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_request(path: str) -> dict[str, Any]:
+    """读取并校验 JSON 对象请求。"""
     with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
 def require_path(path: str, label: str) -> Path:
+    """校验路径存在并转为绝对 Path。"""
     resolved = Path(path).expanduser().resolve()
     if not resolved.exists():
         raise FileNotFoundError(f"{label}不存在：{resolved}")
@@ -39,6 +48,7 @@ def require_path(path: str, label: str) -> Path:
 
 
 def normalize_text(text: str) -> str:
+    """清理待合成文本，避免空白内容进入模型。"""
     normalized = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", (text or "").strip())
     normalized = re.sub(r"(?m)^\s*[-*+]\s+", "", normalized)
     if not normalized:
@@ -47,6 +57,7 @@ def normalize_text(text: str) -> str:
 
 
 def split_text(text: str, max_chars: int) -> list[str]:
+    """按标点切分长文本，控制 VoxCPM2 上下文长度。"""
     if max_chars <= 0 or len(text) <= max_chars:
         return [text]
 
@@ -79,6 +90,7 @@ def split_text(text: str, max_chars: int) -> list[str]:
 
 
 def split_long_sentence(text: str, max_chars: int) -> list[str]:
+    """对没有自然标点的长句执行硬切分。"""
     parts = re.findall(r".+?[，,、：:]|.+$", text, flags=re.S)
     chunks: list[str] = []
     current = ""
@@ -108,6 +120,7 @@ def split_long_sentence(text: str, max_chars: int) -> list[str]:
 
 
 def normalize_optional_text(value: Any) -> str | None:
+    """把可选文本字段转成字符串或 ``None``。"""
     if value is None:
         return None
     normalized = str(value).strip()
@@ -117,10 +130,12 @@ def normalize_optional_text(value: Any) -> str | None:
 
 
 def resolve_device(request: dict[str, Any]) -> str:
+    """解析设备配置并确认当前部署使用 CUDA。"""
     return (normalize_optional_text(request.get("device")) or "cuda").lower()
 
 
 def clear_cuda_cache(torch: Any) -> None:
+    """同步并清理 CUDA allocator，避免 worker 退出前保留无用缓存。"""
     gc.collect()
     if not torch.cuda.is_available():
         return
@@ -136,6 +151,7 @@ def clear_cuda_cache(torch: Any) -> None:
 
 
 def prepare_environment(request: dict[str, Any]) -> None:
+    """设置模型缓存、离线模式和 CUDA allocator 配置。"""
     runtime_cache_dir = str(
         request.get("runtime_cache_dir") or Path(__file__).resolve().parent / ".cache/runtime"
     )
@@ -161,6 +177,7 @@ def prepare_environment(request: dict[str, Any]) -> None:
 
 
 def load_voxcpm2_helpers(script_path: str) -> Any:
+    """从本地 helper 脚本动态加载 VoxCPM2 运行时工具。"""
     helper_file = require_path(script_path, "VoxCPM2 辅助脚本")
     spec = importlib.util.spec_from_file_location("timbre_voxcpm2", helper_file)
     if spec is None or spec.loader is None:
@@ -172,6 +189,7 @@ def load_voxcpm2_helpers(script_path: str) -> Any:
 
 
 def build_helper_args(request: dict[str, Any]) -> SimpleNamespace:
+    """把 JSON 请求映射成官方 helper 期望的参数对象。"""
     cfg_value = request.get("cfg_value")
     if cfg_value is None:
         raise RuntimeError(
@@ -198,6 +216,7 @@ def build_helper_args(request: dict[str, Any]) -> SimpleNamespace:
 
 
 def synthesize(request: dict[str, Any], output_wav: Path) -> None:
+    """加载 VoxCPM2，按分段文本生成克隆语音并写出 WAV。"""
     operation = str(request.get("operation") or "clone")
     if operation != "clone":
         raise RuntimeError("VoxCPM2 克隆 worker 只接受 operation=clone。")
@@ -297,6 +316,7 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
 
 
 def main() -> int:
+    """执行一次 VoxCPM2 worker，并将异常转换为非零退出码。"""
     args = parse_args()
     request = load_request(args.input_json)
     try:

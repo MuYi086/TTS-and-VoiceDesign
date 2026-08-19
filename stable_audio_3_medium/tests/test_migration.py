@@ -1,7 +1,8 @@
-"""No-model contract tests for the Stable Audio 3 Medium uv service."""
+"""Stable Audio 3 Medium uv 服务的无模型契约测试。"""
 
 from __future__ import annotations
 
+# Stable Audio 测试 mock worker，验证本地权重检查、FlashAttention 策略和路由契约。
 import json
 import os
 import sys
