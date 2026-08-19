@@ -26,6 +26,7 @@ import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, model_validator
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from audio_output import persist_audio_bytes
@@ -159,6 +160,14 @@ def hash_filename(filename: str) -> str:
 
 def prompt_audio_path(filename: str) -> Path:
     return Path(PROMPTS_DIR) / hash_filename(filename)
+
+
+def store_uploaded_audio(content: bytes, full_path: str) -> dict[str, object]:
+    """同步保存 prompt 音频，供异步上传路由在线程池中调用。"""
+    save_path = prompt_audio_path(full_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    save_path.write_bytes(content)
+    return {"code": 200, "msg": "上传成功", "filename": full_path}
 
 
 def worker_error_excerpt(output: str) -> str:
@@ -304,7 +313,7 @@ def step_audio_editx_is_ready() -> bool:
 
 
 @app.get("/v1/health")
-async def health():
+def health():
     cuda = cuda_status()
     return {
         "code": 200,
@@ -352,7 +361,7 @@ async def health():
 
 
 @app.post("/internal/unload_all")
-async def internal_unload_all(request: Request):
+def internal_unload_all(request: Request):
     client_host = request.client.host if request.client else ""
     if client_host not in {"127.0.0.1", "::1", "localhost", "testclient"}:
         raise HTTPException(status_code=403, detail="仅允许本机访问内部接口")
@@ -362,14 +371,11 @@ async def internal_unload_all(request: Request):
 @app.post("/v1/upload_audio")
 async def upload_audio(audio: UploadFile = File(...), full_path: str = Form(...)):
     content = await audio.read()
-    save_path = prompt_audio_path(full_path)
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    save_path.write_bytes(content)
-    return {"code": 200, "msg": "上传成功", "filename": full_path}
+    return await run_in_threadpool(store_uploaded_audio, content, full_path)
 
 
 @app.get("/v1/check/audio")
-async def check_audio_exists(file_name: str):
+def check_audio_exists(file_name: str):
     exists = prompt_audio_path(file_name).is_file()
     return {"code": 200 if exists else 404, "exists": exists}
 

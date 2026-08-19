@@ -18,6 +18,7 @@ os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from audio_output import persist_audio_bytes
@@ -321,6 +322,41 @@ def save_prompt_text_sidecar(filename: str, prompt_text: str | None) -> None:
         f.write(normalized)
 
 
+def store_uploaded_audio(
+    content: bytes,
+    full_path: str,
+    prompt_text: str | None,
+) -> dict[str, object]:
+    """同步保存参考音频和 sidecar，避免阻塞异步请求处理。"""
+    clone_path = clone_prompt_audio_path(full_path)
+    timbre_path = find_matching_timbre_audio(content)
+    if timbre_path:
+        # The same designed voice may be uploaded again for clone preview. Keep
+        # the actual WAV only in timbre storage and persist a small resolver map.
+        if os.path.isfile(clone_path):
+            os.remove(clone_path)
+        clone_sidecar_path = os.path.join(PROMPTS_DIR, f"{hash_filename(full_path)}.prompt.txt")
+        if os.path.isfile(clone_sidecar_path):
+            os.remove(clone_sidecar_path)
+        with open(timbre_reference_map_path(full_path), "w", encoding="utf-8") as reference_file:
+            reference_file.write(timbre_path)
+    else:
+        reference_map_path = timbre_reference_map_path(full_path)
+        if os.path.isfile(reference_map_path):
+            os.remove(reference_map_path)
+        with open(clone_path, "wb") as file:
+            file.write(content)
+
+    normalized_prompt_text = prompt_text.strip() if prompt_text and prompt_text.strip() else None
+    save_prompt_text_sidecar(full_path, normalized_prompt_text)
+    return {
+        "code": 200,
+        "msg": "上传成功",
+        "filename": full_path,
+        "has_prompt_text": bool(normalized_prompt_text),
+    }
+
+
 def module_available(module_name: str) -> bool:
     return importlib.util.find_spec(module_name) is not None
 
@@ -575,7 +611,7 @@ manager = Qwen3TtsWorkerManager()
 
 
 @app.get("/v1/health")
-async def health():
+def health():
     cuda = cuda_status()
     return {
         "code": 200,
@@ -630,7 +666,7 @@ async def health():
 
 
 @app.post("/internal/unload_all")
-async def internal_unload_all(request: Request):
+def internal_unload_all(request: Request):
     assert_local_request(request)
     with gpu_runtime_lock("qwen3_tts/unload"):
         with manager.lock:
@@ -645,38 +681,11 @@ async def upload_audio(
     prompt_text: str | None = Form(None),
 ):
     content = await audio.read()
-    clone_path = clone_prompt_audio_path(full_path)
-    timbre_path = find_matching_timbre_audio(content)
-    if timbre_path:
-        # The same designed voice may be uploaded again for clone preview. Keep
-        # the actual WAV only in timbre storage and persist a small resolver map.
-        if os.path.isfile(clone_path):
-            os.remove(clone_path)
-        clone_sidecar_path = os.path.join(PROMPTS_DIR, f"{hash_filename(full_path)}.prompt.txt")
-        if os.path.isfile(clone_sidecar_path):
-            os.remove(clone_sidecar_path)
-        with open(timbre_reference_map_path(full_path), "w", encoding="utf-8") as reference_file:
-            reference_file.write(timbre_path)
-    else:
-        reference_map_path = timbre_reference_map_path(full_path)
-        if os.path.isfile(reference_map_path):
-            os.remove(reference_map_path)
-        with open(clone_path, "wb") as f:
-            f.write(content)
-
-    normalized_prompt_text = prompt_text.strip() if prompt_text and prompt_text.strip() else None
-    save_prompt_text_sidecar(full_path, normalized_prompt_text)
-
-    return {
-        "code": 200,
-        "msg": "上传成功",
-        "filename": full_path,
-        "has_prompt_text": bool(normalized_prompt_text),
-    }
+    return await run_in_threadpool(store_uploaded_audio, content, full_path, prompt_text)
 
 
 @app.get("/v1/check/audio")
-async def check_audio_exists(file_name: str):
+def check_audio_exists(file_name: str):
     exists = os.path.isfile(prompt_audio_path(file_name))
     return {
         "code": 200 if exists else 404,
@@ -686,7 +695,7 @@ async def check_audio_exists(file_name: str):
 
 
 @app.post("/v1/qwen/clone")
-async def synthesize_v2(request: Qwen3TtsSynthesizeRequest):
+def synthesize_v2(request: Qwen3TtsSynthesizeRequest):
     with gpu_runtime_lock("qwen3_tts/synthesize"):
         with manager.lock:
             try:

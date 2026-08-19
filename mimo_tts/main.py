@@ -431,7 +431,7 @@ def run_mimo_voice_design(request_data: dict[str, Any]) -> bytes:
 
 
 @app.get("/v1/health")
-async def health():
+def health():
     return {
         "code": 200,
         "paths": {
@@ -457,7 +457,7 @@ async def health():
 
 
 @app.get("/v1/voice-design/providers")
-async def voice_design_providers():
+def voice_design_providers():
     return {
         "code": 200,
         "providers": [
@@ -473,7 +473,7 @@ async def voice_design_providers():
 
 
 @app.post("/v1/mimo/timbre")
-async def mimo_design(request: MimoDesignRequest):
+def mimo_design(request: MimoDesignRequest):
     try:
         audio_bytes = run_mimo_voice_design(request.model_dump())
     except MiMoHTTPError as exc:

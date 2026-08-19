@@ -28,6 +28,7 @@ import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from runtime import cuda_status, terminate_process_group
@@ -278,6 +279,42 @@ def save_prompt_text_sidecar(filename: str, prompt_text: str | None) -> None:
         return
     with open(path, "w", encoding="utf-8") as file:
         file.write(normalized)
+
+
+def store_uploaded_audio(
+    content: bytes,
+    full_path: str,
+    prompt_text: str | None,
+) -> dict[str, object]:
+    """同步保存参考音频和 sidecar，避免阻塞异步请求处理。"""
+    clone_path = clone_prompt_audio_path(full_path)
+    timbre_path = find_matching_timbre_audio(content)
+    if timbre_path:
+        # 设计音色的原始 WAV 只保存在 timbre；这里仅保存解析引用供克隆服务使用。
+        if os.path.isfile(clone_path):
+            os.remove(clone_path)
+        clone_sidecar_path = os.path.join(PROMPTS_DIR, f"{hash_filename(full_path)}.prompt.txt")
+        if os.path.isfile(clone_sidecar_path):
+            os.remove(clone_sidecar_path)
+        with open(timbre_reference_map_path(full_path), "w", encoding="utf-8") as reference_file:
+            reference_file.write(timbre_path)
+    else:
+        reference_map_path = timbre_reference_map_path(full_path)
+        if os.path.isfile(reference_map_path):
+            os.remove(reference_map_path)
+        with open(clone_path, "wb") as file:
+            file.write(content)
+
+    normalized_prompt_text = normalize_optional_text(prompt_text)
+    save_prompt_text_sidecar(full_path, normalized_prompt_text)
+    return {
+        "code": 200,
+        "msg": "上传成功",
+        "filename": full_path,
+        "size_bytes": len(content),
+        "sha256": hashlib.sha256(content).hexdigest(),
+        "has_prompt_text": bool(normalized_prompt_text),
+    }
 
 
 def persist_audio_bytes(audio_bytes: bytes, model_prefix: str, output_dir: str) -> Path:
@@ -540,7 +577,7 @@ manager = LongCatAudioDitWorkerManager()
 
 
 @app.get("/v1/health")
-async def health():
+def health():
     cuda = cuda_status()
     model_required = all(
         os.path.isfile(os.path.join(LONGCAT_AUDIODIT_MODEL_DIR, name))
@@ -603,7 +640,7 @@ async def health():
 
 
 @app.post("/internal/unload_all")
-async def internal_unload_all(request: Request):
+def internal_unload_all(request: Request):
     assert_local_request(request)
     with gpu_runtime_lock("longcat_audiodit/unload"):
         with manager.lock:
@@ -618,38 +655,11 @@ async def upload_audio(
     prompt_text: str | None = Form(None),
 ):
     content = await audio.read()
-    clone_path = clone_prompt_audio_path(full_path)
-    timbre_path = find_matching_timbre_audio(content)
-    if timbre_path:
-        # 设计音色的原始 WAV 只保存在 timbre；这里仅保存解析引用供克隆服务使用。
-        if os.path.isfile(clone_path):
-            os.remove(clone_path)
-        clone_sidecar_path = os.path.join(PROMPTS_DIR, f"{hash_filename(full_path)}.prompt.txt")
-        if os.path.isfile(clone_sidecar_path):
-            os.remove(clone_sidecar_path)
-        with open(timbre_reference_map_path(full_path), "w", encoding="utf-8") as reference_file:
-            reference_file.write(timbre_path)
-    else:
-        reference_map_path = timbre_reference_map_path(full_path)
-        if os.path.isfile(reference_map_path):
-            os.remove(reference_map_path)
-        with open(clone_path, "wb") as file:
-            file.write(content)
-
-    normalized_prompt_text = normalize_optional_text(prompt_text)
-    save_prompt_text_sidecar(full_path, normalized_prompt_text)
-    return {
-        "code": 200,
-        "msg": "上传成功",
-        "filename": full_path,
-        "size_bytes": len(content),
-        "sha256": hashlib.sha256(content).hexdigest(),
-        "has_prompt_text": bool(normalized_prompt_text),
-    }
+    return await run_in_threadpool(store_uploaded_audio, content, full_path, prompt_text)
 
 
 @app.get("/v1/check/audio")
-async def check_audio_exists(file_name: str):
+def check_audio_exists(file_name: str):
     audio_path = prompt_audio_path(file_name)
     exists = os.path.isfile(audio_path)
     return {
@@ -662,7 +672,7 @@ async def check_audio_exists(file_name: str):
 
 
 @app.post("/v1/longCat/clone")
-async def synthesize_v2(request: LongCatAudioDitSynthesizeRequest):
+def synthesize_v2(request: LongCatAudioDitSynthesizeRequest):
     with gpu_runtime_lock("longcat_audiodit/synthesize"):
         with manager.lock:
             try:

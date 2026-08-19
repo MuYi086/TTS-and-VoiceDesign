@@ -19,6 +19,7 @@ import uvicorn
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 from gpu_runtime import cuda_status
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 
 MAIN_DIR = Path(__file__).resolve().parent
@@ -149,9 +150,25 @@ def find_matching_timbre_audio(content: bytes) -> Path | None:
     return None
 
 
+def store_uploaded_audio(content: bytes, full_path: str) -> dict[str, object]:
+    """同步写入上传音频，供异步路由在线程池中调用。"""
+    save_path = Path(PROMPTS_DIR) / hash_filename(full_path)
+    timbre_path = find_matching_timbre_audio(content)
+    reference_path = Path(TIMBRE_REFERENCE_DIR) / f"{hash_filename(full_path)}.path"
+    if timbre_path is not None:
+        save_path.unlink(missing_ok=True)
+        Path(f"{save_path}.prompt.txt").unlink(missing_ok=True)
+        reference_path.write_text(str(timbre_path), encoding="utf-8")
+    else:
+        reference_path.unlink(missing_ok=True)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        save_path.write_bytes(content)
+    return {"code": 200, "msg": "上传成功", "filename": full_path}
+
+
 @app.get("/v1/health")
 @app.get("/v1/control")
-async def health():
+def health():
     cuda = cuda_status()
     return {
         "code": 200,
@@ -206,22 +223,11 @@ async def mimo_design_proxy(request: Request):
 async def upload_audio(audio: UploadFile = File(...), full_path: str = Form(...)):
     """Upload clone references without copying an existing timbre asset."""
     content = await audio.read()
-    save_path = Path(PROMPTS_DIR) / hash_filename(full_path)
-    timbre_path = find_matching_timbre_audio(content)
-    reference_path = Path(TIMBRE_REFERENCE_DIR) / f"{hash_filename(full_path)}.path"
-    if timbre_path is not None:
-        save_path.unlink(missing_ok=True)
-        Path(f"{save_path}.prompt.txt").unlink(missing_ok=True)
-        reference_path.write_text(str(timbre_path), encoding="utf-8")
-    else:
-        reference_path.unlink(missing_ok=True)
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-        save_path.write_bytes(content)
-    return {"code": 200, "msg": "上传成功", "filename": full_path}
+    return await run_in_threadpool(store_uploaded_audio, content, full_path)
 
 
 @app.get("/v1/check/audio")
-async def check_audio_exists(file_name: str):
+def check_audio_exists(file_name: str):
     exists = prompt_audio_path(file_name).is_file()
     return {"code": 200 if exists else 404, "exists": exists}
 

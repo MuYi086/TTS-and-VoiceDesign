@@ -298,7 +298,7 @@ manager = QwenVoiceDesignWorkerManager()
 
 
 @app.get("/v1/health")
-async def health():
+def health():
     cuda = cuda_status()
     return {
         "code": 200,
@@ -342,7 +342,7 @@ async def health():
 
 
 @app.post("/internal/unload_all")
-async def internal_unload_all(request: Request):
+def internal_unload_all(request: Request):
     client_host = request.client.host if request.client else ""
     if client_host not in {"127.0.0.1", "::1", "localhost"}:
         raise HTTPException(status_code=403, detail="仅允许本机访问内部接口")

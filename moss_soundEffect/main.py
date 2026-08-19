@@ -223,7 +223,7 @@ manager = SoundEffectWorkerManager()
 
 
 @app.get("/v1/health")
-async def health() -> dict[str, Any]:
+def health() -> dict[str, Any]:
     cuda = cuda_status()
     flash_attn_available = any(
         importlib.util.find_spec(name) is not None
@@ -278,7 +278,7 @@ async def health() -> dict[str, Any]:
 
 
 @app.post("/internal/unload_all")
-async def internal_unload_all(request: Request) -> JSONResponse:
+def internal_unload_all(request: Request) -> JSONResponse:
     assert_local_request(request)
     with gpu_runtime_lock("soundeffect/unload"):
         with manager.lock:
@@ -292,7 +292,7 @@ async def internal_unload_all(request: Request) -> JSONResponse:
 
 
 @app.post("/v1/moss/soundEffect")
-async def generate(request: SoundEffectGenerateRequest) -> Response:
+def generate(request: SoundEffectGenerateRequest) -> Response:
     with gpu_runtime_lock("soundeffect/generate"):
         with manager.lock:
             try:

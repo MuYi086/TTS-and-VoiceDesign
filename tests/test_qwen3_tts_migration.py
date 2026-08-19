@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -94,6 +97,48 @@ class Qwen3TtsMigrationTests(unittest.TestCase):
             ),
             prompt_text,
         )
+
+    def test_upload_storage_work_keeps_health_endpoint_responsive(self) -> None:
+        from httpx import ASGITransport, AsyncClient
+
+        delay_seconds = 0.2
+        storage_work_started = threading.Event()
+
+        def slow_timbre_lookup(content: bytes) -> None:
+            del content
+            storage_work_started.set()
+            time.sleep(delay_seconds)
+            return None
+
+        async def request_upload_and_health_check() -> tuple[int, int, float]:
+            async with AsyncClient(
+                transport=ASGITransport(app=main.app),
+                base_url="http://test",
+            ) as client:
+                start = time.perf_counter()
+                upload_task = asyncio.create_task(
+                    client.post(
+                        "/v1/upload_audio",
+                        files={"audio": ("large-reference.wav", b"RIFF" + b"\0" * 40, "audio/wav")},
+                        data={"full_path": "large-reference.wav"},
+                    )
+                )
+                while not storage_work_started.is_set():
+                    await asyncio.sleep(0.001)
+                health_response = await client.get("/v1/health")
+                elapsed = time.perf_counter() - start
+                upload_response = await upload_task
+            return upload_response.status_code, health_response.status_code, elapsed
+
+        with (
+            patch.object(main, "find_matching_timbre_audio", side_effect=slow_timbre_lookup),
+            patch.object(main, "cuda_status", return_value={"available": False, "source": "test"}),
+        ):
+            upload_status, health_status, elapsed = asyncio.run(request_upload_and_health_check())
+
+        self.assertEqual(upload_status, 200)
+        self.assertEqual(health_status, 200)
+        self.assertLess(elapsed, delay_seconds / 2)
 
     def test_timbre_reference_upload_does_not_copy_audio_to_clone(self) -> None:
         from fastapi.testclient import TestClient

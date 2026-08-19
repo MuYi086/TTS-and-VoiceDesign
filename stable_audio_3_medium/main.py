@@ -266,7 +266,7 @@ manager = StableAudio3MediumWorkerManager()
 
 
 @app.get("/v1/health")
-async def health() -> dict:
+def health() -> dict:
     """Report service readiness without loading model weights."""
     cuda = cuda_status()
     required_files = {
@@ -326,7 +326,7 @@ async def health() -> dict:
 
 
 @app.post("/internal/unload_all")
-async def internal_unload_all(request: Request) -> JSONResponse:
+def internal_unload_all(request: Request) -> JSONResponse:
     """Keep the old control route even though no model remains resident."""
     assert_local_request(request)
     with gpu_runtime_lock(GPU_LOCK_FILE, "stable_audio_3_medium/unload"):
@@ -341,7 +341,7 @@ async def internal_unload_all(request: Request) -> JSONResponse:
 
 
 @app.post("/v1/stableAudio/soundEffect")
-async def generate(request: StableAudio3MediumGenerateRequest) -> Response:
+def generate(request: StableAudio3MediumGenerateRequest) -> Response:
     """Generate a WAV while serializing access to the shared GPU."""
     with gpu_runtime_lock(GPU_LOCK_FILE, "stable_audio_3_medium/generate"):
         with manager.lock:

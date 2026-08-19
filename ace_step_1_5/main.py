@@ -241,7 +241,7 @@ manager = AceStepWorkerManager()
 
 
 @app.get("/v1/health")
-async def health() -> dict[str, object]:
+def health() -> dict[str, object]:
     """Report readiness without importing or instantiating the model."""
     cuda = cuda_status()
     return {
@@ -291,7 +291,7 @@ async def health() -> dict[str, object]:
 
 
 @app.post("/internal/unload_all")
-async def internal_unload_all(request: Request) -> JSONResponse:
+def internal_unload_all(request: Request) -> JSONResponse:
     """Keep the shared control protocol without owning a resident pipeline."""
     assert_local_request(request)
     with gpu_runtime_lock(GPU_LOCK_FILE, "ace_step_1_5/unload"):
@@ -306,7 +306,7 @@ async def internal_unload_all(request: Request) -> JSONResponse:
 
 
 @app.post("/v1/aceStep/bgm")
-async def generate_bgm(request: AceStepBgmRequest) -> Response:
+def generate_bgm(request: AceStepBgmRequest) -> Response:
     """Generate and persist one audiobook BGM WAV."""
     with gpu_runtime_lock(GPU_LOCK_FILE, "ace_step_1_5/generate"):
         with manager.lock:
