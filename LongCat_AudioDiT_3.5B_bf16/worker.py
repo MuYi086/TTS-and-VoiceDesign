@@ -20,7 +20,6 @@ from typing import Any
 
 from audio_trim import trim_leading_silence
 
-
 DEFAULT_REPO_CANDIDATES = (
     Path.home() / "tts-depency/LongCat-AudioDiT",
     Path.home() / "LongCat-AudioDiT",
@@ -29,7 +28,7 @@ DEFAULT_REPO_CANDIDATES = (
 
 
 def load_request(path: str | Path) -> dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as file:
+    with open(path, encoding="utf-8") as file:
         value = json.load(file)
     if not isinstance(value, dict):
         raise ValueError("LongCat worker request must be a JSON object.")
@@ -38,11 +37,7 @@ def load_request(path: str | Path) -> dict[str, Any]:
 
 def maybe_add_repo_path(repo_path: str | Path | None) -> None:
     """Make the external repository containing audiodit importable."""
-    candidates = (
-        [Path(repo_path).expanduser()]
-        if repo_path
-        else list(DEFAULT_REPO_CANDIDATES)
-    )
+    candidates = [Path(repo_path).expanduser()] if repo_path else list(DEFAULT_REPO_CANDIDATES)
     for candidate in candidates:
         resolved = candidate.resolve()
         if (resolved / "audiodit").is_dir() and str(resolved) not in sys.path:
@@ -62,9 +57,7 @@ def require_model_path(path: str | Path) -> Path:
     if not model_path.is_dir():
         raise NotADirectoryError(f"LongCat model path is not a directory: {model_path}")
     missing = [
-        name
-        for name in ("config.json", "model.safetensors")
-        if not (model_path / name).is_file()
+        name for name in ("config.json", "model.safetensors") if not (model_path / name).is_file()
     ]
     if missing:
         raise FileNotFoundError(
@@ -125,8 +118,7 @@ def split_long_sentence(text: str, max_chars: int) -> list[str]:
                 chunks.append(current)
                 current = ""
             chunks.extend(
-                part[index : index + max_chars]
-                for index in range(0, len(part), max_chars)
+                part[index : index + max_chars] for index in range(0, len(part), max_chars)
             )
             continue
 
@@ -169,9 +161,7 @@ def prepare_environment(request: dict[str, Any]) -> None:
         request.get("runtime_cache_dir")
         or Path(__file__).resolve().parents[1] / "storage/.cache/runtime"
     ).expanduser()
-    hf_mirror_dir = Path(
-        request.get("hf_mirror_dir") or Path.home() / "hf-mirror"
-    ).expanduser()
+    hf_mirror_dir = Path(request.get("hf_mirror_dir") or Path.home() / "hf-mirror").expanduser()
 
     os.environ.setdefault("HF_HOME", str(hf_mirror_dir))
     os.environ.setdefault("HF_MODULES_CACHE", str(runtime_cache_dir / "hf_modules"))
@@ -191,13 +181,12 @@ def prepare_environment(request: dict[str, Any]) -> None:
 
 def import_runtime():
     try:
+        import audiodit  # noqa: F401  # registers AudioDiT with Transformers
         import librosa
         import numpy as np
         import soundfile as sf
         import torch
         import torch.nn.functional as functional
-
-        import audiodit  # noqa: F401  # registers AudioDiT with Transformers
         from audiodit import AudioDiTModel
         from transformers import AutoTokenizer
     except ImportError as exc:
@@ -297,9 +286,7 @@ def estimate_duration_frames(
     prompt_time = prompt_frames * full_hop / sample_rate
     available_duration = max(max_duration - prompt_time, full_hop / sample_rate)
     gen_duration = approx_duration_from_text(gen_text, max_duration=available_duration)
-    approx_prompt_duration = approx_duration_from_text(
-        prompt_text, max_duration=max_duration
-    )
+    approx_prompt_duration = approx_duration_from_text(prompt_text, max_duration=max_duration)
     if approx_prompt_duration > 0:
         ratio = float(np.clip(prompt_time / approx_prompt_duration, 1.0, 1.5))
         gen_duration *= ratio

@@ -2,6 +2,7 @@ import fcntl
 import hashlib
 import importlib.util
 import json
+import logging
 import os
 import re
 import subprocess
@@ -9,20 +10,21 @@ import sys
 import tempfile
 import threading
 import time
-import traceback
 from contextlib import contextmanager
-from typing import Literal, Optional
+from typing import Literal
 
 # 官方文档: https://voxcpm.readthedocs.io/zh-cn/latest/cookbook.html
-
 import uvicorn
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Response
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
 from starlette.middleware.base import BaseHTTPMiddleware
+
 from audio_output import persist_audio_bytes, persist_audio_file
-from synthesis_request import CloneSynthesisRequest
 from gpu_runtime import cuda_status, terminate_process_group
+from synthesis_request import CloneSynthesisRequest
+
+LOGGER = logging.getLogger(__name__)
 
 SERVICE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SERVICE_DIR)
@@ -39,7 +41,7 @@ def expand_path(path: str) -> str:
     return os.path.abspath(os.path.expandvars(os.path.expanduser(path)))
 
 
-def normalize_optional_text(value: Optional[str]) -> Optional[str]:
+def normalize_optional_text(value: str | None) -> str | None:
     if value is None:
         return None
     normalized = value.strip()
@@ -48,16 +50,14 @@ def normalize_optional_text(value: Optional[str]) -> Optional[str]:
     return normalized
 
 
-def normalize_device_name(value: Optional[str], default: str = "cuda") -> str:
+def normalize_device_name(value: str | None, default: str = "cuda") -> str:
     normalized = normalize_optional_text(value)
     return normalized.lower() if normalized is not None else default
 
 
 HF_MIRROR_DIR = expand_path(os.getenv("HF_MIRROR_DIR", "~/hf-mirror"))
 STORAGE_DIR = expand_path(os.getenv("STORAGE_DIR", os.path.join(PROJECT_DIR, "storage")))
-CLONE_STORAGE_DIR = expand_path(
-    os.getenv("CLONE_STORAGE_DIR", os.path.join(STORAGE_DIR, "clone"))
-)
+CLONE_STORAGE_DIR = expand_path(os.getenv("CLONE_STORAGE_DIR", os.path.join(STORAGE_DIR, "clone")))
 TIMBRE_STORAGE_DIR = expand_path(
     os.getenv("TIMBRE_STORAGE_DIR", os.path.join(STORAGE_DIR, "timbre"))
 )
@@ -66,7 +66,9 @@ PROMPTS_DIR = expand_path(os.getenv("PROMPTS_DIR", CLONE_STORAGE_DIR))
 RUNTIME_CACHE_DIR = expand_path(
     os.getenv("RUNTIME_CACHE_DIR", os.path.join(STORAGE_DIR, ".cache/runtime"))
 )
-GPU_LOCK_FILE = expand_path(os.getenv("GPU_LOCK_FILE", os.path.join(RUNTIME_CACHE_DIR, "gpu-runtime.lock")))
+GPU_LOCK_FILE = expand_path(
+    os.getenv("GPU_LOCK_FILE", os.path.join(RUNTIME_CACHE_DIR, "gpu-runtime.lock"))
+)
 LOCAL_FILES_ONLY = env_bool("LOCAL_FILES_ONLY", True)
 CUDA_RELEASE_DELAY = float(os.getenv("CUDA_RELEASE_DELAY", "2.0"))
 API_HOST = os.getenv("HOST", "0.0.0.0")
@@ -80,13 +82,11 @@ VOXCPM2_EXTERNAL_HELPER_PATHS = {
     expand_path(
         os.path.join("~", "github", "timbre-design", "modelScript", "tts_local_voxcpm2.py")
     ),
-    expand_path(
-        os.path.join("~", "github", "timbre-design", "scripts", "tts_local_voxcpm2.py")
-    ),
+    expand_path(os.path.join("~", "github", "timbre-design", "scripts", "tts_local_voxcpm2.py")),
 }
 
 
-def resolve_voxcpm2_helper_script(configured_path: Optional[str]) -> str:
+def resolve_voxcpm2_helper_script(configured_path: str | None) -> str:
     helper_path = expand_path(configured_path or VOXCPM2_HELPER_DEFAULT)
     # Earlier versions exported a helper from the adjacent timbre-design
     # project. Fall back only when one of those known stale paths is missing,
@@ -138,9 +138,7 @@ VOXCPM2_OUTPUT_DIR = expand_path(
         CLONE_STORAGE_DIR,
     )
 )
-VOXCPM2_TIMBRE_OUTPUT_DIR = expand_path(
-    os.getenv("VOXCPM2_TIMBRE_OUTPUT_DIR", TIMBRE_STORAGE_DIR)
-)
+VOXCPM2_TIMBRE_OUTPUT_DIR = expand_path(os.getenv("VOXCPM2_TIMBRE_OUTPUT_DIR", TIMBRE_STORAGE_DIR))
 VOXCPM2_VOICE_DESIGN_WORKER_SCRIPT = os.path.join(SERVICE_DIR, "voice_design_worker.py")
 
 os.environ.setdefault("HF_HOME", HF_MIRROR_DIR)
@@ -211,7 +209,7 @@ def prompt_audio_path(filename: str) -> str:
 
     reference_path = timbre_reference_map_path(filename)
     if os.path.isfile(reference_path):
-        with open(reference_path, "r", encoding="utf-8") as reference_file:
+        with open(reference_path, encoding="utf-8") as reference_file:
             timbre_path = reference_file.read().strip()
         if timbre_path and os.path.isfile(timbre_path):
             return timbre_path
@@ -226,7 +224,7 @@ def file_sha256(path: str) -> str:
     return digest.hexdigest()
 
 
-def find_matching_timbre_audio(content: bytes) -> Optional[str]:
+def find_matching_timbre_audio(content: bytes) -> str | None:
     """识别已生成的音色，避免把同一份 WAV 再复制到克隆目录。"""
     content_digest = hashlib.sha256(content).hexdigest()
     with os.scandir(TIMBRE_STORAGE_DIR) as entries:
@@ -247,16 +245,16 @@ def prompt_text_sidecar_path(filename: str) -> str:
     return clone_sidecar_path
 
 
-def load_prompt_text_sidecar(filename: str) -> Optional[str]:
+def load_prompt_text_sidecar(filename: str) -> str | None:
     sidecar_path = prompt_text_sidecar_path(filename)
     if not os.path.isfile(sidecar_path):
         return None
-    with open(sidecar_path, "r", encoding="utf-8") as f:
+    with open(sidecar_path, encoding="utf-8") as f:
         text = f.read().strip()
     return text or None
 
 
-def save_prompt_text_sidecar(filename: str, prompt_text: Optional[str]) -> None:
+def save_prompt_text_sidecar(filename: str, prompt_text: str | None) -> None:
     sidecar_path = prompt_text_sidecar_path(filename)
     normalized = prompt_text.strip() if prompt_text and prompt_text.strip() else None
     if normalized is None:
@@ -273,18 +271,14 @@ def module_available(module_name: str) -> bool:
 
 def persist_generated_audio(source_path: str, operation: str = "clone") -> str:
     """Copy a validated worker WAV into its semantic storage category."""
-    output_dir = (
-        VOXCPM2_TIMBRE_OUTPUT_DIR if operation == "voice_design" else VOXCPM2_OUTPUT_DIR
-    )
+    output_dir = VOXCPM2_TIMBRE_OUTPUT_DIR if operation == "voice_design" else VOXCPM2_OUTPUT_DIR
     prefix = "voxcpm2_voicedesign" if operation == "voice_design" else "voxcpm2"
     return str(persist_audio_file(source_path, prefix, output_dir))
 
 
 def persist_generated_audio_bytes(audio_bytes: bytes, operation: str = "clone") -> str:
     """Persist route output, including bytes returned by a mocked worker."""
-    output_dir = (
-        VOXCPM2_TIMBRE_OUTPUT_DIR if operation == "voice_design" else VOXCPM2_OUTPUT_DIR
-    )
+    output_dir = VOXCPM2_TIMBRE_OUTPUT_DIR if operation == "voice_design" else VOXCPM2_OUTPUT_DIR
     prefix = "voxcpm2_voicedesign" if operation == "voice_design" else "voxcpm2"
     return str(persist_audio_bytes(audio_bytes, prefix, output_dir))
 
@@ -340,22 +334,24 @@ def worker_error_excerpt(output: str) -> str:
     return " | ".join(lines[-8:])
 
 
-VOXCPM2_NONVERBAL_TAGS = frozenset({
-    "laughing",
-    "sigh",
-    "Uhm",
-    "Shh",
-    "Question-ah",
-    "Question-ei",
-    "Question-en",
-    "Question-oh",
-    "Surprise-wa",
-    "Surprise-yo",
-    "Dissatisfaction-hnn",
-})
+VOXCPM2_NONVERBAL_TAGS = frozenset(
+    {
+        "laughing",
+        "sigh",
+        "Uhm",
+        "Shh",
+        "Question-ah",
+        "Question-ei",
+        "Question-en",
+        "Question-oh",
+        "Surprise-wa",
+        "Surprise-yo",
+        "Dissatisfaction-hnn",
+    }
+)
 
 
-def normalize_nonverbal_tags(tags: Optional[list[str]]) -> list[str]:
+def normalize_nonverbal_tags(tags: list[str] | None) -> list[str]:
     """只接受 VoxCPM2 官方白名单中的至多一个非语言标签。"""
     normalized = [str(tag).strip() for tag in (tags or [])]
     if len(normalized) > 1:
@@ -365,39 +361,42 @@ def normalize_nonverbal_tags(tags: Optional[list[str]]) -> list[str]:
     return normalized
 
 
-def contains_nonverbal_tag_marker(text: Optional[str]) -> bool:
+def contains_nonverbal_tag_marker(text: str | None) -> bool:
     """禁止把受支持标签伪装成正文或参考转写的一部分。"""
     value = text or ""
     return any(f"[{tag}]" in value for tag in VOXCPM2_NONVERBAL_TAGS)
 
 
 class VoxCpm2SynthesizeRequest(CloneSynthesisRequest):
-
     text: str
     audio_path: str
-    prompt_text: Optional[str] = None
+    prompt_text: str | None = None
     # Ultimate Cloning 使用参考转写；可控克隆使用控制指令，二者按 VoxCPM2 官方接口互斥。
-    clone_mode: Optional[Literal["ultimate", "controllable"]] = None
-    control_instruction: Optional[str] = None
+    clone_mode: Literal["ultimate", "controllable"] | None = None
+    control_instruction: str | None = None
     # 仅保存官方标签名；worker 会将其拼成 [tag] 并且只写入模型目标文本。
     nonverbal_tags: list[str] = Field(default_factory=list, max_length=1)
-    cfg_value: Optional[float] = None
-    inference_timesteps: Optional[int] = None
-    normalize: Optional[bool] = None
-    denoise: Optional[bool] = None
-    retry_badcase: Optional[bool] = None
-    load_denoiser: Optional[bool] = None
-    optimize: Optional[bool] = None
-    device: Optional[str] = None
-    seed: Optional[int] = None
-    max_chars_per_chunk: Optional[int] = None
-    pause_ms: Optional[int] = None
+    cfg_value: float | None = None
+    inference_timesteps: int | None = None
+    normalize: bool | None = None
+    denoise: bool | None = None
+    retry_badcase: bool | None = None
+    load_denoiser: bool | None = None
+    optimize: bool | None = None
+    device: str | None = None
+    seed: int | None = None
+    max_chars_per_chunk: int | None = None
+    pause_ms: int | None = None
 
     @model_validator(mode="after")
     def validate_clone_mode_contract(self):
         self.nonverbal_tags = normalize_nonverbal_tags(self.nonverbal_tags)
-        if contains_nonverbal_tag_marker(self.text) or contains_nonverbal_tag_marker(self.prompt_text):
-            raise ValueError("VoxCPM2 非语言标签必须使用 nonverbal_tags，不能写入 text 或 prompt_text。")
+        if contains_nonverbal_tag_marker(self.text) or contains_nonverbal_tag_marker(
+            self.prompt_text
+        ):
+            raise ValueError(
+                "VoxCPM2 非语言标签必须使用 nonverbal_tags，不能写入 text 或 prompt_text。"
+            )
         has_prompt_text = normalize_optional_text(self.prompt_text) is not None
         has_control_instruction = normalize_optional_text(self.control_instruction) is not None
         if self.clone_mode == "controllable":
@@ -418,7 +417,7 @@ class VoxCpm2SynthesizeRequest(CloneSynthesisRequest):
 class VoxCpm2WorkerManager:
     def __init__(self):
         self.lock = threading.RLock()
-        self.last_error: Optional[str] = None
+        self.last_error: str | None = None
 
     def build_worker_payload(self, request: VoxCpm2SynthesizeRequest) -> dict:
         ref_audio_path = prompt_audio_path(request.audio_path)
@@ -450,7 +449,9 @@ class VoxCpm2WorkerManager:
         """统一整理同一 VoxCPM2 运行时使用的生成参数。"""
         device = normalize_device_name(request.device, VOXCPM2_DEVICE)
         if not device.startswith("cuda"):
-            raise HTTPException(status_code=400, detail=f"VoxCPM2 仅支持 GPU 设备，当前 device={device}")
+            raise HTTPException(
+                status_code=400, detail=f"VoxCPM2 仅支持 GPU 设备，当前 device={device}"
+            )
         denoise = request.denoise if request.denoise is not None else VOXCPM2_DENOISE
         configured_load_denoiser = (
             request.load_denoiser if request.load_denoiser is not None else VOXCPM2_LOAD_DENOISER
@@ -469,7 +470,9 @@ class VoxCpm2WorkerManager:
             "normalize": request.normalize if request.normalize is not None else VOXCPM2_NORMALIZE,
             "denoise": denoise,
             "retry_badcase": (
-                request.retry_badcase if request.retry_badcase is not None else VOXCPM2_RETRY_BADCASE
+                request.retry_badcase
+                if request.retry_badcase is not None
+                else VOXCPM2_RETRY_BADCASE
             ),
             # 启用 denoise 时自动补齐模型加载前置条件，避免请求参数互相矛盾。
             "load_denoiser": bool(configured_load_denoiser or denoise),
@@ -481,17 +484,13 @@ class VoxCpm2WorkerManager:
                 if max_chars_per_chunk is not None
                 else VOXCPM2_MAX_CHARS_PER_CHUNK
             ),
-            "pause_ms": (
-                pause_ms
-                if pause_ms is not None
-                else VOXCPM2_PAUSE_MS
-            ),
+            "pause_ms": (pause_ms if pause_ms is not None else VOXCPM2_PAUSE_MS),
             "local_files_only": LOCAL_FILES_ONLY,
             "runtime_cache_dir": RUNTIME_CACHE_DIR,
             "hf_mirror_dir": HF_MIRROR_DIR,
         }
 
-    def _run_worker_once(self, payload: dict, worker_script: Optional[str] = None) -> bytes:
+    def _run_worker_once(self, payload: dict, worker_script: str | None = None) -> bytes:
         selected_worker_script = worker_script or VOXCPM2_WORKER_SCRIPT
         if not os.path.isfile(selected_worker_script):
             raise RuntimeError(f"VoxCPM2 worker 脚本不存在: {selected_worker_script}")
@@ -512,7 +511,7 @@ class VoxCpm2WorkerManager:
         )
         os.close(request_fd)
         os.close(output_fd)
-        proc: Optional[subprocess.Popen] = None
+        proc: subprocess.Popen | None = None
 
         try:
             with open(request_path, "w", encoding="utf-8") as f:
@@ -541,10 +540,12 @@ class VoxCpm2WorkerManager:
             )
             try:
                 stdout, stderr = proc.communicate(timeout=VOXCPM2_REQUEST_TIMEOUT)
-            except subprocess.TimeoutExpired:
+            except subprocess.TimeoutExpired as exc:
                 terminate_process_group(proc, "VoxCPM2")
                 stdout, stderr = proc.communicate()
-                raise RuntimeError(f"VoxCPM2 worker 超时（>{VOXCPM2_REQUEST_TIMEOUT:.0f}s）")
+                raise RuntimeError(
+                    f"VoxCPM2 worker 超时（>{VOXCPM2_REQUEST_TIMEOUT:.0f}s）"
+                ) from exc
 
             elapsed = time.perf_counter() - started
             if stdout.strip():
@@ -569,7 +570,7 @@ class VoxCpm2WorkerManager:
                 except Exception:
                     pass
 
-    def run_worker(self, payload: dict, worker_script: Optional[str] = None) -> bytes:
+    def run_worker(self, payload: dict, worker_script: str | None = None) -> bytes:
         try:
             audio_bytes = self._run_worker_once(payload, worker_script=worker_script)
             self.last_error = None
@@ -587,16 +588,16 @@ class VoxCpm2VoiceDesignRequest(BaseModel):
 
     voice_description: str
     text: str = "这是生成的参考音频预览。"
-    save_as: Optional[str] = "designed_voice.wav"
-    cfg_value: Optional[float] = None
-    inference_timesteps: Optional[int] = None
-    normalize: Optional[bool] = None
-    denoise: Optional[bool] = None
-    retry_badcase: Optional[bool] = None
-    load_denoiser: Optional[bool] = None
-    optimize: Optional[bool] = None
-    device: Optional[str] = None
-    seed: Optional[int] = None
+    save_as: str | None = "designed_voice.wav"
+    cfg_value: float | None = None
+    inference_timesteps: int | None = None
+    normalize: bool | None = None
+    denoise: bool | None = None
+    retry_badcase: bool | None = None
+    load_denoiser: bool | None = None
+    optimize: bool | None = None
+    device: str | None = None
+    seed: int | None = None
 
 
 def build_voice_design_worker_payload(request: VoxCpm2VoiceDesignRequest) -> dict:
@@ -702,7 +703,7 @@ async def voxcpm2_design(request: VoxCpm2VoiceDesignRequest):
         except HTTPException:
             raise
         except Exception as exc:
-            traceback.print_exc()
+            LOGGER.exception("VoxCPM2 voice-design request failed")
             raise HTTPException(status_code=500, detail=str(exc)) from exc
         finally:
             wait_after_cuda_release("after VoxCPM2 voice design")
@@ -721,7 +722,7 @@ async def internal_unload_all(request: Request):
 async def upload_audio(
     audio: UploadFile = File(...),
     full_path: str = Form(...),
-    prompt_text: Optional[str] = Form(None),
+    prompt_text: str | None = Form(None),
 ):
     content = await audio.read()
     clone_path = clone_prompt_audio_path(full_path)
@@ -775,7 +776,9 @@ async def synthesize_v2(request: Request):
         try:
             data = await request.json()
             with manager.lock:
-                payload = manager.build_worker_payload(VoxCpm2SynthesizeRequest.model_validate(data))
+                payload = manager.build_worker_payload(
+                    VoxCpm2SynthesizeRequest.model_validate(data)
+                )
                 audio_bytes = manager.run_worker(payload)
             saved_output_path = persist_generated_audio_bytes(audio_bytes, operation="clone")
             print(f"[VoxCPM2] 已保存生成音频: {saved_output_path}")
@@ -783,7 +786,7 @@ async def synthesize_v2(request: Request):
         except HTTPException:
             raise
         except Exception as exc:
-            traceback.print_exc()
+            LOGGER.exception("VoxCPM2 clone request failed")
             raise HTTPException(status_code=500, detail=str(exc)) from exc
         finally:
             wait_after_cuda_release("after 8322 worker")
@@ -809,8 +812,6 @@ if __name__ == "__main__":
         f"retry_badcase={VOXCPM2_RETRY_BADCASE}, load_denoiser={VOXCPM2_LOAD_DENOISER}, optimize={VOXCPM2_OPTIMIZE}, "
         f"max_chars_per_chunk={VOXCPM2_MAX_CHARS_PER_CHUNK}, pause_ms={VOXCPM2_PAUSE_MS}"
     )
-    print(
-        f"[配置] device={VOXCPM2_DEVICE}"
-    )
+    print(f"[配置] device={VOXCPM2_DEVICE}")
     print(f"[配置] local_files_only={LOCAL_FILES_ONLY}, request_timeout={VOXCPM2_REQUEST_TIMEOUT}")
     uvicorn.run(app, host=API_HOST, port=API_PORT)

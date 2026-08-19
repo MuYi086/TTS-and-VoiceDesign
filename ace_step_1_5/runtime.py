@@ -14,10 +14,11 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -119,7 +120,7 @@ def terminate_process_group(
     if not process_is_running(process):
         return
 
-    pid: Optional[int] = getattr(process, "pid", None)
+    pid: int | None = getattr(process, "pid", None)
     if pid is None:
         terminate = getattr(process, "terminate", None)
         if callable(terminate):
@@ -203,7 +204,7 @@ def run_local_worker(payload: dict[str, Any], config: WorkerConfig) -> WorkerRes
     for file_descriptor in (request_fd, output_fd, metadata_fd):
         os.close(file_descriptor)
 
-    process: Optional[subprocess.Popen[str]] = None
+    process: subprocess.Popen[str] | None = None
     paths = (request_path, output_path, metadata_path)
 
     try:
@@ -233,10 +234,10 @@ def run_local_worker(payload: dict[str, Any], config: WorkerConfig) -> WorkerRes
         )
         try:
             stdout, stderr = process.communicate(timeout=config.timeout)
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
             terminate_process_group(process, config.label)
             process.communicate()
-            raise RuntimeError(f"{config.label} worker 超时（>{config.timeout:.0f}s）")
+            raise RuntimeError(f"{config.label} worker 超时（>{config.timeout:.0f}s）") from exc
 
         if stdout.strip():
             print(stdout.rstrip())
@@ -249,7 +250,7 @@ def run_local_worker(payload: dict[str, Any], config: WorkerConfig) -> WorkerRes
 
         metadata: dict[str, Any] = {}
         if os.path.isfile(metadata_path) and os.path.getsize(metadata_path) > 0:
-            with open(metadata_path, "r", encoding="utf-8") as file:
+            with open(metadata_path, encoding="utf-8") as file:
                 loaded = json.load(file)
             if isinstance(loaded, dict):
                 metadata = loaded

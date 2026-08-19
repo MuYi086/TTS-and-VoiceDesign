@@ -11,7 +11,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-
 REPOSITORY_DIR = Path(__file__).resolve().parents[1]
 SERVICE_DIR = REPOSITORY_DIR / "Step_Audio_EditX"
 TEST_RUNTIME = tempfile.TemporaryDirectory(prefix="step-audio-editx-tests-")
@@ -114,7 +113,10 @@ class StepAudioEditXMigrationTests(unittest.TestCase):
         self.assertEqual(response.headers["content-type"], "audio/wav")
         self.assertEqual(response.content, wav)
         run_worker.assert_called_once()
-        self.assertEqual(run_worker.call_args.args[0]["prompt_wav_path"], str(main.prompt_audio_path(self.prompt_name)))
+        self.assertEqual(
+            run_worker.call_args.args[0]["prompt_wav_path"],
+            str(main.prompt_audio_path(self.prompt_name)),
+        )
 
         denoise = main.StepAudioEditXEditRequest(
             prompt_audio=self.prompt_name,

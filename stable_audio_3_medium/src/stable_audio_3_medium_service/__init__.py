@@ -1,2 +1,1 @@
-def main() -> None:
-    print("Hello from stable-audio-3-medium-service!")
+"""Package marker for the standalone Stable Audio 3 Medium service."""

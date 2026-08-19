@@ -12,7 +12,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-
 REPOSITORY_DIR = Path(__file__).resolve().parents[1]
 SERVICE_DIR = REPOSITORY_DIR / "dots_tts_soar"
 TEST_RUNTIME = tempfile.TemporaryDirectory(prefix="dots-tts-soar-tests-")
@@ -56,9 +55,7 @@ class DotsTtsSoarMigrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.filename = "migration-test.wav"
         self.prompt_text = "这是一条准确的参考文本。"
-        (PROMPTS_DIR / main.hash_filename(self.filename)).write_bytes(
-            b"RIFF" + b"\0" * 40
-        )
+        (PROMPTS_DIR / main.hash_filename(self.filename)).write_bytes(b"RIFF" + b"\0" * 40)
         main.save_prompt_text_sidecar(self.filename, self.prompt_text)
 
     def test_routes_health_uv_runtime_and_flash_policy(self) -> None:
@@ -80,9 +77,7 @@ class DotsTtsSoarMigrationTests(unittest.TestCase):
         }
         self.assertTrue(expected_routes.issubset(actual_routes))
 
-        with patch.object(
-            main, "cuda_status", return_value={"available": False, "source": "test"}
-        ):
+        with patch.object(main, "cuda_status", return_value={"available": False, "source": "test"}):
             response = TestClient(main.app).get("/v1/health")
         self.assertEqual(response.status_code, 200)
         payload = response.json()

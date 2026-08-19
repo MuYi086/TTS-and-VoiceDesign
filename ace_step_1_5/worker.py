@@ -11,7 +11,6 @@ import secrets
 from pathlib import Path
 from typing import Any
 
-
 MIN_SECONDS = 10.0
 MAX_SECONDS = 600.0
 REQUIRED_MODEL_PATHS = (
@@ -34,7 +33,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def read_payload(path: str) -> dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as file:
+    with open(path, encoding="utf-8") as file:
         payload = json.load(file)
     if not isinstance(payload, dict):
         raise ValueError("Worker input must be a JSON object.")
@@ -73,7 +72,11 @@ def validate_model(model_path: Path) -> Path:
     missing = [
         name
         for name in REQUIRED_MODEL_PATHS
-        if not ((model_path / name).is_file() if name.endswith(".json") else (model_path / name).is_dir())
+        if not (
+            (model_path / name).is_file()
+            if name.endswith(".json")
+            else (model_path / name).is_dir()
+        )
     ]
     transformer_weights = tuple((model_path / "transformer").glob("*.safetensors"))
     if missing or not transformer_weights:

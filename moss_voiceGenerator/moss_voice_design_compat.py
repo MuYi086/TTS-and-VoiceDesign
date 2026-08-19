@@ -7,7 +7,6 @@ from pathlib import Path
 from types import MethodType
 from typing import Any
 
-
 MOSS_V1_CODEC_MODEL_TYPE = "moss-audio-tokenizer"
 
 
@@ -118,13 +117,11 @@ def split_sizes_from_break_positions(total_size: int, break_positions: Any) -> l
         break_positions = break_positions.tolist()
     positions = [int(position) for position in break_positions]
     if any(position <= 0 or position >= total_size for position in positions):
-        raise ValueError(
-            f"break_positions 必须位于 (0, {total_size}) 内，实际为 {positions}。"
-        )
+        raise ValueError(f"break_positions 必须位于 (0, {total_size}) 内，实际为 {positions}。")
     if positions != sorted(set(positions)):
         raise ValueError(f"break_positions 必须严格递增，实际为 {positions}。")
     boundaries = [0, *positions, total_size]
-    return [right - left for left, right in zip(boundaries, boundaries[1:])]
+    return [right - left for left, right in zip(boundaries, boundaries[1:], strict=False)]
 
 
 def validate_moss_codec_compatibility(processor: Any) -> None:
@@ -132,7 +129,7 @@ def validate_moss_codec_compatibility(processor: Any) -> None:
     model_config = processor.model_config
     codec = processor.audio_tokenizer
     codec_config = getattr(codec, "config", None)
-    expected_rate = int(getattr(model_config, "sampling_rate"))
+    expected_rate = int(model_config.sampling_rate)
     codec_rate = getattr(codec, "sampling_rate", None)
     if codec_rate is None and codec_config is not None:
         codec_rate = getattr(codec_config, "sampling_rate", None)

@@ -8,13 +8,12 @@ worker process has exited.
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import threading
 import time
-import traceback
 from pathlib import Path
-from typing import Optional
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -32,6 +31,7 @@ from runtime import (
     run_local_worker,
 )
 
+LOGGER = logging.getLogger(__name__)
 
 PROJECT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = PROJECT_DIR.parent
@@ -67,12 +67,8 @@ def env_bool(name: str, default: bool = False) -> bool:
 HF_MIRROR_DIR = expand_path(os.getenv("HF_MIRROR_DIR", "~/hf-mirror"))
 STORAGE_DIR = expand_path(os.getenv("STORAGE_DIR", str(PROJECT_ROOT / "storage")))
 BGM_STORAGE_DIR = expand_path(os.getenv("BGM_STORAGE_DIR", str(STORAGE_DIR / "bgm")))
-RUNTIME_CACHE_DIR = expand_path(
-    os.getenv("RUNTIME_CACHE_DIR", str(STORAGE_DIR / ".cache/runtime"))
-)
-GPU_LOCK_FILE = expand_path(
-    os.getenv("GPU_LOCK_FILE", str(RUNTIME_CACHE_DIR / "gpu-runtime.lock"))
-)
+RUNTIME_CACHE_DIR = expand_path(os.getenv("RUNTIME_CACHE_DIR", str(STORAGE_DIR / ".cache/runtime")))
+GPU_LOCK_FILE = expand_path(os.getenv("GPU_LOCK_FILE", str(RUNTIME_CACHE_DIR / "gpu-runtime.lock")))
 ACESTEP_MODEL_DIR = expand_path(
     os.getenv(
         "ACESTEP_MODEL_DIR",
@@ -130,9 +126,9 @@ class AceStepBgmRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=2_000)
     seconds: float = Field(default=ACESTEP_DEFAULT_SECONDS, ge=MIN_SECONDS, le=MAX_SECONDS)
     steps: int = Field(default=ACESTEP_DEFAULT_STEPS, ge=1, le=20)
-    bpm: Optional[int] = Field(default=None, ge=30, le=240)
-    keyscale: Optional[str] = Field(default=None, max_length=64)
-    timesignature: Optional[str] = Field(default=None, max_length=16)
+    bpm: int | None = Field(default=None, ge=30, le=240)
+    keyscale: str | None = Field(default=None, max_length=64)
+    timesignature: str | None = Field(default=None, max_length=16)
     seed: int = Field(default=ACESTEP_DEFAULT_SEED)
 
     @field_validator("prompt")
@@ -145,7 +141,7 @@ class AceStepBgmRequest(BaseModel):
 
     @field_validator("keyscale", "timesignature")
     @classmethod
-    def trim_optional_text(cls, value: Optional[str]) -> Optional[str]:
+    def trim_optional_text(cls, value: str | None) -> str | None:
         if value is None:
             return None
         normalized = value.strip()
@@ -199,7 +195,7 @@ class AceStepWorkerManager:
 
     def __init__(self) -> None:
         self.lock = threading.RLock()
-        self.last_error: Optional[str] = None
+        self.last_error: str | None = None
 
     def build_worker_payload(self, request: AceStepBgmRequest) -> dict[str, object]:
         return {
@@ -333,7 +329,7 @@ async def generate_bgm(request: AceStepBgmRequest) -> Response:
             except HTTPException:
                 raise
             except Exception as exc:
-                traceback.print_exc()
+                LOGGER.exception("ACE-Step request failed")
                 raise HTTPException(status_code=500, detail=str(exc)) from exc
             finally:
                 wait_after_cuda_release()

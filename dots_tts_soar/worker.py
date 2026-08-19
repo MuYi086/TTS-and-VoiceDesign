@@ -29,7 +29,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_request(path: str) -> dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as file:
+    with open(path, encoding="utf-8") as file:
         return json.load(file)
 
 
@@ -97,7 +97,9 @@ def split_long_sentence(text: str, max_chars: int) -> list[str]:
             if current:
                 chunks.append(current)
                 current = ""
-            chunks.extend(part[index : index + max_chars] for index in range(0, len(part), max_chars))
+            chunks.extend(
+                part[index : index + max_chars] for index in range(0, len(part), max_chars)
+            )
             continue
         candidate = current + part
         if current and len(candidate) > max_chars:
@@ -205,10 +207,7 @@ def trim_generated_waveform(
         np=np,
     )
     if trimmed_samples > 0:
-        print(
-            f"[dots.tts-soar worker] {label} 裁掉前导静音 "
-            f"{trimmed_samples / sample_rate:.2f}s"
-        )
+        print(f"[dots.tts-soar worker] {label} 裁掉前导静音 {trimmed_samples / sample_rate:.2f}s")
     return trimmed_waveform
 
 
@@ -250,7 +249,9 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
 
     print(f"[dots.tts-soar worker] 模型目录: {model_path}")
     print(f"[dots.tts-soar worker] 参考音频: {ref_audio_path}")
-    print(f"[dots.tts-soar worker] 参考文本: {'provided' if prompt_text else 'not provided; x-vector-only cloning mode'}")
+    print(
+        f"[dots.tts-soar worker] 参考文本: {'provided' if prompt_text else 'not provided; x-vector-only cloning mode'}"
+    )
     print(f"[dots.tts-soar worker] 文本长度: {len(text)} 字, chunks={len(chunks)}")
     print(
         f"[dots.tts-soar worker] precision={precision}, num_steps={num_steps}, "
@@ -269,7 +270,9 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
 
         with torch.inference_mode():
             for index, chunk in enumerate(chunks, start=1):
-                print(f"[dots.tts-soar worker] synthesizing chunk {index}/{len(chunks)} ({len(chunk)} chars)")
+                print(
+                    f"[dots.tts-soar worker] synthesizing chunk {index}/{len(chunks)} ({len(chunk)} chars)"
+                )
                 result = runtime.generate(
                     text=chunk,
                     prompt_audio_path=str(ref_audio_path),
@@ -302,8 +305,7 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
         )
         if trimmed_samples > 0:
             print(
-                f"[dots.tts-soar worker] 最终音频裁掉前导静音 "
-                f"{trimmed_samples / sample_rate:.2f}s"
+                f"[dots.tts-soar worker] 最终音频裁掉前导静音 {trimmed_samples / sample_rate:.2f}s"
             )
         sf.write(str(output_wav), waveform, sample_rate)
         print(

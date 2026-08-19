@@ -6,16 +6,16 @@ from __future__ import annotations
 import fcntl
 import importlib.util
 import json
+import logging
 import os
 import subprocess
 import sys
 import tempfile
 import threading
 import time
-import traceback
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -26,6 +26,7 @@ from audio_output import persist_audio_bytes
 from moss_voice_design_compat import is_moss_codec_path_ready
 from runtime import cuda_status, terminate_process_group
 
+LOGGER = logging.getLogger(__name__)
 
 PROJECT_DIR = Path(__file__).resolve().parent
 REPOSITORY_DIR = PROJECT_DIR.parent
@@ -42,12 +43,8 @@ def expand_path(path: str) -> str:
     return os.path.abspath(os.path.expandvars(os.path.expanduser(path)))
 
 
-STORAGE_DIR = Path(
-    expand_path(os.getenv("STORAGE_DIR", str(REPOSITORY_DIR / "storage")))
-)
-TIMBRE_STORAGE_DIR = Path(
-    expand_path(os.getenv("TIMBRE_STORAGE_DIR", str(STORAGE_DIR / "timbre")))
-)
+STORAGE_DIR = Path(expand_path(os.getenv("STORAGE_DIR", str(REPOSITORY_DIR / "storage"))))
+TIMBRE_STORAGE_DIR = Path(expand_path(os.getenv("TIMBRE_STORAGE_DIR", str(STORAGE_DIR / "timbre"))))
 HF_MIRROR_DIR = expand_path(os.getenv("HF_MIRROR_DIR", "~/hf-mirror"))
 MOSS_VOICEGENERATOR_MODEL_DIR = expand_path(
     os.getenv(
@@ -61,9 +58,7 @@ MOSS_AUDIO_TOKENIZER_PATH = expand_path(
         os.path.join(HF_MIRROR_DIR, "OpenMOSS-Team/MOSS-Audio-Tokenizer"),
     )
 )
-RUNTIME_CACHE_DIR = expand_path(
-    os.getenv("RUNTIME_CACHE_DIR", str(STORAGE_DIR / ".cache/runtime"))
-)
+RUNTIME_CACHE_DIR = expand_path(os.getenv("RUNTIME_CACHE_DIR", str(STORAGE_DIR / ".cache/runtime")))
 GPU_LOCK_FILE = expand_path(
     os.getenv("GPU_LOCK_FILE", os.path.join(RUNTIME_CACHE_DIR, "gpu-runtime.lock"))
 )
@@ -85,9 +80,7 @@ MAX_NEW_TOKENS = int(os.getenv("MOSS_VOICEGENERATOR_MAX_NEW_TOKENS", "4096"))
 AUDIO_TEMPERATURE = float(os.getenv("MOSS_VOICEGENERATOR_AUDIO_TEMPERATURE", "1.5"))
 AUDIO_TOP_P = float(os.getenv("MOSS_VOICEGENERATOR_AUDIO_TOP_P", "0.6"))
 AUDIO_TOP_K = int(os.getenv("MOSS_VOICEGENERATOR_AUDIO_TOP_K", "50"))
-AUDIO_REPETITION_PENALTY = float(
-    os.getenv("MOSS_VOICEGENERATOR_AUDIO_REPETITION_PENALTY", "1.1")
-)
+AUDIO_REPETITION_PENALTY = float(os.getenv("MOSS_VOICEGENERATOR_AUDIO_REPETITION_PENALTY", "1.1"))
 DTYPE = os.getenv("MOSS_VOICEGENERATOR_DTYPE", "auto")
 ATTN_IMPLEMENTATION = os.getenv("MOSS_VOICEGENERATOR_ATTN_IMPLEMENTATION", "auto")
 
@@ -139,16 +132,16 @@ class MossDesignRequest(BaseModel):
 
     voice_description: str
     text: str = "这是生成的参考音频预览。"
-    save_as: Optional[str] = "designed_voice.wav"
-    max_chars_per_chunk: Optional[int] = 0
-    pause_ms: Optional[int] = 250
-    max_new_tokens: Optional[int] = 4096
-    audio_temperature: Optional[float] = 1.5
-    audio_top_p: Optional[float] = 0.6
-    audio_top_k: Optional[int] = 50
-    audio_repetition_penalty: Optional[float] = 1.1
-    dtype: Optional[str] = "auto"
-    attn_implementation: Optional[str] = "auto"
+    save_as: str | None = "designed_voice.wav"
+    max_chars_per_chunk: int | None = 0
+    pause_ms: int | None = 250
+    max_new_tokens: int | None = 4096
+    audio_temperature: float | None = 1.5
+    audio_top_p: float | None = 0.6
+    audio_top_k: int | None = 50
+    audio_repetition_penalty: float | None = 1.1
+    dtype: str | None = "auto"
+    attn_implementation: str | None = "auto"
 
 
 def module_available(module_name: str) -> bool:
@@ -189,7 +182,7 @@ def worker_error_excerpt(output: str) -> str:
 class MossVoiceGeneratorWorkerManager:
     def __init__(self):
         self.lock = threading.RLock()
-        self.last_error: Optional[str] = None
+        self.last_error: str | None = None
 
     @staticmethod
     def _value(value: Any, fallback: Any) -> Any:
@@ -207,9 +200,7 @@ class MossVoiceGeneratorWorkerManager:
                 ),
                 "pause_ms": self._value(request.pause_ms, PAUSE_MS),
                 "max_new_tokens": self._value(request.max_new_tokens, MAX_NEW_TOKENS),
-                "audio_temperature": self._value(
-                    request.audio_temperature, AUDIO_TEMPERATURE
-                ),
+                "audio_temperature": self._value(request.audio_temperature, AUDIO_TEMPERATURE),
                 "audio_top_p": self._value(request.audio_top_p, AUDIO_TOP_P),
                 "audio_top_k": self._value(request.audio_top_k, AUDIO_TOP_K),
                 "audio_repetition_penalty": self._value(
@@ -235,8 +226,7 @@ class MossVoiceGeneratorWorkerManager:
             )
         if not is_moss_codec_path_ready(MOSS_AUDIO_TOKENIZER_PATH):
             raise RuntimeError(
-                "MOSS 音频 tokenizer 目录不可用或不是 v1："
-                f"{MOSS_AUDIO_TOKENIZER_PATH}"
+                f"MOSS 音频 tokenizer 目录不可用或不是 v1：{MOSS_AUDIO_TOKENIZER_PATH}"
             )
 
         request_fd, request_path = tempfile.mkstemp(
@@ -247,7 +237,7 @@ class MossVoiceGeneratorWorkerManager:
         )
         os.close(request_fd)
         os.close(output_fd)
-        process: Optional[subprocess.Popen] = None
+        process: subprocess.Popen | None = None
         try:
             with open(request_path, "w", encoding="utf-8") as file:
                 json.dump(payload, file, ensure_ascii=False)
@@ -275,21 +265,18 @@ class MossVoiceGeneratorWorkerManager:
             )
             try:
                 stdout, stderr = process.communicate(timeout=REQUEST_TIMEOUT)
-            except subprocess.TimeoutExpired:
+            except subprocess.TimeoutExpired as exc:
                 terminate_process_group(process, "MOSS VoiceGenerator")
                 stdout, stderr = process.communicate()
                 raise RuntimeError(
                     f"MOSS VoiceGenerator worker 超时（>{REQUEST_TIMEOUT:.0f}s）"
-                )
+                ) from exc
             elapsed = time.perf_counter() - started
             if stdout.strip():
                 print(stdout.rstrip())
             if stderr.strip():
                 print(stderr.rstrip())
-            print(
-                f"[MOSS VoiceGenerator] worker 退出码={process.returncode}，"
-                f"耗时 {elapsed:.2f}s"
-            )
+            print(f"[MOSS VoiceGenerator] worker 退出码={process.returncode}，耗时 {elapsed:.2f}s")
             if process.returncode != 0:
                 raise RuntimeError(worker_error_excerpt(stderr or stdout))
             if not os.path.isfile(output_path) or os.path.getsize(output_path) == 0:
@@ -388,7 +375,7 @@ def moss_design(request: MossDesignRequest):
             except HTTPException:
                 raise
             except Exception as exc:
-                traceback.print_exc()
+                LOGGER.exception("MOSS VoiceGenerator request failed")
                 raise HTTPException(status_code=500, detail=str(exc)) from exc
             finally:
                 wait_after_cuda_release("after MOSS VoiceGenerator worker")

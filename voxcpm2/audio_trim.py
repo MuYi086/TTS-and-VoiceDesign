@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 LEADING_SILENCE_THRESHOLD_DB = -42.0
 LEADING_SILENCE_MIN_MS = 120
 LEADING_SILENCE_ANALYSIS_WINDOW_MS = 30
@@ -71,4 +70,3 @@ def trim_leading_silence(
     if trimmed_audio.size == 0:
         return audio, 0
     return trimmed_audio, trim_start
-

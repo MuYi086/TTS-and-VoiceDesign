@@ -23,7 +23,5 @@ class CloneSynthesisRequest(BaseModel):
     @classmethod
     def reject_style_prompt(cls, value: Any) -> Any:
         if isinstance(value, Mapping) and "style_prompt" in value:
-            raise ValueError(
-                "style_prompt 不适用于 /v1/qwen/clone；该接口仅用于参考音频克隆。"
-            )
+            raise ValueError("style_prompt 不适用于 /v1/qwen/clone；该接口仅用于参考音频克隆。")
         return value

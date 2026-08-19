@@ -18,7 +18,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-
 MAX_SECONDS = 380.0
 REQUIRED_MODEL_FILES = (
     "model_config.json",
@@ -37,7 +36,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def read_payload(path: str) -> dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as file:
+    with open(path, encoding="utf-8") as file:
         payload = json.load(file)
     if not isinstance(payload, dict):
         raise ValueError("Worker input must be a JSON object.")

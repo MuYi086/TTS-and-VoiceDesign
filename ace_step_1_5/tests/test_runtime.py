@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 import runtime
-
 
 FAKE_WAV = b"RIFF\x24\x00\x00\x00WAVEfmt "
 
@@ -48,8 +46,9 @@ class RuntimeTests(unittest.TestCase):
                 fake_command.extend(command)
                 return FakeProcess()
 
-            with patch.dict(runtime.os.environ, {"ACESTEP_PYTHON": "/tmp/ace-step-python"}), patch.object(
-                runtime.subprocess, "Popen", side_effect=fake_popen
+            with (
+                patch.dict(runtime.os.environ, {"ACESTEP_PYTHON": "/tmp/ace-step-python"}),
+                patch.object(runtime.subprocess, "Popen", side_effect=fake_popen),
             ):
                 result = runtime.run_local_worker({"prompt": "test"}, config)
 

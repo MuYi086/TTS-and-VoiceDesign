@@ -14,10 +14,11 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -111,7 +112,7 @@ def terminate_process_group(
     if not process_is_running(process):
         return
 
-    pid: Optional[int] = getattr(process, "pid", None)
+    pid: int | None = getattr(process, "pid", None)
     if pid is None:
         terminate = getattr(process, "terminate", None)
         if callable(terminate):
@@ -189,7 +190,7 @@ def run_local_worker(payload: dict[str, Any], config: WorkerConfig) -> bytes:
     )
     os.close(request_fd)
     os.close(output_fd)
-    process: Optional[subprocess.Popen[str]] = None
+    process: subprocess.Popen[str] | None = None
 
     try:
         with open(request_path, "w", encoding="utf-8") as file:
@@ -216,10 +217,10 @@ def run_local_worker(payload: dict[str, Any], config: WorkerConfig) -> bytes:
         )
         try:
             stdout, stderr = process.communicate(timeout=config.timeout)
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
             terminate_process_group(process, config.label)
             process.communicate()
-            raise RuntimeError(f"{config.label} worker 超时（>{config.timeout:.0f}s）")
+            raise RuntimeError(f"{config.label} worker 超时（>{config.timeout:.0f}s）") from exc
 
         if stdout.strip():
             print(stdout.rstrip())

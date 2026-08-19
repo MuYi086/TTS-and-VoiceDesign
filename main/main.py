@@ -8,9 +8,9 @@ health/upload/check utilities used by the surrounding WebUI.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
-import asyncio
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -18,10 +18,8 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
-from starlette.middleware.base import BaseHTTPMiddleware
-
 from gpu_runtime import cuda_status
-
+from starlette.middleware.base import BaseHTTPMiddleware
 
 MAIN_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = MAIN_DIR.parent
@@ -32,16 +30,12 @@ def expand_path(path: str) -> str:
 
 
 STORAGE_DIR = expand_path(os.getenv("STORAGE_DIR", str(PROJECT_DIR / "storage")))
-TIMBRE_STORAGE_DIR = expand_path(
-    os.getenv("TIMBRE_STORAGE_DIR", str(Path(STORAGE_DIR) / "timbre"))
-)
+TIMBRE_STORAGE_DIR = expand_path(os.getenv("TIMBRE_STORAGE_DIR", str(Path(STORAGE_DIR) / "timbre")))
 TIMBRE_REFERENCE_DIR = str(Path(TIMBRE_STORAGE_DIR) / ".references")
 SOUNDEFFECT_STORAGE_DIR = expand_path(
     os.getenv("SOUNDEFFECT_STORAGE_DIR", str(Path(STORAGE_DIR) / "soundEffect"))
 )
-CLONE_STORAGE_DIR = expand_path(
-    os.getenv("CLONE_STORAGE_DIR", str(Path(STORAGE_DIR) / "clone"))
-)
+CLONE_STORAGE_DIR = expand_path(os.getenv("CLONE_STORAGE_DIR", str(Path(STORAGE_DIR) / "clone")))
 PROMPTS_DIR = expand_path(os.getenv("PROMPTS_DIR", CLONE_STORAGE_DIR))
 RUNTIME_CACHE_DIR = expand_path(
     os.getenv("RUNTIME_CACHE_DIR", str(Path(STORAGE_DIR) / ".cache/runtime"))
@@ -122,13 +116,9 @@ def forward_mimo_design_request(body: bytes, accept: str) -> tuple[int, bytes, s
         content_type = exc.headers.get_content_type() if exc.headers else "application/json"
         return exc.code, response_body, content_type or "application/json"
     except urllib.error.URLError as exc:
-        raise RuntimeError(
-            f"无法连接 MiMo 独立服务 {MIMO_TTS_PROXY_URL}: {exc.reason}"
-        ) from exc
+        raise RuntimeError(f"无法连接 MiMo 独立服务 {MIMO_TTS_PROXY_URL}: {exc.reason}") from exc
     except TimeoutError as exc:
-        raise RuntimeError(
-            f"连接 MiMo 独立服务超时: {MIMO_TTS_PROXY_URL}"
-        ) from exc
+        raise RuntimeError(f"连接 MiMo 独立服务超时: {MIMO_TTS_PROXY_URL}") from exc
 
 
 def hash_filename(filename: str) -> str:

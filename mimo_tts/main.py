@@ -19,7 +19,7 @@ import urllib.error
 import urllib.request
 import wave
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Response
@@ -27,7 +27,6 @@ from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from audio_output import persist_audio_bytes
-
 
 PROJECT_DIR = Path(__file__).resolve().parent
 REPOSITORY_DIR = PROJECT_DIR.parent
@@ -38,9 +37,7 @@ def expand_path(path: str) -> str:
 
 
 STORAGE_DIR = expand_path(os.getenv("STORAGE_DIR", str(REPOSITORY_DIR / "storage")))
-TIMBRE_STORAGE_DIR = expand_path(
-    os.getenv("TIMBRE_STORAGE_DIR", str(Path(STORAGE_DIR) / "timbre"))
-)
+TIMBRE_STORAGE_DIR = expand_path(os.getenv("TIMBRE_STORAGE_DIR", str(Path(STORAGE_DIR) / "timbre")))
 RUNTIME_CACHE_DIR = expand_path(
     os.getenv("RUNTIME_CACHE_DIR", str(Path(STORAGE_DIR) / ".cache/runtime"))
 )
@@ -56,9 +53,7 @@ MIMO_OPTIMIZE_TEXT_PREVIEW = os.getenv("MIMO_OPTIMIZE_TEXT_PREVIEW", "0").lower(
     "yes",
     "on",
 }
-MIMO_MIN_REQUEST_INTERVAL_SECONDS = float(
-    os.getenv("MIMO_MIN_REQUEST_INTERVAL_SECONDS", "0")
-)
+MIMO_MIN_REQUEST_INTERVAL_SECONDS = float(os.getenv("MIMO_MIN_REQUEST_INTERVAL_SECONDS", "0"))
 MIMO_MAX_RETRIES = int(os.getenv("MIMO_MAX_RETRIES", "3"))
 MIMO_RETRY_BASE_SECONDS = float(os.getenv("MIMO_RETRY_BASE_SECONDS", "5"))
 MIMO_RETRY_MAX_SECONDS = float(os.getenv("MIMO_RETRY_MAX_SECONDS", "60"))
@@ -94,23 +89,23 @@ app.add_middleware(ForceCORS)
 class MimoDesignRequest(BaseModel):
     voice_description: str
     text: str = "这是生成的参考音频预览。"
-    save_as: Optional[str] = "designed_voice.wav"
-    api_key: Optional[str] = None
-    base_url: Optional[str] = None
-    model: Optional[str] = None
-    auth_header: Optional[str] = None
-    timeout: Optional[float] = None
-    max_chars_per_chunk: Optional[int] = None
-    pause_ms: Optional[int] = None
-    optimize_text_preview: Optional[bool] = None
-    min_request_interval_seconds: Optional[float] = None
-    max_retries: Optional[int] = None
-    retry_base_seconds: Optional[float] = None
-    retry_max_seconds: Optional[float] = None
+    save_as: str | None = "designed_voice.wav"
+    api_key: str | None = None
+    base_url: str | None = None
+    model: str | None = None
+    auth_header: str | None = None
+    timeout: float | None = None
+    max_chars_per_chunk: int | None = None
+    pause_ms: int | None = None
+    optimize_text_preview: bool | None = None
+    min_request_interval_seconds: float | None = None
+    max_retries: int | None = None
+    retry_base_seconds: float | None = None
+    retry_max_seconds: float | None = None
 
 
 class MiMoHTTPError(RuntimeError):
-    def __init__(self, status_code: int, body: str, retry_after: Optional[float] = None):
+    def __init__(self, status_code: int, body: str, retry_after: float | None = None):
         self.status_code = status_code
         self.body = body
         self.retry_after = retry_after
@@ -179,7 +174,7 @@ def split_voice_design_text(text: str, max_chars: int) -> list[str]:
     return chunks
 
 
-def resolve_mimo_api_key(api_key: Optional[str]) -> str:
+def resolve_mimo_api_key(api_key: str | None) -> str:
     resolved = api_key or os.getenv("MIMO_API_KEY")
     if not resolved:
         raise RuntimeError("MiMo API key 缺失。请设置 MIMO_API_KEY，或在请求中传入 api_key。")
@@ -213,7 +208,7 @@ def mimo_build_messages(voice_instruction: str, chunk: str) -> list[dict[str, st
     ]
 
 
-def mimo_parse_retry_after(value: Optional[str]) -> Optional[float]:
+def mimo_parse_retry_after(value: str | None) -> float | None:
     if not value:
         return None
     try:
@@ -244,9 +239,7 @@ def mimo_post_json(
     try:
         return json.loads(response_body)
     except json.JSONDecodeError as exc:
-        raise MiMoTransportError(
-            f"MiMo 返回了非 JSON 响应: {response_body[:500]}"
-        ) from exc
+        raise MiMoTransportError(f"MiMo 返回了非 JSON 响应: {response_body[:500]}") from exc
 
 
 def mimo_is_retryable_http_error(exc: MiMoHTTPError) -> bool:
@@ -283,7 +276,9 @@ def mimo_post_json_with_retry(
                 retryable = isinstance(exc, MiMoTransportError) or mimo_is_retryable_http_error(exc)
                 if not retryable or attempt > max_retries:
                     raise
-                delay = mimo_retry_delay_seconds(exc, attempt, retry_base_seconds, retry_max_seconds)
+                delay = mimo_retry_delay_seconds(
+                    exc, attempt, retry_base_seconds, retry_max_seconds
+                )
                 error_label = (
                     f"MiMo HTTP {exc.status_code}"
                     if isinstance(exc, MiMoHTTPError)
@@ -307,9 +302,7 @@ def mimo_extract_audio_bytes(response: dict[str, Any]) -> bytes:
     try:
         encoded = response["choices"][0]["message"]["audio"]["data"]
     except (KeyError, IndexError, TypeError) as exc:
-        raise RuntimeError(
-            f"MiMo response 缺少 choices[0].message.audio.data: {response}"
-        ) from exc
+        raise RuntimeError(f"MiMo response 缺少 choices[0].message.audio.data: {response}") from exc
     return base64.b64decode(encoded)
 
 
@@ -374,9 +367,7 @@ def run_mimo_voice_design(request_data: dict[str, Any]) -> bytes:
         else MIMO_MAX_CHARS_PER_CHUNK
     )
     pause_ms = int(
-        request_data.get("pause_ms")
-        if request_data.get("pause_ms") is not None
-        else MIMO_PAUSE_MS
+        request_data.get("pause_ms") if request_data.get("pause_ms") is not None else MIMO_PAUSE_MS
     )
     optimize_text_preview = (
         bool(request_data["optimize_text_preview"])

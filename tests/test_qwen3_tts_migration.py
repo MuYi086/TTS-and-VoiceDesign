@@ -10,7 +10,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-
 REPOSITORY_DIR = Path(__file__).resolve().parents[1]
 QWEN3_TTS_DIR = REPOSITORY_DIR / "qwen3_tts"
 TEST_RUNTIME = tempfile.TemporaryDirectory(prefix="qwen3-tts-tests-")

@@ -12,7 +12,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -22,7 +22,6 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from audio_output import persist_audio_bytes
 from runtime import UvWorkerConfig, cuda_status, run_uv_worker
-
 
 PROJECT_DIR = Path(__file__).resolve().parent
 REPOSITORY_DIR = PROJECT_DIR.parent
@@ -45,7 +44,7 @@ SOUNDEFFECT_STORAGE_DIR = expand_path(
 )
 
 
-def resolve_conda_executable() -> Optional[str]:
+def resolve_conda_executable() -> str | None:
     conda_exe = os.environ.get("CONDA_EXE")
     if conda_exe and expand_path(conda_exe).is_file():
         return str(expand_path(conda_exe))
@@ -74,12 +73,8 @@ def local_model_is_complete(model_dir: Path) -> bool:
 
 
 HF_MIRROR_DIR = expand_path(os.getenv("HF_MIRROR_DIR", "$HOME/hf-mirror"))
-RUNTIME_CACHE_DIR = expand_path(
-    os.getenv("RUNTIME_CACHE_DIR", str(STORAGE_DIR / ".cache/runtime"))
-)
-GPU_LOCK_FILE = expand_path(
-    os.getenv("GPU_LOCK_FILE", str(RUNTIME_CACHE_DIR / "gpu-runtime.lock"))
-)
+RUNTIME_CACHE_DIR = expand_path(os.getenv("RUNTIME_CACHE_DIR", str(STORAGE_DIR / ".cache/runtime")))
+GPU_LOCK_FILE = expand_path(os.getenv("GPU_LOCK_FILE", str(RUNTIME_CACHE_DIR / "gpu-runtime.lock")))
 API_HOST = os.getenv("MOSS_SOUNDEFFECT_HOST", os.getenv("HOST", "0.0.0.0"))
 API_PORT = int(os.getenv("MOSS_SOUNDEFFECT_PORT", os.getenv("PORT", "8312")))
 
@@ -97,25 +92,15 @@ MOSS_SOUNDEFFECT_CODE_PATH = expand_path(
 )
 MOSS_SOUNDEFFECT_DEVICE = os.getenv("MOSS_SOUNDEFFECT_DEVICE", "cuda")
 MOSS_SOUNDEFFECT_DTYPE = os.getenv("MOSS_SOUNDEFFECT_DTYPE", "bfloat16")
-MOSS_SOUNDEFFECT_DEFAULT_SECONDS = float(
-    os.getenv("MOSS_SOUNDEFFECT_DEFAULT_SECONDS", "10")
-)
-MOSS_SOUNDEFFECT_DEFAULT_STEPS = int(
-    os.getenv("MOSS_SOUNDEFFECT_DEFAULT_STEPS", "100")
-)
-MOSS_SOUNDEFFECT_DEFAULT_CFG_SCALE = float(
-    os.getenv("MOSS_SOUNDEFFECT_DEFAULT_CFG_SCALE", "4.0")
-)
+MOSS_SOUNDEFFECT_DEFAULT_SECONDS = float(os.getenv("MOSS_SOUNDEFFECT_DEFAULT_SECONDS", "10"))
+MOSS_SOUNDEFFECT_DEFAULT_STEPS = int(os.getenv("MOSS_SOUNDEFFECT_DEFAULT_STEPS", "100"))
+MOSS_SOUNDEFFECT_DEFAULT_CFG_SCALE = float(os.getenv("MOSS_SOUNDEFFECT_DEFAULT_CFG_SCALE", "4.0"))
 MOSS_SOUNDEFFECT_DEFAULT_SIGMA_SHIFT = float(
     os.getenv("MOSS_SOUNDEFFECT_DEFAULT_SIGMA_SHIFT", "5.0")
 )
 MOSS_SOUNDEFFECT_DEFAULT_SEED = int(os.getenv("MOSS_SOUNDEFFECT_DEFAULT_SEED", "0"))
-MOSS_SOUNDEFFECT_DISABLE_TORCHDYNAMO = env_bool(
-    "MOSS_SOUNDEFFECT_DISABLE_TORCHDYNAMO", True
-)
-MOSS_SOUNDEFFECT_REQUEST_TIMEOUT = float(
-    os.getenv("MOSS_SOUNDEFFECT_REQUEST_TIMEOUT", "600")
-)
+MOSS_SOUNDEFFECT_DISABLE_TORCHDYNAMO = env_bool("MOSS_SOUNDEFFECT_DISABLE_TORCHDYNAMO", True)
+MOSS_SOUNDEFFECT_REQUEST_TIMEOUT = float(os.getenv("MOSS_SOUNDEFFECT_REQUEST_TIMEOUT", "600"))
 LOCAL_FILES_ONLY = env_bool("LOCAL_FILES_ONLY", True)
 CUDA_RELEASE_DELAY = float(os.getenv("CUDA_RELEASE_DELAY", "2.0"))
 
@@ -154,8 +139,8 @@ class SoundEffectGenerateRequest(BaseModel):
     cfg_scale: float = Field(default=MOSS_SOUNDEFFECT_DEFAULT_CFG_SCALE, ge=0, le=100)
     sigma_shift: float = Field(default=MOSS_SOUNDEFFECT_DEFAULT_SIGMA_SHIFT, gt=0, le=100)
     seed: int = Field(default=MOSS_SOUNDEFFECT_DEFAULT_SEED)
-    device: Optional[str] = Field(default=None, min_length=1)
-    torch_dtype: Optional[str] = Field(default=None, min_length=1)
+    device: str | None = Field(default=None, min_length=1)
+    torch_dtype: str | None = Field(default=None, min_length=1)
 
     @field_validator("prompt")
     @classmethod
@@ -194,7 +179,7 @@ def assert_local_request(request: Request) -> None:
 class SoundEffectWorkerManager:
     def __init__(self) -> None:
         self.lock = threading.RLock()
-        self.last_error: Optional[str] = None
+        self.last_error: str | None = None
 
     def build_worker_payload(self, request: SoundEffectGenerateRequest) -> dict[str, Any]:
         return {

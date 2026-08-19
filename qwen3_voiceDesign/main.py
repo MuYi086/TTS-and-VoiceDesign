@@ -6,16 +6,16 @@ from __future__ import annotations
 import fcntl
 import importlib.util
 import json
+import logging
 import os
 import subprocess
 import sys
 import tempfile
 import threading
 import time
-import traceback
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -25,9 +25,12 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from audio_output import persist_audio_bytes
 from voicedesign_runtime import cuda_status, terminate_process_group
 
+LOGGER = logging.getLogger(__name__)
 
 PROJECT_DIR = Path(__file__).resolve().parent
 REPOSITORY_DIR = PROJECT_DIR.parent
+
+
 def env_bool(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -39,12 +42,8 @@ def expand_path(path: str) -> str:
     return os.path.abspath(os.path.expandvars(os.path.expanduser(path)))
 
 
-STORAGE_DIR = Path(
-    expand_path(os.getenv("STORAGE_DIR", str(REPOSITORY_DIR / "storage")))
-)
-TIMBRE_STORAGE_DIR = Path(
-    expand_path(os.getenv("TIMBRE_STORAGE_DIR", str(STORAGE_DIR / "timbre")))
-)
+STORAGE_DIR = Path(expand_path(os.getenv("STORAGE_DIR", str(REPOSITORY_DIR / "storage"))))
+TIMBRE_STORAGE_DIR = Path(expand_path(os.getenv("TIMBRE_STORAGE_DIR", str(STORAGE_DIR / "timbre"))))
 HF_MIRROR_DIR = expand_path(os.getenv("HF_MIRROR_DIR", "~/hf-mirror"))
 QWEN_VOICEDESIGN_MODEL_DIR = expand_path(
     os.getenv(
@@ -52,23 +51,22 @@ QWEN_VOICEDESIGN_MODEL_DIR = expand_path(
         os.path.join(HF_MIRROR_DIR, "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"),
     )
 )
-RUNTIME_CACHE_DIR = expand_path(
-    os.getenv("RUNTIME_CACHE_DIR", str(STORAGE_DIR / ".cache/runtime"))
-)
+RUNTIME_CACHE_DIR = expand_path(os.getenv("RUNTIME_CACHE_DIR", str(STORAGE_DIR / ".cache/runtime")))
 GPU_LOCK_FILE = expand_path(
     os.getenv("GPU_LOCK_FILE", os.path.join(RUNTIME_CACHE_DIR, "gpu-runtime.lock"))
 )
 WORKER_TMP_DIR = expand_path(
-    os.getenv("QWEN_VOICEDESIGN_WORKER_TMP_DIR", os.path.join(RUNTIME_CACHE_DIR, "qwen_voicedesign_worker"))
+    os.getenv(
+        "QWEN_VOICEDESIGN_WORKER_TMP_DIR",
+        os.path.join(RUNTIME_CACHE_DIR, "qwen_voicedesign_worker"),
+    )
 )
 WORKER_SCRIPT = str(PROJECT_DIR / "worker.py")
 LOCAL_FILES_ONLY = env_bool("LOCAL_FILES_ONLY", True)
 CUDA_RELEASE_DELAY = float(os.getenv("CUDA_RELEASE_DELAY", "2.0"))
 API_HOST = os.getenv("QWEN_VOICEDESIGN_HOST", os.getenv("HOST", "0.0.0.0"))
 API_PORT = int(os.getenv("QWEN_VOICEDESIGN_PORT", os.getenv("PORT", "8301")))
-REQUEST_TIMEOUT = float(
-    os.getenv("QWEN_VOICEDESIGN_REQUEST_TIMEOUT", "900")
-)
+REQUEST_TIMEOUT = float(os.getenv("QWEN_VOICEDESIGN_REQUEST_TIMEOUT", "900"))
 DEVICE_MAP = os.getenv("QWEN_VOICEDESIGN_DEVICE_MAP", "cuda:0")
 DTYPE = os.getenv("QWEN_VOICEDESIGN_DTYPE", "auto")
 ATTN_IMPLEMENTATION = os.getenv(
@@ -128,16 +126,16 @@ class QwenDesignRequest(BaseModel):
 
     voice_description: str
     text: str = "这是生成的参考音频预览。"
-    save_as: Optional[str] = "designed_voice.wav"
-    language: Optional[str] = "Chinese"
-    max_chars_per_chunk: Optional[int] = 0
-    pause_ms: Optional[int] = 250
-    max_new_tokens: Optional[int] = 2048
-    top_p: Optional[float] = None
-    temperature: Optional[float] = None
-    dtype: Optional[str] = "auto"
-    attn_implementation: Optional[str] = "auto"
-    device_map: Optional[str] = "cuda:0"
+    save_as: str | None = "designed_voice.wav"
+    language: str | None = "Chinese"
+    max_chars_per_chunk: int | None = 0
+    pause_ms: int | None = 250
+    max_new_tokens: int | None = 2048
+    top_p: float | None = None
+    temperature: float | None = None
+    dtype: str | None = "auto"
+    attn_implementation: str | None = "auto"
+    device_map: str | None = "cuda:0"
 
 
 def module_available(module_name: str) -> bool:
@@ -178,7 +176,7 @@ def worker_error_excerpt(output: str) -> str:
 class QwenVoiceDesignWorkerManager:
     def __init__(self):
         self.lock = threading.RLock()
-        self.last_error: Optional[str] = None
+        self.last_error: str | None = None
 
     @staticmethod
     def _value(value: Any, fallback: Any) -> Any:
@@ -191,11 +189,15 @@ class QwenVoiceDesignWorkerManager:
                 "model_path": QWEN_VOICEDESIGN_MODEL_DIR,
                 "local_files_only": LOCAL_FILES_ONLY,
                 "language": self._value(request.language, LANGUAGE),
-                "max_chars_per_chunk": self._value(request.max_chars_per_chunk, MAX_CHARS_PER_CHUNK),
+                "max_chars_per_chunk": self._value(
+                    request.max_chars_per_chunk, MAX_CHARS_PER_CHUNK
+                ),
                 "pause_ms": self._value(request.pause_ms, PAUSE_MS),
                 "max_new_tokens": self._value(request.max_new_tokens, MAX_NEW_TOKENS),
                 "dtype": self._value(request.dtype, DTYPE),
-                "attn_implementation": self._value(request.attn_implementation, ATTN_IMPLEMENTATION),
+                "attn_implementation": self._value(
+                    request.attn_implementation, ATTN_IMPLEMENTATION
+                ),
                 "device_map": self._value(request.device_map, DEVICE_MAP),
             }
         )
@@ -208,7 +210,9 @@ class QwenVoiceDesignWorkerManager:
         if not os.path.isfile(WORKER_SCRIPT):
             raise RuntimeError(f"Qwen3-TTS VoiceDesign worker 脚本不存在: {WORKER_SCRIPT}")
         if not os.path.isdir(QWEN_VOICEDESIGN_MODEL_DIR):
-            raise RuntimeError(f"Qwen3-TTS VoiceDesign 模型目录不存在: {QWEN_VOICEDESIGN_MODEL_DIR}")
+            raise RuntimeError(
+                f"Qwen3-TTS VoiceDesign 模型目录不存在: {QWEN_VOICEDESIGN_MODEL_DIR}"
+            )
 
         request_fd, request_path = tempfile.mkstemp(
             dir=WORKER_TMP_DIR,
@@ -222,7 +226,7 @@ class QwenVoiceDesignWorkerManager:
         )
         os.close(request_fd)
         os.close(output_fd)
-        process: Optional[subprocess.Popen] = None
+        process: subprocess.Popen | None = None
         try:
             with open(request_path, "w", encoding="utf-8") as file:
                 json.dump(payload, file, ensure_ascii=False)
@@ -251,12 +255,12 @@ class QwenVoiceDesignWorkerManager:
             )
             try:
                 stdout, stderr = process.communicate(timeout=REQUEST_TIMEOUT)
-            except subprocess.TimeoutExpired:
+            except subprocess.TimeoutExpired as exc:
                 terminate_process_group(process, "Qwen3-TTS VoiceDesign")
                 stdout, stderr = process.communicate()
                 raise RuntimeError(
                     f"Qwen3-TTS VoiceDesign worker 超时（>{REQUEST_TIMEOUT:.0f}s）"
-                )
+                ) from exc
 
             elapsed = time.perf_counter() - started
             if stdout.strip():
@@ -264,8 +268,7 @@ class QwenVoiceDesignWorkerManager:
             if stderr.strip():
                 print(stderr.rstrip())
             print(
-                f"[Qwen3-TTS VoiceDesign] worker 退出码={process.returncode}，"
-                f"耗时 {elapsed:.2f}s"
+                f"[Qwen3-TTS VoiceDesign] worker 退出码={process.returncode}，耗时 {elapsed:.2f}s"
             )
             if process.returncode != 0:
                 raise RuntimeError(worker_error_excerpt(stderr or stdout))
@@ -362,7 +365,7 @@ def qwen_design(request: QwenDesignRequest):
             except HTTPException:
                 raise
             except Exception as exc:
-                traceback.print_exc()
+                LOGGER.exception("Qwen3 VoiceDesign request failed")
                 raise HTTPException(status_code=500, detail=str(exc)) from exc
             finally:
                 wait_after_cuda_release("after Qwen VoiceDesign worker")

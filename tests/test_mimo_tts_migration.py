@@ -10,7 +10,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-
 REPOSITORY_DIR = Path(__file__).resolve().parents[1]
 SERVICE_DIR = REPOSITORY_DIR / "mimo_tts"
 TEST_RUNTIME = tempfile.TemporaryDirectory(prefix="mimo-tts-tests-")
@@ -84,9 +83,7 @@ class MimoTtsMigrationTests(unittest.TestCase):
         self.assertEqual(saved_files[-1].read_bytes(), wav)
 
     def test_mimo_logic_is_not_kept_in_control_plane(self) -> None:
-        control_plane_source = (REPOSITORY_DIR / "main/main.py").read_text(
-            encoding="utf-8"
-        )
+        control_plane_source = (REPOSITORY_DIR / "main/main.py").read_text(encoding="utf-8")
         self.assertIn("/v1/mimo/timbre", control_plane_source)
         self.assertNotIn("run_mimo_voice_design", control_plane_source)
         self.assertIn("forward_mimo_design_request", control_plane_source)
@@ -94,11 +91,16 @@ class MimoTtsMigrationTests(unittest.TestCase):
 
     def test_start_script_launches_mimo_and_direct_step_services(self) -> None:
         start_script = (REPOSITORY_DIR / "start.sh").read_text(encoding="utf-8")
-        self.assertIn('MIMO_TTS_PROJECT_DIR="${MIMO_TTS_PROJECT_DIR:-$PROJECT_DIR/mimo_tts}"', start_script)
+        self.assertIn(
+            'MIMO_TTS_PROJECT_DIR="${MIMO_TTS_PROJECT_DIR:-$PROJECT_DIR/mimo_tts}"', start_script
+        )
         self.assertIn('uv run --no-sync --project "$MIMO_TTS_PROJECT_DIR"', start_script)
         self.assertIn('python "$MIMO_TTS_PROJECT_DIR/main.py"', start_script)
         self.assertIn("MIMO_TTS_PORT:-8303", start_script)
-        self.assertIn('MIMO_TTS_PROXY_URL="${MIMO_TTS_PROXY_URL:-http://127.0.0.1:$MIMO_TTS_PORT/v1/mimo/timbre}"', start_script)
+        self.assertIn(
+            'MIMO_TTS_PROXY_URL="${MIMO_TTS_PROXY_URL:-http://127.0.0.1:$MIMO_TTS_PORT/v1/mimo/timbre}"',
+            start_script,
+        )
         self.assertIn("$STEP_AUDIO_EDITX_PORT/v1/stepAudioEditx/edit", start_script)
         for port_default in (
             "PORT:-8300",

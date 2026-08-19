@@ -29,6 +29,11 @@ dependencies = [
     "pynini==2.1.7",
 ]
 
+[dependency-groups]
+dev = [
+    "ruff>=0.15.9",
+]
+
 [tool.uv]
 package = false
 index-strategy = "first-index"
@@ -36,8 +41,8 @@ concurrent-downloads = 20
 concurrent-installs = 8
 
 [[tool.uv.index]]
-name = "pypi-tuna"
-url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+name = "pypi"
+url = "https://pypi.org/simple"
 default = true
 
 [[tool.uv.index]]
@@ -50,3 +55,16 @@ explicit = true
 dots-tts = { git = "https://github.com/rednote-hilab/dots.tts.git", rev = "4947d364baa5afb2daf1feb00a247b5f23f97878" }
 torch = { index = "pytorch-cu128-aliyun" }
 torchaudio = { index = "pytorch-cu128-aliyun" }
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["B008", "E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"

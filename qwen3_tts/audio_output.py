@@ -7,10 +7,8 @@ import shutil
 import tempfile
 import time
 from pathlib import Path
-from typing import Union
 
-
-PathLike = Union[str, os.PathLike[str]]
+PathLike = str | os.PathLike[str]
 
 
 def persist_audio_bytes(audio_bytes: bytes, model_prefix: str, output_dir: PathLike) -> Path:

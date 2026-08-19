@@ -24,9 +24,7 @@ from pathlib import Path
 LOCAL_MODEL_DIR = Path("/home/muyi086/hf-mirror/OpenMOSS-Team/MOSS-SoundEffect-v2.0")
 MODEL_ID = os.environ.get("MOSS_SOUNDEFFECT_MODEL_DIR", str(LOCAL_MODEL_DIR))
 LOCAL_CODE_DIR = Path.home() / "tts-depency/MOSS-TTS"
-CODE_DIR = Path(
-    os.environ.get("MOSS_SOUNDEFFECT_CODE_PATH", str(LOCAL_CODE_DIR))
-).expanduser()
+CODE_DIR = Path(os.environ.get("MOSS_SOUNDEFFECT_CODE_PATH", str(LOCAL_CODE_DIR))).expanduser()
 PROMPT = "门吱吱作响的声音，刺耳急促"
 SECONDS = 10.0
 NUM_INFERENCE_STEPS = 100
@@ -59,9 +57,7 @@ def validate_configuration() -> None:
             f"Local MOSS-SoundEffect v2.0 model directory does not exist: {model_path}"
         )
     if not (CODE_DIR / "moss_soundeffect_v2" / "__init__.py").is_file():
-        raise FileNotFoundError(
-            f"Local MOSS-TTS source checkout is incomplete: {CODE_DIR}"
-        )
+        raise FileNotFoundError(f"Local MOSS-TTS source checkout is incomplete: {CODE_DIR}")
 
 
 def main() -> None:

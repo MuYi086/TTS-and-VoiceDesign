@@ -12,7 +12,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-
 REPOSITORY_DIR = Path(__file__).resolve().parents[1]
 SERVICE_DIR = REPOSITORY_DIR / "LongCat_AudioDiT_3.5B_bf16"
 TEST_RUNTIME = tempfile.TemporaryDirectory(prefix="longcat-audiodit-tests-")
@@ -56,9 +55,7 @@ class LongCatAudioDitMigrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.filename = "migration-test.wav"
         self.prompt_text = "这是一条准确的参考文本。"
-        (PROMPTS_DIR / main.hash_filename(self.filename)).write_bytes(
-            b"RIFF" + b"\0" * 40
-        )
+        (PROMPTS_DIR / main.hash_filename(self.filename)).write_bytes(b"RIFF" + b"\0" * 40)
         main.save_prompt_text_sidecar(self.filename, self.prompt_text)
 
     def test_routes_health_uv_runtime_and_flash_policy(self) -> None:
@@ -80,9 +77,7 @@ class LongCatAudioDitMigrationTests(unittest.TestCase):
         }
         self.assertTrue(expected_routes.issubset(actual_routes))
 
-        with patch.object(
-            main, "cuda_status", return_value={"available": False, "source": "test"}
-        ):
+        with patch.object(main, "cuda_status", return_value={"available": False, "source": "test"}):
             response = TestClient(main.app).get("/v1/health")
         self.assertEqual(response.status_code, 200)
         payload = response.json()
@@ -111,9 +106,7 @@ class LongCatAudioDitMigrationTests(unittest.TestCase):
         self.assertEqual(response.json()["sha256"], hashlib.sha256(content).hexdigest())
         self.assertEqual(response.json()["size_bytes"], len(content))
 
-        check = TestClient(main.app).get(
-            "/v1/check/audio", params={"file_name": filename}
-        )
+        check = TestClient(main.app).get("/v1/check/audio", params={"file_name": filename})
         self.assertEqual(check.status_code, 200)
         self.assertEqual(check.json()["sha256"], hashlib.sha256(content).hexdigest())
         self.assertEqual(check.json()["size_bytes"], len(content))

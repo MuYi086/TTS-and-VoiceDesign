@@ -10,7 +10,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-
 REPOSITORY_DIR = Path(__file__).resolve().parents[1]
 SERVICE_DIR = REPOSITORY_DIR / "moss_voiceGenerator"
 TEST_RUNTIME = tempfile.TemporaryDirectory(prefix="moss-voicegenerator-tests-")

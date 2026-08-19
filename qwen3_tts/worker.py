@@ -23,7 +23,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_request(path: str) -> dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -87,7 +87,9 @@ def split_long_sentence(text: str, max_chars: int) -> list[str]:
             if current:
                 chunks.append(current)
                 current = ""
-            chunks.extend(part[index : index + max_chars] for index in range(0, len(part), max_chars))
+            chunks.extend(
+                part[index : index + max_chars] for index in range(0, len(part), max_chars)
+            )
             continue
         candidate = current + part
         if current and len(candidate) > max_chars:
@@ -231,7 +233,9 @@ def prepare_environment(request: dict[str, Any]) -> None:
     hf_mirror_dir = str(request.get("hf_mirror_dir") or Path.home() / "hf-mirror")
     local_files_only = bool(request.get("local_files_only", True))
 
-    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:128")
+    os.environ.setdefault(
+        "PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:128"
+    )
     os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
     os.environ.setdefault("HF_HOME", hf_mirror_dir)
     os.environ.setdefault("HF_MODULES_CACHE", os.path.join(runtime_cache_dir, "hf_modules"))
@@ -262,6 +266,7 @@ def should_fallback_to_sidecar(exc: Exception) -> bool:
 def load_qwen3_model_class(qwen_libs_path: str | None):
     try:
         from qwen_tts import Qwen3TTSModel
+
         return Qwen3TTSModel
     except Exception as exc:
         direct_exc = exc
@@ -351,21 +356,31 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
     max_chars_per_chunk = int(request.get("max_chars_per_chunk") or 120)
     pause_ms = int(request.get("pause_ms") or 250)
     trim_leading_silence_enabled = bool(request.get("trim_leading_silence", True))
-    trim_leading_silence_threshold_db = float(
-        request["trim_leading_silence_threshold_db"]
-    ) if request.get("trim_leading_silence_threshold_db") is not None else -42.0
-    trim_leading_silence_min_ms = int(
-        request["trim_leading_silence_min_ms"]
-    ) if request.get("trim_leading_silence_min_ms") is not None else 120
-    trim_leading_silence_analysis_window_ms = int(
-        request["trim_leading_silence_analysis_window_ms"]
-    ) if request.get("trim_leading_silence_analysis_window_ms") is not None else 30
-    trim_leading_silence_pre_roll_ms = int(
-        request["trim_leading_silence_pre_roll_ms"]
-    ) if request.get("trim_leading_silence_pre_roll_ms") is not None else 40
-    trim_leading_silence_max_ms = int(
-        request["trim_leading_silence_max_ms"]
-    ) if request.get("trim_leading_silence_max_ms") is not None else 8000
+    trim_leading_silence_threshold_db = (
+        float(request["trim_leading_silence_threshold_db"])
+        if request.get("trim_leading_silence_threshold_db") is not None
+        else -42.0
+    )
+    trim_leading_silence_min_ms = (
+        int(request["trim_leading_silence_min_ms"])
+        if request.get("trim_leading_silence_min_ms") is not None
+        else 120
+    )
+    trim_leading_silence_analysis_window_ms = (
+        int(request["trim_leading_silence_analysis_window_ms"])
+        if request.get("trim_leading_silence_analysis_window_ms") is not None
+        else 30
+    )
+    trim_leading_silence_pre_roll_ms = (
+        int(request["trim_leading_silence_pre_roll_ms"])
+        if request.get("trim_leading_silence_pre_roll_ms") is not None
+        else 40
+    )
+    trim_leading_silence_max_ms = (
+        int(request["trim_leading_silence_max_ms"])
+        if request.get("trim_leading_silence_max_ms") is not None
+        else 8000
+    )
     chunks = split_text(text, max_chars_per_chunk)
 
     model = None
@@ -374,9 +389,13 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
     try:
         print(f"[Qwen3-TTS worker] 模型目录: {model_path}")
         print(f"[Qwen3-TTS worker] 参考音频: {ref_audio_path}")
-        print(f"[Qwen3-TTS worker] 参考文本: {'provided' if ref_text else 'not provided; using x-vector-only'}")
+        print(
+            f"[Qwen3-TTS worker] 参考文本: {'provided' if ref_text else 'not provided; using x-vector-only'}"
+        )
         print(f"[Qwen3-TTS worker] 文本长度: {len(text)} 字, chunks={len(chunks)}")
-        print(f"[Qwen3-TTS worker] device_map={device_map}, dtype={dtype}, attn={attn_implementation}")
+        print(
+            f"[Qwen3-TTS worker] device_map={device_map}, dtype={dtype}, attn={attn_implementation}"
+        )
         print(
             f"[Qwen3-TTS worker] trim_leading_silence={trim_leading_silence_enabled}, "
             f"threshold_db={trim_leading_silence_threshold_db}, "
@@ -438,7 +457,9 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
             np=np,
         )
         if trimmed_samples > 0:
-            print(f"[Qwen3-TTS worker] 最终音频裁掉前导静音 {trimmed_samples / int(sample_rate):.2f}s")
+            print(
+                f"[Qwen3-TTS worker] 最终音频裁掉前导静音 {trimmed_samples / int(sample_rate):.2f}s"
+            )
         output_wav.parent.mkdir(parents=True, exist_ok=True)
         sf.write(str(output_wav), waveform, int(sample_rate))
         elapsed = time.perf_counter() - started
@@ -474,4 +495,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

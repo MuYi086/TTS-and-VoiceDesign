@@ -10,7 +10,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-
 REPOSITORY_DIR = Path(__file__).resolve().parents[1]
 SERVICE_DIR = REPOSITORY_DIR / "moss_soundEffect"
 TEST_RUNTIME = tempfile.TemporaryDirectory(prefix="moss-soundeffect-tests-")
@@ -84,9 +83,7 @@ class MossSoundEffectMigrationTests(unittest.TestCase):
         }
         self.assertTrue(expected_routes.issubset(actual_routes))
 
-        with patch.object(
-            main, "cuda_status", return_value={"available": False, "source": "test"}
-        ):
+        with patch.object(main, "cuda_status", return_value={"available": False, "source": "test"}):
             response = TestClient(main.app).get("/v1/health")
 
         self.assertEqual(response.status_code, 200)
@@ -100,9 +97,7 @@ class MossSoundEffectMigrationTests(unittest.TestCase):
         self.assertTrue(payload["available"]["source_repo"])
         self.assertTrue(payload["available"]["moss_package"])
         self.assertFalse(payload["available"]["flash_attn"])
-        self.assertTrue(
-            payload["runtime"]["flash_attention_policy"].startswith("not required")
-        )
+        self.assertTrue(payload["runtime"]["flash_attention_policy"].startswith("not required"))
 
     def test_request_validation_and_payload_preserve_legacy_fields(self) -> None:
         request = main.SoundEffectGenerateRequest(

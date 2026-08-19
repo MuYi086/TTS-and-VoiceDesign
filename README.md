@@ -315,6 +315,9 @@ MOSS 的真实 CUDA/权重 smoke test 是独立流程：
 bash soundEffect/run_moss_soundeffect_v2.sh
 ```
 
+所有模型服务的 uv、Ruff、日志和无模型测试规范见
+[`docs/python-engineering.md`](docs/python-engineering.md)。
+
 修改请求契约、路由、存储解析或 worker 生命周期时，应同步添加/更新对应的 no-model
 测试，并在 README 中更新兼容字段。不要提交模型权重、上传音频、生成 WAV、缓存、虚拟
 环境、密钥或机器专用绝对路径。

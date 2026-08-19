@@ -27,7 +27,7 @@ def parse_args():
 
 
 def load_request(path: str) -> dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as file:
+    with open(path, encoding="utf-8") as file:
         return json.load(file)
 
 
@@ -50,7 +50,9 @@ def split_long_sentence(text: str, max_chars: int) -> list[str]:
             if current:
                 chunks.append(current)
                 current = ""
-            chunks.extend(part[index : index + max_chars] for index in range(0, len(part), max_chars))
+            chunks.extend(
+                part[index : index + max_chars] for index in range(0, len(part), max_chars)
+            )
             continue
         candidate = current + part
         if current and len(candidate) > max_chars:
@@ -103,7 +105,10 @@ def resolve_attention(torch, requested: str, dtype: Any) -> str:
     value = str(requested or "auto")
     if value != "auto":
         return value
-    if importlib.util.find_spec("flash_attn") is not None and dtype in {torch.float16, torch.bfloat16}:
+    if importlib.util.find_spec("flash_attn") is not None and dtype in {
+        torch.float16,
+        torch.bfloat16,
+    }:
         major, _minor = torch.cuda.get_device_capability()
         if major >= 8:
             return "flash_attention_2"

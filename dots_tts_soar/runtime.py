@@ -15,7 +15,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -31,7 +31,9 @@ class UvWorkerConfig:
     file_prefix: str
 
 
-def persist_audio_bytes(audio_bytes: bytes, model_prefix: str, output_dir: str | os.PathLike[str]) -> Path:
+def persist_audio_bytes(
+    audio_bytes: bytes, model_prefix: str, output_dir: str | os.PathLike[str]
+) -> Path:
     """Atomically persist a successful WAV response for local inspection."""
     if not audio_bytes:
         raise ValueError("cannot persist empty audio")
@@ -129,7 +131,7 @@ def terminate_process_group(
     if not process_is_running(process):
         return
 
-    pid: Optional[int] = getattr(process, "pid", None)
+    pid: int | None = getattr(process, "pid", None)
     if pid is None:
         terminate = getattr(process, "terminate", None)
         if callable(terminate):
@@ -215,7 +217,7 @@ def run_uv_worker(payload: dict[str, Any], config: UvWorkerConfig) -> bytes:
     )
     os.close(request_fd)
     os.close(output_fd)
-    process: Optional[subprocess.Popen] = None
+    process: subprocess.Popen | None = None
 
     try:
         with open(request_path, "w", encoding="utf-8") as request_file:
@@ -245,10 +247,10 @@ def run_uv_worker(payload: dict[str, Any], config: UvWorkerConfig) -> bytes:
         )
         try:
             stdout, stderr = process.communicate(timeout=config.timeout)
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
             terminate_process_group(process, config.label)
             process.communicate()
-            raise RuntimeError(f"{config.label} worker 超时（>{config.timeout:.0f}s）")
+            raise RuntimeError(f"{config.label} worker 超时（>{config.timeout:.0f}s）") from exc
 
         if stdout.strip():
             print(stdout.rstrip())

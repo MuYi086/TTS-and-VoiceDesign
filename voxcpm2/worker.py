@@ -27,7 +27,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_request(path: str) -> dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -91,7 +91,9 @@ def split_long_sentence(text: str, max_chars: int) -> list[str]:
             if current:
                 chunks.append(current)
                 current = ""
-            chunks.extend(part[index : index + max_chars] for index in range(0, len(part), max_chars))
+            chunks.extend(
+                part[index : index + max_chars] for index in range(0, len(part), max_chars)
+            )
             continue
         candidate = current + part
         if current and len(candidate) > max_chars:
@@ -251,8 +253,12 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
             chunks = split_text(text, max_chars_per_chunk)
             print(f"[VoxCPM2 worker] 参考音频: {ref_audio_path}")
             print(f"[VoxCPM2 worker] 克隆模式: {request.get('clone_mode') or 'legacy'}")
-            print(f"[VoxCPM2 worker] 参考文本: {'provided' if prompt_text else 'not provided; reference-only cloning mode'}")
-            print(f"[VoxCPM2 worker] 控制指令: {'provided' if helper_args.control_instruction else 'not provided'}")
+            print(
+                f"[VoxCPM2 worker] 参考文本: {'provided' if prompt_text else 'not provided; reference-only cloning mode'}"
+            )
+            print(
+                f"[VoxCPM2 worker] 控制指令: {'provided' if helper_args.control_instruction else 'not provided'}"
+            )
             print(f"[VoxCPM2 worker] 非语言标签: {helper_args.nonverbal_tags or 'none'}")
             print(f"[VoxCPM2 worker] 文本长度: {len(text)} 字, chunks={len(chunks)}")
             for index, chunk in enumerate(chunks, start=1):
@@ -304,4 +310,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

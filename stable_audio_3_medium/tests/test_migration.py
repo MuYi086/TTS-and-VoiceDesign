@@ -27,7 +27,6 @@ import main
 import runtime
 import worker
 
-
 FAKE_WAV = b"RIFF\x24\x00\x00\x00WAVEfmt "
 
 
@@ -79,11 +78,11 @@ class StableAudioApiContractTests(unittest.TestCase):
         self.assertEqual(response.content, FAKE_WAV)
         self.assertEqual(run_worker.call_count, 1)
         self.assertEqual(run_worker.call_args.args[0]["prompt"], "a short glass shatter")
-        saved_files = list(main.STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR.glob("stable_audio_3_medium_*.wav"))
-        self.assertEqual(len(saved_files), 1)
-        self.assertTrue(
-            all(path.parent == main.SOUNDEFFECT_STORAGE_DIR for path in saved_files)
+        saved_files = list(
+            main.STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR.glob("stable_audio_3_medium_*.wav")
         )
+        self.assertEqual(len(saved_files), 1)
+        self.assertTrue(all(path.parent == main.SOUNDEFFECT_STORAGE_DIR for path in saved_files))
 
     def test_internal_unload_route_is_kept(self):
         with (

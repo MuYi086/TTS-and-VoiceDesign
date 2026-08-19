@@ -33,7 +33,7 @@ def parse_args():
 
 
 def load_request(path: str) -> dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as file:
+    with open(path, encoding="utf-8") as file:
         return json.load(file)
 
 
@@ -60,7 +60,9 @@ def split_text(text: str, max_chars: int) -> list[str]:
         sentence = sentence.strip()
         if not sentence:
             continue
-        pieces = [sentence[index : index + max_chars] for index in range(0, len(sentence), max_chars)]
+        pieces = [
+            sentence[index : index + max_chars] for index in range(0, len(sentence), max_chars)
+        ]
         for piece in pieces:
             if current and len(current) + len(piece) > max_chars:
                 chunks.append(current)
@@ -85,7 +87,10 @@ def resolve_attention(torch, requested: str, dtype: Any) -> str:
     value = str(requested or "auto")
     if value != "auto":
         return value
-    if importlib.util.find_spec("flash_attn") is not None and dtype in {torch.float16, torch.bfloat16}:
+    if importlib.util.find_spec("flash_attn") is not None and dtype in {
+        torch.float16,
+        torch.bfloat16,
+    }:
         major, _minor = torch.cuda.get_device_capability()
         if major >= 8:
             return "flash_attention_2"
@@ -190,7 +195,9 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
                     audio_repetition_penalty=float(request.get("audio_repetition_penalty") or 1.1),
                 )
             waveforms.append(decode_message(processor, outputs))
-        waveform = join_waveforms(waveforms, sample_rate, int(request.get("pause_ms") or 250), torch)
+        waveform = join_waveforms(
+            waveforms, sample_rate, int(request.get("pause_ms") or 250), torch
+        )
         output_wav.parent.mkdir(parents=True, exist_ok=True)
         sf.write(str(output_wav), waveform, sample_rate)
     finally:

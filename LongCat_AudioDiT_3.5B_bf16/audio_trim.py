@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 LEADING_SILENCE_THRESHOLD_DB = -42.0
 LEADING_SILENCE_MIN_MS = 120
 LEADING_SILENCE_ANALYSIS_WINDOW_MS = 30
@@ -41,9 +40,7 @@ def trim_leading_silence(
     threshold = float(10 ** (threshold_db / 20.0))
     power = np.square(analysis_audio, dtype=np.float32)
     kernel = np.ones(analysis_window, dtype=np.float32) / analysis_window
-    rms = np.sqrt(np.convolve(power, kernel, mode="same")).astype(
-        np.float32, copy=False
-    )
+    rms = np.sqrt(np.convolve(power, kernel, mode="same")).astype(np.float32, copy=False)
     active_indices = np.flatnonzero(rms >= threshold)
     if active_indices.size == 0:
         return audio, 0
@@ -66,4 +63,3 @@ def trim_leading_silence(
     if trimmed_audio.size == 0:
         return audio, 0
     return trimmed_audio, trim_start
-

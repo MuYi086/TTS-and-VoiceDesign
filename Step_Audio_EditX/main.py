@@ -12,15 +12,15 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import logging
 import os
 import subprocess
 import sys
 import tempfile
 import threading
 import time
-import traceback
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -38,17 +38,14 @@ from step_audio_editx_runtime import (
     wait_after_cuda_release,
 )
 
+LOGGER = logging.getLogger(__name__)
 
 PROJECT_DIR = Path(__file__).resolve().parent
 REPOSITORY_DIR = PROJECT_DIR.parent
 HF_MIRROR_DIR = expand_path(os.getenv("HF_MIRROR_DIR", "~/hf-mirror"))
 STORAGE_DIR = expand_path(os.getenv("STORAGE_DIR", str(REPOSITORY_DIR / "storage")))
-CLONE_STORAGE_DIR = expand_path(
-    os.getenv("CLONE_STORAGE_DIR", str(Path(STORAGE_DIR) / "clone"))
-)
-PROMPTS_DIR = expand_path(
-    os.getenv("PROMPTS_DIR", CLONE_STORAGE_DIR)
-)
+CLONE_STORAGE_DIR = expand_path(os.getenv("CLONE_STORAGE_DIR", str(Path(STORAGE_DIR) / "clone")))
+PROMPTS_DIR = expand_path(os.getenv("PROMPTS_DIR", CLONE_STORAGE_DIR))
 RUNTIME_CACHE_DIR = expand_path(
     os.getenv("RUNTIME_CACHE_DIR", str(Path(STORAGE_DIR) / ".cache/runtime"))
 )
@@ -79,24 +76,18 @@ TOKENIZER_PATH = expand_path(
         os.path.join(HF_MIRROR_DIR, "stepfun-ai/Step-Audio-Tokenizer"),
     )
 )
-CODE_PATH = expand_path(
-    os.getenv("STEP_AUDIO_EDITX_CODE_PATH", "~/tts-depency/Step-Audio-EditX")
-)
+CODE_PATH = expand_path(os.getenv("STEP_AUDIO_EDITX_CODE_PATH", "~/tts-depency/Step-Audio-EditX"))
 STEP_AUDIO_EDITX_OUTPUT_DIR = expand_path(
     os.getenv("STEP_AUDIO_EDITX_OUTPUT_DIR", CLONE_STORAGE_DIR)
 )
 DTYPE = os.getenv("STEP_AUDIO_EDITX_DTYPE", "bfloat16")
 MAX_MODEL_LEN = int(os.getenv("STEP_AUDIO_EDITX_MAX_MODEL_LEN", "3072"))
-GPU_MEMORY_UTILIZATION = float(
-    os.getenv("STEP_AUDIO_EDITX_GPU_MEMORY_UTILIZATION", "0.5")
-)
+GPU_MEMORY_UTILIZATION = float(os.getenv("STEP_AUDIO_EDITX_GPU_MEMORY_UTILIZATION", "0.5"))
 MAX_NUM_SEQS = int(os.getenv("STEP_AUDIO_EDITX_MAX_NUM_SEQS", "1"))
 COSYVOICE_DTYPE = os.getenv("STEP_AUDIO_EDITX_COSYVOICE_DTYPE", "bfloat16")
 ENFORCE_EAGER = env_bool("STEP_AUDIO_EDITX_ENFORCE_EAGER", True)
 COSYVOICE_CUDA_GRAPH = env_bool("STEP_AUDIO_EDITX_COSYVOICE_CUDA_GRAPH", False)
-EDIT_TYPES = frozenset(
-    {"emotion", "style", "paralinguistic", "denoise", "vad", "speed"}
-)
+EDIT_TYPES = frozenset({"emotion", "style", "paralinguistic", "denoise", "vad", "speed"})
 
 for directory in (PROMPTS_DIR, WORKER_TMP_DIR, STEP_AUDIO_EDITX_OUTPUT_DIR):
     os.makedirs(directory, exist_ok=True)
@@ -128,11 +119,11 @@ app.add_middleware(ForceCORS)
 class StepAudioEditXEditRequest(BaseModel):
     """Request schema for the standalone Step-Audio-EditX route."""
 
-    prompt_text: Optional[str] = None
+    prompt_text: str | None = None
     prompt_audio: str = Field(
         min_length=1, description="经 /v1/upload_audio 上传后的 prompt 音频路径"
     )
-    generated_text: Optional[str] = None
+    generated_text: str | None = None
     edit_type: Literal["emotion", "style", "paralinguistic", "denoise", "vad", "speed"]
     edit_info: str = ""
 
@@ -180,7 +171,7 @@ class StepAudioEditXWorkerManager:
 
     def __init__(self) -> None:
         self.lock = threading.RLock()
-        self.last_error: Optional[str] = None
+        self.last_error: str | None = None
 
     @staticmethod
     def _value(value: Any, fallback: Any) -> Any:
@@ -234,7 +225,7 @@ class StepAudioEditXWorkerManager:
         )
         os.close(request_fd)
         os.close(output_fd)
-        process: Optional[subprocess.Popen] = None
+        process: subprocess.Popen | None = None
         try:
             with open(request_path, "w", encoding="utf-8") as file:
                 json.dump(payload, file, ensure_ascii=False)
@@ -263,18 +254,18 @@ class StepAudioEditXWorkerManager:
             )
             try:
                 stdout, stderr = process.communicate(timeout=REQUEST_TIMEOUT)
-            except subprocess.TimeoutExpired:
+            except subprocess.TimeoutExpired as exc:
                 terminate_process_group(process, "Step-Audio-EditX")
                 stdout, stderr = process.communicate()
-                raise RuntimeError(f"Step-Audio-EditX worker 超时（>{REQUEST_TIMEOUT:.0f}s）")
+                raise RuntimeError(
+                    f"Step-Audio-EditX worker 超时（>{REQUEST_TIMEOUT:.0f}s）"
+                ) from exc
             elapsed = time.perf_counter() - started
             if stdout.strip():
                 print(stdout.rstrip())
             if stderr.strip():
                 print(stderr.rstrip())
-            print(
-                f"[Step-Audio-EditX] worker 退出码={process.returncode}，耗时 {elapsed:.2f}s"
-            )
+            print(f"[Step-Audio-EditX] worker 退出码={process.returncode}，耗时 {elapsed:.2f}s")
             if process.returncode != 0:
                 raise RuntimeError(worker_error_excerpt(stderr or stdout))
             if not os.path.isfile(output_path) or os.path.getsize(output_path) == 0:
@@ -403,7 +394,7 @@ def step_audio_editx_edit(request: StepAudioEditXEditRequest):
             except HTTPException:
                 raise
             except Exception as exc:
-                traceback.print_exc()
+                LOGGER.exception("Step-Audio-EditX request failed")
                 raise HTTPException(status_code=500, detail=str(exc)) from exc
             finally:
                 wait_after_cuda_release(CUDA_RELEASE_DELAY, "after Step-Audio-EditX worker")

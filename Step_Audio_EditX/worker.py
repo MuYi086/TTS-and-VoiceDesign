@@ -15,10 +15,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-
-EDIT_TYPES = frozenset(
-    {"emotion", "style", "paralinguistic", "denoise", "vad", "speed"}
-)
+EDIT_TYPES = frozenset({"emotion", "style", "paralinguistic", "denoise", "vad", "speed"})
 
 
 def parse_args():
@@ -31,7 +28,7 @@ def parse_args():
 
 
 def load_request(path: str) -> dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as file:
+    with open(path, encoding="utf-8") as file:
         payload = json.load(file)
     if not isinstance(payload, dict):
         raise ValueError("worker input JSON 必须是对象。")
@@ -64,9 +61,7 @@ def load_upstream(code_path: Path):
     code_path = require_path(str(code_path), "Step-Audio-EditX 源码目录", directory=True)
     missing = [name for name in ("tts.py", "tokenizer.py") if not (code_path / name).is_file()]
     if missing:
-        raise FileNotFoundError(
-            f"Step-Audio-EditX 源码目录缺少 {', '.join(missing)}：{code_path}"
-        )
+        raise FileNotFoundError(f"Step-Audio-EditX 源码目录缺少 {', '.join(missing)}：{code_path}")
     if str(code_path) not in sys.path:
         sys.path.insert(0, str(code_path))
     try:
@@ -136,7 +131,11 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
             edit_type=edit_type,
             edit_info=str(request.get("edit_info") or ""),
         )
-        waveform = output_audio if isinstance(output_audio, torch.Tensor) else torch.as_tensor(output_audio)
+        waveform = (
+            output_audio
+            if isinstance(output_audio, torch.Tensor)
+            else torch.as_tensor(output_audio)
+        )
         if waveform.ndim == 1:
             waveform = waveform.unsqueeze(0)
         if waveform.ndim != 2 or waveform.shape[0] == 0 or waveform.shape[1] == 0:

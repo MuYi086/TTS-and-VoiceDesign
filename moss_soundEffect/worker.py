@@ -11,7 +11,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-
 MAX_SECONDS = 30.0
 
 
@@ -23,7 +22,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def read_payload(path: str) -> dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as file:
+    with open(path, encoding="utf-8") as file:
         payload = json.load(file)
     if not isinstance(payload, dict):
         raise ValueError("Worker input must be a JSON object.")
@@ -58,9 +57,7 @@ def add_upstream_source(code_path: Path) -> None:
     elif code_path.name == "moss_soundeffect_v2" and code_path.is_dir():
         import_root = code_path.parent
     else:
-        raise FileNotFoundError(
-            f"上游源码目录中没有 moss_soundeffect_v2 包: {code_path}"
-        )
+        raise FileNotFoundError(f"上游源码目录中没有 moss_soundeffect_v2 包: {code_path}")
     sys.path.insert(0, str(import_root))
 
 
@@ -114,7 +111,9 @@ def main() -> None:
     from moss_soundeffect_v2 import MossSoundEffectPipeline
 
     if device.startswith("cuda") and not torch.cuda.is_available():
-        raise RuntimeError("CUDA was requested for SoundEffect, but PyTorch cannot see a CUDA device.")
+        raise RuntimeError(
+            "CUDA was requested for SoundEffect, but PyTorch cannot see a CUDA device."
+        )
     try:
         torch_dtype = getattr(torch, torch_dtype_name)
     except AttributeError as exc:
@@ -156,4 +155,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

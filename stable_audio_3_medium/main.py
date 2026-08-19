@@ -8,13 +8,13 @@ response is returned.
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import threading
 import time
-import traceback
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -31,6 +31,7 @@ from runtime import (
     run_local_worker,
 )
 
+LOGGER = logging.getLogger(__name__)
 
 PROJECT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = PROJECT_DIR.parent
@@ -144,13 +145,13 @@ class StableAudio3MediumGenerateRequest(BaseModel):
     """Stable Audio 3 Medium text-to-audio request."""
 
     prompt: str = Field(min_length=1, max_length=2_000)
-    seconds: Optional[float] = Field(default=None, gt=0, le=MAX_SECONDS)
-    duration: Optional[float] = Field(default=None, gt=0, le=MAX_SECONDS)
+    seconds: float | None = Field(default=None, gt=0, le=MAX_SECONDS)
+    duration: float | None = Field(default=None, gt=0, le=MAX_SECONDS)
     steps: int = Field(default=STABLE_AUDIO_3_MEDIUM_DEFAULT_STEPS, ge=1, le=100)
     cfg_scale: float = Field(default=STABLE_AUDIO_3_MEDIUM_DEFAULT_CFG_SCALE, ge=0, le=100)
     seed: int = Field(default=STABLE_AUDIO_3_MEDIUM_DEFAULT_SEED)
-    device: Optional[Literal["cuda"]] = None
-    dtype: Optional[Literal["float16"]] = None
+    device: Literal["cuda"] | None = None
+    dtype: Literal["float16"] | None = None
 
     @field_validator("prompt")
     @classmethod
@@ -215,7 +216,7 @@ class StableAudio3MediumWorkerManager:
 
     def __init__(self) -> None:
         self.lock = threading.RLock()
-        self.last_error: Optional[str] = None
+        self.last_error: str | None = None
 
     def build_worker_payload(self, request: StableAudio3MediumGenerateRequest) -> dict:
         return {
@@ -356,7 +357,7 @@ async def generate(request: StableAudio3MediumGenerateRequest) -> Response:
             except HTTPException:
                 raise
             except Exception as exc:
-                traceback.print_exc()
+                LOGGER.exception("Stable Audio 3 Medium request failed")
                 raise HTTPException(status_code=500, detail=str(exc)) from exc
             finally:
                 wait_after_cuda_release()

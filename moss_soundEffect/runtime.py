@@ -8,10 +8,9 @@ import shutil
 import signal
 import subprocess
 import tempfile
-import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -97,7 +96,7 @@ def terminate_process_group(
     if not process_is_running(process):
         return
 
-    pid: Optional[int] = getattr(process, "pid", None)
+    pid: int | None = getattr(process, "pid", None)
     if pid is None:
         terminate = getattr(process, "terminate", None)
         if callable(terminate):
@@ -185,7 +184,7 @@ def run_uv_worker(payload: dict[str, Any], config: UvWorkerConfig) -> bytes:
     )
     os.close(request_fd)
     os.close(output_fd)
-    process: Optional[subprocess.Popen] = None
+    process: subprocess.Popen | None = None
 
     try:
         with open(request_path, "w", encoding="utf-8") as request_file:
@@ -238,4 +237,3 @@ def run_uv_worker(payload: dict[str, Any], config: UvWorkerConfig) -> bytes:
                 pass
             except OSError:
                 pass
-

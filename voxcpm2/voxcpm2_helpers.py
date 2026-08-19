@@ -65,7 +65,9 @@ def apply_nonverbal_tags(text: str, nonverbal_tags: list[str] | None) -> str:
     return "".join(f"[{tag}]" for tag in tags) + text
 
 
-def build_model_text(chunk: str, control_instruction: str | None, nonverbal_tags: list[str] | None) -> str:
+def build_model_text(
+    chunk: str, control_instruction: str | None, nonverbal_tags: list[str] | None
+) -> str:
     """按官方可控克隆格式组装最终文本：(instruction)[tag]正文。"""
     return apply_control_instruction(
         apply_nonverbal_tags(chunk, nonverbal_tags),

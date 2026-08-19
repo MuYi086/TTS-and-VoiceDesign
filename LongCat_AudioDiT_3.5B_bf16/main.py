@@ -11,6 +11,7 @@ import fcntl
 import hashlib
 import importlib.util
 import json
+import logging
 import os
 import re
 import shutil
@@ -19,10 +20,9 @@ import sys
 import tempfile
 import threading
 import time
-import traceback
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal
 
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
@@ -32,9 +32,12 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from runtime import cuda_status, terminate_process_group
 
+LOGGER = logging.getLogger(__name__)
 
 PROJECT_DIR = Path(__file__).resolve().parent
 REPOSITORY_DIR = PROJECT_DIR.parent
+
+
 def env_bool(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -53,28 +56,20 @@ def module_available(module_name: str) -> bool:
         return False
 
 
-def normalize_optional_text(value: Optional[str]) -> Optional[str]:
+def normalize_optional_text(value: str | None) -> str | None:
     if value is None:
         return None
     normalized = value.strip()
     return normalized or None
 
 
-STORAGE_DIR = Path(
-    expand_path(os.getenv("STORAGE_DIR", str(REPOSITORY_DIR / "storage")))
-)
-CLONE_STORAGE_DIR = Path(
-    expand_path(os.getenv("CLONE_STORAGE_DIR", str(STORAGE_DIR / "clone")))
-)
-TIMBRE_STORAGE_DIR = Path(
-    expand_path(os.getenv("TIMBRE_STORAGE_DIR", str(STORAGE_DIR / "timbre")))
-)
+STORAGE_DIR = Path(expand_path(os.getenv("STORAGE_DIR", str(REPOSITORY_DIR / "storage"))))
+CLONE_STORAGE_DIR = Path(expand_path(os.getenv("CLONE_STORAGE_DIR", str(STORAGE_DIR / "clone"))))
+TIMBRE_STORAGE_DIR = Path(expand_path(os.getenv("TIMBRE_STORAGE_DIR", str(STORAGE_DIR / "timbre"))))
 TIMBRE_REFERENCE_DIR = TIMBRE_STORAGE_DIR / ".references"
 HF_MIRROR_DIR = expand_path(os.getenv("HF_MIRROR_DIR", "~/hf-mirror"))
 PROMPTS_DIR = expand_path(os.getenv("PROMPTS_DIR", str(CLONE_STORAGE_DIR)))
-RUNTIME_CACHE_DIR = expand_path(
-    os.getenv("RUNTIME_CACHE_DIR", str(STORAGE_DIR / ".cache/runtime"))
-)
+RUNTIME_CACHE_DIR = expand_path(os.getenv("RUNTIME_CACHE_DIR", str(STORAGE_DIR / ".cache/runtime")))
 GPU_LOCK_FILE = expand_path(
     os.getenv("GPU_LOCK_FILE", str(Path(RUNTIME_CACHE_DIR) / "gpu-runtime.lock"))
 )
@@ -133,9 +128,7 @@ LONGCAT_AUDIODIT_MAX_CHARS_PER_CHUNK = int(
 LONGCAT_AUDIODIT_PAUSE_MS = int(
     os.getenv("LONGCAT_AUDIODIT_PAUSE_MS", str(LONGCAT_AUDIODIT_PAUSE_MS_DEFAULT))
 )
-LONGCAT_AUDIODIT_NFE = int(
-    os.getenv("LONGCAT_AUDIODIT_NFE", str(LONGCAT_AUDIODIT_NFE_DEFAULT))
-)
+LONGCAT_AUDIODIT_NFE = int(os.getenv("LONGCAT_AUDIODIT_NFE", str(LONGCAT_AUDIODIT_NFE_DEFAULT)))
 LONGCAT_AUDIODIT_GUIDANCE_STRENGTH = float(
     os.getenv(
         "LONGCAT_AUDIODIT_GUIDANCE_STRENGTH",
@@ -145,9 +138,7 @@ LONGCAT_AUDIODIT_GUIDANCE_STRENGTH = float(
 LONGCAT_AUDIODIT_GUIDANCE_METHOD = os.getenv(
     "LONGCAT_AUDIODIT_GUIDANCE_METHOD", LONGCAT_AUDIODIT_GUIDANCE_METHOD_DEFAULT
 )
-LONGCAT_AUDIODIT_SEED = int(
-    os.getenv("LONGCAT_AUDIODIT_SEED", str(LONGCAT_AUDIODIT_SEED_DEFAULT))
-)
+LONGCAT_AUDIODIT_SEED = int(os.getenv("LONGCAT_AUDIODIT_SEED", str(LONGCAT_AUDIODIT_SEED_DEFAULT)))
 LONGCAT_AUDIODIT_DURATION_SCALE = float(
     os.getenv(
         "LONGCAT_AUDIODIT_DURATION_SCALE",
@@ -233,7 +224,7 @@ def prompt_audio_path(filename: str) -> str:
 
     reference_path = timbre_reference_map_path(filename)
     if os.path.isfile(reference_path):
-        with open(reference_path, "r", encoding="utf-8") as reference_file:
+        with open(reference_path, encoding="utf-8") as reference_file:
             timbre_path = reference_file.read().strip()
         if timbre_path and os.path.isfile(timbre_path):
             return timbre_path
@@ -248,7 +239,7 @@ def file_sha256(path: str) -> str:
     return digest.hexdigest()
 
 
-def find_matching_timbre_audio(content: bytes) -> Optional[str]:
+def find_matching_timbre_audio(content: bytes) -> str | None:
     """识别已生成的音色，避免把同一份 WAV 再复制到克隆目录。"""
     content_digest = hashlib.sha256(content).hexdigest()
     with os.scandir(TIMBRE_STORAGE_DIR) as entries:
@@ -269,16 +260,16 @@ def prompt_text_sidecar_path(filename: str) -> str:
     return clone_sidecar_path
 
 
-def load_prompt_text_sidecar(filename: str) -> Optional[str]:
+def load_prompt_text_sidecar(filename: str) -> str | None:
     path = prompt_text_sidecar_path(filename)
     if not os.path.isfile(path):
         return None
-    with open(path, "r", encoding="utf-8") as file:
+    with open(path, encoding="utf-8") as file:
         text = file.read().strip()
     return text or None
 
 
-def save_prompt_text_sidecar(filename: str, prompt_text: Optional[str]) -> None:
+def save_prompt_text_sidecar(filename: str, prompt_text: str | None) -> None:
     path = prompt_text_sidecar_path(filename)
     normalized = prompt_text.strip() if prompt_text and prompt_text.strip() else None
     if normalized is None:
@@ -376,34 +367,30 @@ class CloneSynthesisRequest(BaseModel):
     @classmethod
     def reject_style_prompt(cls, value):
         if isinstance(value, dict) and "style_prompt" in value:
-            raise ValueError(
-                "style_prompt 不适用于 /v1/longCat/clone；该接口仅用于参考音频克隆。"
-            )
+            raise ValueError("style_prompt 不适用于 /v1/longCat/clone；该接口仅用于参考音频克隆。")
         return value
 
 
 class LongCatAudioDitSynthesizeRequest(CloneSynthesisRequest):
     text: str
     audio_path: str
-    prompt_text: Optional[str] = None
-    max_chars_per_chunk: Optional[int] = Field(default=None, ge=0)
-    pause_ms: Optional[int] = Field(default=None, ge=0)
-    nfe: Optional[int] = Field(default=None, ge=2)
-    guidance_strength: Optional[float] = Field(default=None, ge=0)
-    guidance_method: Optional[Literal["cfg", "apg"]] = None
-    seed: Optional[int] = None
-    duration_scale: Optional[float] = Field(default=None, gt=0)
-    vae_dtype: Optional[Literal["float16", "float32"]] = None
+    prompt_text: str | None = None
+    max_chars_per_chunk: int | None = Field(default=None, ge=0)
+    pause_ms: int | None = Field(default=None, ge=0)
+    nfe: int | None = Field(default=None, ge=2)
+    guidance_strength: float | None = Field(default=None, ge=0)
+    guidance_method: Literal["cfg", "apg"] | None = None
+    seed: int | None = None
+    duration_scale: float | None = Field(default=None, gt=0)
+    vae_dtype: Literal["float16", "float32"] | None = None
 
 
 class LongCatAudioDitWorkerManager:
     def __init__(self):
         self.lock = threading.RLock()
-        self.last_error: Optional[str] = None
+        self.last_error: str | None = None
 
-    def build_worker_payload(
-        self, request: LongCatAudioDitSynthesizeRequest
-    ) -> dict[str, object]:
+    def build_worker_payload(self, request: LongCatAudioDitSynthesizeRequest) -> dict[str, object]:
         ref_audio_path = prompt_audio_path(request.audio_path)
         if not os.path.isfile(ref_audio_path):
             raise HTTPException(status_code=404, detail="音频不存在")
@@ -432,9 +419,7 @@ class LongCatAudioDitWorkerManager:
                 else LONGCAT_AUDIODIT_MAX_CHARS_PER_CHUNK
             ),
             "pause_ms": (
-                request.pause_ms
-                if request.pause_ms is not None
-                else LONGCAT_AUDIODIT_PAUSE_MS
+                request.pause_ms if request.pause_ms is not None else LONGCAT_AUDIODIT_PAUSE_MS
             ),
             "nfe": request.nfe if request.nfe is not None else LONGCAT_AUDIODIT_NFE,
             "guidance_strength": (
@@ -464,9 +449,7 @@ class LongCatAudioDitWorkerManager:
         if not python_executable or not os.path.isfile(python_executable):
             raise RuntimeError("未找到 LongCat uv 环境的 Python 解释器。")
         if not os.path.isfile(LONGCAT_AUDIODIT_WORKER_SCRIPT):
-            raise RuntimeError(
-                f"LongCat worker 脚本不存在: {LONGCAT_AUDIODIT_WORKER_SCRIPT}"
-            )
+            raise RuntimeError(f"LongCat worker 脚本不存在: {LONGCAT_AUDIODIT_WORKER_SCRIPT}")
         if not os.path.isdir(LONGCAT_AUDIODIT_WORKER_TMP_DIR):
             os.makedirs(LONGCAT_AUDIODIT_WORKER_TMP_DIR, exist_ok=True)
 
@@ -482,7 +465,7 @@ class LongCatAudioDitWorkerManager:
         )
         os.close(request_fd)
         os.close(output_fd)
-        process: Optional[subprocess.Popen] = None
+        process: subprocess.Popen | None = None
 
         try:
             with open(request_path, "w", encoding="utf-8") as file:
@@ -510,15 +493,13 @@ class LongCatAudioDitWorkerManager:
                 env=worker_env,
             )
             try:
-                stdout, stderr = process.communicate(
-                    timeout=LONGCAT_AUDIODIT_REQUEST_TIMEOUT
-                )
-            except subprocess.TimeoutExpired:
+                stdout, stderr = process.communicate(timeout=LONGCAT_AUDIODIT_REQUEST_TIMEOUT)
+            except subprocess.TimeoutExpired as exc:
                 terminate_process_group(process, "LongCat-AudioDiT")
                 process.communicate()
                 raise RuntimeError(
                     f"LongCat-AudioDiT worker 超时（>{LONGCAT_AUDIODIT_REQUEST_TIMEOUT:.0f}s）"
-                )
+                ) from exc
 
             if stdout.strip():
                 print(stdout.rstrip())
@@ -597,8 +578,7 @@ async def health():
             "worker_python": sys.executable,
             "model": "LongCat-AudioDiT-3.5B-bf16",
             "model_lifecycle": (
-                "one request -> one worker -> explicit CUDA cleanup -> "
-                "process exit releases VRAM"
+                "one request -> one worker -> explicit CUDA cleanup -> process exit releases VRAM"
             ),
             "local_files_only": LOCAL_FILES_ONLY,
             "request_timeout": LONGCAT_AUDIODIT_REQUEST_TIMEOUT,
@@ -612,12 +592,10 @@ async def health():
             "duration_scale": LONGCAT_AUDIODIT_DURATION_SCALE,
             "vae_dtype": LONGCAT_AUDIODIT_VAE_DTYPE,
             "clone_contract": (
-                "accurate prompt_text + 24 kHz mono prompt_audio; "
-                "model max_wav_duration applies"
+                "accurate prompt_text + 24 kHz mono prompt_audio; model max_wav_duration applies"
             ),
             "flash_attention_policy": (
-                "not required; official audiodit uses native "
-                "PyTorch/Transformers attention"
+                "not required; official audiodit uses native PyTorch/Transformers attention"
             ),
         },
         "last_errors": {"longcat_audiodit": manager.last_error},
@@ -637,7 +615,7 @@ async def internal_unload_all(request: Request):
 async def upload_audio(
     audio: UploadFile = File(...),
     full_path: str = Form(...),
-    prompt_text: Optional[str] = Form(None),
+    prompt_text: str | None = Form(None),
 ):
     content = await audio.read()
     clone_path = clone_prompt_audio_path(full_path)
@@ -700,7 +678,7 @@ async def synthesize_v2(request: LongCatAudioDitSynthesizeRequest):
             except HTTPException:
                 raise
             except Exception as exc:
-                traceback.print_exc()
+                LOGGER.exception("LongCat-AudioDiT request failed")
                 raise HTTPException(status_code=500, detail=str(exc)) from exc
             finally:
                 wait_after_cuda_release("after LongCat-AudioDiT worker")

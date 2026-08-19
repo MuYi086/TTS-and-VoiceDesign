@@ -1,2 +1,1 @@
-def main() -> None:
-    print("Hello from qwen3-voicedesign!")
+"""Package marker for the standalone Qwen3 VoiceDesign service."""

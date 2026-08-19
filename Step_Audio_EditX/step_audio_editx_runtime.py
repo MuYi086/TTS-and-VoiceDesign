@@ -8,8 +8,9 @@ import shutil
 import signal
 import subprocess
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any, Iterator, Optional
+from typing import Any
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -112,7 +113,7 @@ def terminate_process_group(
 
     if not process_is_running(process):
         return
-    pid: Optional[int] = getattr(process, "pid", None)
+    pid: int | None = getattr(process, "pid", None)
     if pid is None:
         terminate = getattr(process, "terminate", None)
         if callable(terminate):

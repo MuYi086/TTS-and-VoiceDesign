@@ -6,7 +6,7 @@ import os
 import shutil
 import signal
 import subprocess
-from typing import Any, Optional
+from typing import Any
 
 
 def cuda_status() -> dict[str, Any]:
@@ -78,7 +78,7 @@ def terminate_process_group(
     if not process_is_running(process):
         return
 
-    pid: Optional[int] = getattr(process, "pid", None)
+    pid: int | None = getattr(process, "pid", None)
     if pid is None:
         terminate = getattr(process, "terminate", None)
         if callable(terminate):
@@ -128,4 +128,3 @@ def terminate_process_group(
                 kill()
 
     wait(timeout=kill_timeout)
-

@@ -25,6 +25,9 @@
 
 本地模型推理需要 Python `3.12.13`、`uv` 和 CUDA 可用的主机。按照 `README.md` 准备模型权重
 与外部源码，然后使用 `uv sync --project <dir> --locked` 同步需要的项目。
+`moss_voiceGenerator` 的 `moss-tts` 是唯一例外：必须使用预先准备的本地 editable
+源码 `/home/muyi086/tts-depency/MOSS-TTS`，不得改为 Git/PyPI 下载；执行该项目的
+`uv sync` 前先确认该目录存在。
 `bash start.sh` 会在 `qwen3_tts` uv 项目中启动轻量的 8300 控制面，并在各自项目中启动其余
 11 个 HTTP 进程；端口、路径、项目和运行参数均通过环境变量覆盖。
 
@@ -70,6 +73,7 @@ Python 使用 4 个空格缩进，函数和变量使用 `snake_case`，Pydantic 
 路由、校验、存储或 worker 生命周期发生变化时，补充针对性的无模型测试，并同步更新
 `README.md` 中的 endpoint 或字段说明。
 
-不得加入模型权重、上传/参考音频、生成 WAV、虚拟环境、缓存、密钥或机器专用绝对路径。
+不得加入模型权重、上传/参考音频、生成 WAV、虚拟环境、缓存、密钥或机器专用绝对路径；
+`moss_voiceGenerator` 的 `moss-tts` 本地源码路径是上文明确的唯一例外。
 `MIMO_API_KEY` 必须通过环境变量提供。Commit subject 使用简洁的 Conventional Commit 格式，
 例如 `feat:`、`fix:` 或 `docs:`。

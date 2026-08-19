@@ -1,0 +1,14 @@
+line-length = 100
+target-version = "py312"
+extend-exclude = ["storage"]
+
+[lint]
+select = ["E", "F", "I", "UP", "B"]
+# Ruff's formatter is authoritative for layout. E501 cannot always wrap URLs,
+# protocol strings, or framework signatures without making them less readable.
+ignore = ["B008", "E501"]
+
+[format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"

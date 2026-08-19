@@ -12,7 +12,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-
 REPOSITORY_DIR = Path(__file__).resolve().parents[1]
 SERVICE_DIR = REPOSITORY_DIR / "voxcpm2"
 TEST_RUNTIME = tempfile.TemporaryDirectory(prefix="voxcpm2-tests-")
@@ -84,9 +83,7 @@ class VoxCpm2MigrationTests(unittest.TestCase):
         }
         self.assertTrue(expected_routes.issubset(actual_routes))
 
-        with patch.object(
-            main, "cuda_status", return_value={"available": False, "source": "test"}
-        ):
+        with patch.object(main, "cuda_status", return_value={"available": False, "source": "test"}):
             response = TestClient(main.app).get("/v1/health")
         self.assertEqual(response.status_code, 200)
         payload = response.json()
@@ -254,7 +251,7 @@ class VoxCpm2MigrationTests(unittest.TestCase):
         self.assertNotIn("main/voxcpm2_api.py", script)
         self.assertNotIn("VOXCPM2_UV_BASE_URL", script)
         self.assertIn(
-            'http://127.0.0.1:$VOXCPM2_PORT/v1/voxcpm2/clone',
+            "http://127.0.0.1:$VOXCPM2_PORT/v1/voxcpm2/clone",
             script,
         )
         control_plane = (REPOSITORY_DIR / "main/main.py").read_text(encoding="utf-8")

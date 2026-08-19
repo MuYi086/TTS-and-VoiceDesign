@@ -10,7 +10,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-
 REPOSITORY_DIR = Path(__file__).resolve().parents[1]
 SERVICE_DIR = REPOSITORY_DIR / "main"
 TEST_RUNTIME = tempfile.TemporaryDirectory(prefix="main-control-plane-tests-")
@@ -87,11 +86,11 @@ class MainControlPlaneMigrationTests(unittest.TestCase):
             data={"full_path": "designed.wav"},
         )
         self.assertEqual(response.status_code, 200)
-        self.assertFalse(
-            (Path(main.PROMPTS_DIR) / main.hash_filename("designed.wav")).exists()
-        )
+        self.assertFalse((Path(main.PROMPTS_DIR) / main.hash_filename("designed.wav")).exists())
         self.assertTrue(
-            (Path(main.TIMBRE_REFERENCE_DIR) / f"{main.hash_filename('designed.wav')}.path").exists()
+            (
+                Path(main.TIMBRE_REFERENCE_DIR) / f"{main.hash_filename('designed.wav')}.path"
+            ).exists()
         )
         checked = client.get("/v1/check/audio", params={"file_name": "designed.wav"})
         self.assertEqual(checked.status_code, 200)

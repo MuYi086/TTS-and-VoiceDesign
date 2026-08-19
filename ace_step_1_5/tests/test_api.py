@@ -9,7 +9,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-
 SERVICE_DIR = Path(__file__).resolve().parents[1]
 TEST_RUNTIME = tempfile.TemporaryDirectory(prefix="ace-step-1-5-tests-")
 TEST_ROOT = Path(TEST_RUNTIME.name)
@@ -33,7 +32,6 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import main  # noqa: E402
 from runtime import WorkerResult  # noqa: E402
-
 
 FAKE_WAV = b"RIFF\x24\x00\x00\x00WAVEfmt "
 
@@ -60,7 +58,9 @@ class AceStepApiContractTests(unittest.TestCase):
             (model_dir / "model_index.json").write_text("{}", encoding="utf-8")
             for component in main.REQUIRED_MODEL_PATHS[1:]:
                 (model_dir / component).mkdir()
-            (model_dir / "transformer" / "diffusion_pytorch_model-00001-of-00002.safetensors").write_bytes(b"shard")
+            (
+                model_dir / "transformer" / "diffusion_pytorch_model-00001-of-00002.safetensors"
+            ).write_bytes(b"shard")
 
             with patch.object(main, "ACESTEP_MODEL_DIR", model_dir):
                 status = main.model_status()
@@ -69,8 +69,13 @@ class AceStepApiContractTests(unittest.TestCase):
         self.assertEqual(status["transformer_weight_files"], 1)
 
     def test_request_validation(self) -> None:
-        self.assertEqual(self.client.post("/v1/aceStep/bgm", json={"prompt": "x", "seconds": 601}).status_code, 422)
-        self.assertEqual(self.client.post("/v1/aceStep/bgm", json={"prompt": "   "}).status_code, 422)
+        self.assertEqual(
+            self.client.post("/v1/aceStep/bgm", json={"prompt": "x", "seconds": 601}).status_code,
+            422,
+        )
+        self.assertEqual(
+            self.client.post("/v1/aceStep/bgm", json={"prompt": "   "}).status_code, 422
+        )
 
     def test_build_worker_payload_preserves_runtime_defaults(self) -> None:
         request = main.AceStepBgmRequest(

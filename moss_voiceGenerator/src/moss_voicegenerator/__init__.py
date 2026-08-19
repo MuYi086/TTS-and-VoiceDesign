@@ -1,2 +1,1 @@
-def main() -> None:
-    print("Hello from moss-voicegenerator!")
+"""Package marker for the standalone MOSS VoiceGenerator service."""

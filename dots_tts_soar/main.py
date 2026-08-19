@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import importlib.util
+import logging
 import os
 import re
 import sys
 import threading
-import traceback
 from contextlib import contextmanager
-from typing import Literal, Optional
+from typing import Literal
 
-import fcntl
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
@@ -22,6 +22,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from runtime import UvWorkerConfig, cuda_status, persist_audio_bytes, run_uv_worker
 from synthesis_request import CloneSynthesisRequest
 
+LOGGER = logging.getLogger(__name__)
 
 SERVICE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.dirname(SERVICE_DIR)
@@ -38,7 +39,7 @@ def expand_path(path: str) -> str:
     return os.path.abspath(os.path.expandvars(os.path.expanduser(path)))
 
 
-def normalize_optional_text(value: Optional[str]) -> Optional[str]:
+def normalize_optional_text(value: str | None) -> str | None:
     if value is None:
         return None
     normalized = value.strip()
@@ -60,9 +61,7 @@ def module_available(module_name: str) -> bool:
 
 
 STORAGE_DIR = expand_path(os.getenv("STORAGE_DIR", os.path.join(PROJECT_DIR, "storage")))
-CLONE_STORAGE_DIR = expand_path(
-    os.getenv("CLONE_STORAGE_DIR", os.path.join(STORAGE_DIR, "clone"))
-)
+CLONE_STORAGE_DIR = expand_path(os.getenv("CLONE_STORAGE_DIR", os.path.join(STORAGE_DIR, "clone")))
 TIMBRE_STORAGE_DIR = expand_path(
     os.getenv("TIMBRE_STORAGE_DIR", os.path.join(STORAGE_DIR, "timbre"))
 )
@@ -72,7 +71,9 @@ PROMPTS_DIR = expand_path(os.getenv("PROMPTS_DIR", CLONE_STORAGE_DIR))
 RUNTIME_CACHE_DIR = expand_path(
     os.getenv("RUNTIME_CACHE_DIR", os.path.join(STORAGE_DIR, ".cache/runtime"))
 )
-GPU_LOCK_FILE = expand_path(os.getenv("GPU_LOCK_FILE", os.path.join(RUNTIME_CACHE_DIR, "gpu-runtime.lock")))
+GPU_LOCK_FILE = expand_path(
+    os.getenv("GPU_LOCK_FILE", os.path.join(RUNTIME_CACHE_DIR, "gpu-runtime.lock"))
+)
 LOCAL_FILES_ONLY = env_bool("LOCAL_FILES_ONLY", True)
 CUDA_RELEASE_DELAY = float(os.getenv("CUDA_RELEASE_DELAY", "2.0"))
 API_HOST = os.getenv("HOST", "0.0.0.0")
@@ -114,27 +115,19 @@ DOTS_TTS_SOAR_PROFILE_INFERENCE_DEFAULT = False
 # 单次请求超时时间，单位为秒；包含 worker 启动和完整合成。
 DOTS_TTS_SOAR_REQUEST_TIMEOUT_DEFAULT = 900.0
 
-DOTS_TTS_SOAR_PRECISION = os.getenv(
-    "DOTS_TTS_SOAR_PRECISION", DOTS_TTS_SOAR_PRECISION_DEFAULT
-)
+DOTS_TTS_SOAR_PRECISION = os.getenv("DOTS_TTS_SOAR_PRECISION", DOTS_TTS_SOAR_PRECISION_DEFAULT)
 DOTS_TTS_SOAR_LANGUAGE = normalize_optional_text(
     os.getenv("DOTS_TTS_SOAR_LANGUAGE", DOTS_TTS_SOAR_LANGUAGE_DEFAULT)
 )
-DOTS_TTS_SOAR_ODE_METHOD = os.getenv(
-    "DOTS_TTS_SOAR_ODE_METHOD", DOTS_TTS_SOAR_ODE_METHOD_DEFAULT
-)
+DOTS_TTS_SOAR_ODE_METHOD = os.getenv("DOTS_TTS_SOAR_ODE_METHOD", DOTS_TTS_SOAR_ODE_METHOD_DEFAULT)
 DOTS_TTS_SOAR_NUM_STEPS = int(
     os.getenv("DOTS_TTS_SOAR_NUM_STEPS", str(DOTS_TTS_SOAR_NUM_STEPS_DEFAULT))
 )
 DOTS_TTS_SOAR_GUIDANCE_SCALE = float(
-    os.getenv(
-        "DOTS_TTS_SOAR_GUIDANCE_SCALE", str(DOTS_TTS_SOAR_GUIDANCE_SCALE_DEFAULT)
-    )
+    os.getenv("DOTS_TTS_SOAR_GUIDANCE_SCALE", str(DOTS_TTS_SOAR_GUIDANCE_SCALE_DEFAULT))
 )
 DOTS_TTS_SOAR_SPEAKER_SCALE = float(
-    os.getenv(
-        "DOTS_TTS_SOAR_SPEAKER_SCALE", str(DOTS_TTS_SOAR_SPEAKER_SCALE_DEFAULT)
-    )
+    os.getenv("DOTS_TTS_SOAR_SPEAKER_SCALE", str(DOTS_TTS_SOAR_SPEAKER_SCALE_DEFAULT))
 )
 DOTS_TTS_SOAR_MAX_GENERATE_LENGTH = int(
     os.getenv(
@@ -151,9 +144,7 @@ DOTS_TTS_SOAR_MAX_CHARS_PER_CHUNK = int(
 DOTS_TTS_SOAR_PAUSE_MS = int(
     os.getenv("DOTS_TTS_SOAR_PAUSE_MS", str(DOTS_TTS_SOAR_PAUSE_MS_DEFAULT))
 )
-DOTS_TTS_SOAR_SEED = int(
-    os.getenv("DOTS_TTS_SOAR_SEED", str(DOTS_TTS_SOAR_SEED_DEFAULT))
-)
+DOTS_TTS_SOAR_SEED = int(os.getenv("DOTS_TTS_SOAR_SEED", str(DOTS_TTS_SOAR_SEED_DEFAULT)))
 DOTS_TTS_SOAR_NORMALIZE_TEXT = env_bool(
     "DOTS_TTS_SOAR_NORMALIZE_TEXT", DOTS_TTS_SOAR_NORMALIZE_TEXT_DEFAULT
 )
@@ -161,9 +152,7 @@ DOTS_TTS_SOAR_PROFILE_INFERENCE = env_bool(
     "DOTS_TTS_SOAR_PROFILE_INFERENCE", DOTS_TTS_SOAR_PROFILE_INFERENCE_DEFAULT
 )
 DOTS_TTS_SOAR_REQUEST_TIMEOUT = float(
-    os.getenv(
-        "DOTS_TTS_SOAR_REQUEST_TIMEOUT", str(DOTS_TTS_SOAR_REQUEST_TIMEOUT_DEFAULT)
-    )
+    os.getenv("DOTS_TTS_SOAR_REQUEST_TIMEOUT", str(DOTS_TTS_SOAR_REQUEST_TIMEOUT_DEFAULT))
 )
 DOTS_TTS_SOAR_WORKER_SCRIPT = os.path.join(SERVICE_DIR, "worker.py")
 DOTS_TTS_SOAR_WORKER_TMP_DIR = os.path.join(RUNTIME_CACHE_DIR, "dots_tts_soar_worker")
@@ -239,7 +228,7 @@ def prompt_audio_path(filename: str) -> str:
 
     reference_path = timbre_reference_map_path(filename)
     if os.path.isfile(reference_path):
-        with open(reference_path, "r", encoding="utf-8") as reference_file:
+        with open(reference_path, encoding="utf-8") as reference_file:
             timbre_path = reference_file.read().strip()
         if timbre_path and os.path.isfile(timbre_path):
             return timbre_path
@@ -254,7 +243,7 @@ def file_sha256(path: str) -> str:
     return digest.hexdigest()
 
 
-def find_matching_timbre_audio(content: bytes) -> Optional[str]:
+def find_matching_timbre_audio(content: bytes) -> str | None:
     """识别已生成的音色，避免把同一份 WAV 再复制到克隆目录。"""
     content_digest = hashlib.sha256(content).hexdigest()
     with os.scandir(TIMBRE_STORAGE_DIR) as entries:
@@ -275,15 +264,15 @@ def prompt_text_sidecar_path(filename: str) -> str:
     return clone_sidecar_path
 
 
-def load_prompt_text_sidecar(filename: str) -> Optional[str]:
+def load_prompt_text_sidecar(filename: str) -> str | None:
     path = prompt_text_sidecar_path(filename)
     if not os.path.isfile(path):
         return None
-    with open(path, "r", encoding="utf-8") as file:
+    with open(path, encoding="utf-8") as file:
         return normalize_optional_text(file.read())
 
 
-def save_prompt_text_sidecar(filename: str, prompt_text: Optional[str]) -> None:
+def save_prompt_text_sidecar(filename: str, prompt_text: str | None) -> None:
     path = prompt_text_sidecar_path(filename)
     normalized = normalize_optional_text(prompt_text)
     if normalized is None:
@@ -334,20 +323,22 @@ class DotsTtsSoarSynthesizeRequest(CloneSynthesisRequest):
 
     text: str
     audio_path: str
-    prompt_text: Optional[str] = None
-    language: Optional[str] = None
-    template_name: Optional[Literal["tts", "instruction_tts", "text_to_audio", "tts_interleave"]] = None
-    precision: Optional[str] = None
-    seed: Optional[int] = None
-    ode_method: Optional[str] = None
-    num_steps: Optional[int] = Field(default=None, ge=1)
-    guidance_scale: Optional[float] = Field(default=None, ge=0)
-    speaker_scale: Optional[float] = Field(default=None, ge=0)
-    max_generate_length: Optional[int] = Field(default=None, ge=1)
-    max_chars_per_chunk: Optional[int] = Field(default=None, ge=0)
-    pause_ms: Optional[int] = Field(default=None, ge=0)
-    normalize_text: Optional[bool] = None
-    profile_inference: Optional[bool] = None
+    prompt_text: str | None = None
+    language: str | None = None
+    template_name: Literal["tts", "instruction_tts", "text_to_audio", "tts_interleave"] | None = (
+        None
+    )
+    precision: str | None = None
+    seed: int | None = None
+    ode_method: str | None = None
+    num_steps: int | None = Field(default=None, ge=1)
+    guidance_scale: float | None = Field(default=None, ge=0)
+    speaker_scale: float | None = Field(default=None, ge=0)
+    max_generate_length: int | None = Field(default=None, ge=1)
+    max_chars_per_chunk: int | None = Field(default=None, ge=0)
+    pause_ms: int | None = Field(default=None, ge=0)
+    normalize_text: bool | None = None
+    profile_inference: bool | None = None
 
 
 DOTS_TTS_SOAR_WORKER = UvWorkerConfig(
@@ -364,7 +355,7 @@ DOTS_TTS_SOAR_WORKER = UvWorkerConfig(
 class DotsTtsSoarWorkerManager:
     def __init__(self):
         self.lock = threading.RLock()
-        self.last_error: Optional[str] = None
+        self.last_error: str | None = None
 
     def build_worker_payload(self, request: DotsTtsSoarSynthesizeRequest) -> dict:
         ref_audio_path = prompt_audio_path(request.audio_path)
@@ -390,7 +381,9 @@ class DotsTtsSoarWorkerManager:
             "precision": request.precision or DOTS_TTS_SOAR_PRECISION,
             "seed": request.seed if request.seed is not None else DOTS_TTS_SOAR_SEED,
             "ode_method": request.ode_method or DOTS_TTS_SOAR_ODE_METHOD,
-            "num_steps": request.num_steps if request.num_steps is not None else DOTS_TTS_SOAR_NUM_STEPS,
+            "num_steps": request.num_steps
+            if request.num_steps is not None
+            else DOTS_TTS_SOAR_NUM_STEPS,
             "guidance_scale": (
                 request.guidance_scale
                 if request.guidance_scale is not None
@@ -411,7 +404,9 @@ class DotsTtsSoarWorkerManager:
                 if request.max_chars_per_chunk is not None
                 else DOTS_TTS_SOAR_MAX_CHARS_PER_CHUNK
             ),
-            "pause_ms": request.pause_ms if request.pause_ms is not None else DOTS_TTS_SOAR_PAUSE_MS,
+            "pause_ms": request.pause_ms
+            if request.pause_ms is not None
+            else DOTS_TTS_SOAR_PAUSE_MS,
             "normalize_text": (
                 request.normalize_text
                 if request.normalize_text is not None
@@ -445,7 +440,12 @@ async def health():
     cuda = cuda_status()
     required_files = {
         name: os.path.isfile(os.path.join(DOTS_TTS_SOAR_MODEL_DIR, name))
-        for name in ("config.json", "model.safetensors", "speaker_encoder.safetensors", "vocoder.safetensors")
+        for name in (
+            "config.json",
+            "model.safetensors",
+            "speaker_encoder.safetensors",
+            "vocoder.safetensors",
+        )
     }
     return {
         "code": 200,
@@ -513,7 +513,7 @@ async def internal_unload_all(request: Request):
 async def upload_audio(
     audio: UploadFile = File(...),
     full_path: str = Form(...),
-    prompt_text: Optional[str] = Form(None),
+    prompt_text: str | None = Form(None),
 ):
     content = await audio.read()
     clone_path = clone_prompt_audio_path(full_path)
@@ -575,7 +575,7 @@ async def synthesize_v2(request: DotsTtsSoarSynthesizeRequest):
             except HTTPException:
                 raise
             except Exception as exc:
-                traceback.print_exc()
+                LOGGER.exception("dots.tts-soar request failed")
                 raise HTTPException(status_code=500, detail=str(exc)) from exc
             finally:
                 wait_after_cuda_release("after dots.tts-soar worker")
@@ -585,9 +585,11 @@ if __name__ == "__main__":
     print("==================================================")
     print("   Unitale AI 本地后端 dots.tts-soar Voice Clone")
     print("==================================================")
-    print(f"[配置] worker runtime: uv")
+    print("[配置] worker runtime: uv")
     print(f"[配置] worker python: {sys.executable}")
     print(f"[配置] model: {DOTS_TTS_SOAR_MODEL_DIR}")
     print(f"[配置] port: {API_PORT}")
-    print(f"[配置] local_files_only={LOCAL_FILES_ONLY}, request_timeout={DOTS_TTS_SOAR_REQUEST_TIMEOUT}")
+    print(
+        f"[配置] local_files_only={LOCAL_FILES_ONLY}, request_timeout={DOTS_TTS_SOAR_REQUEST_TIMEOUT}"
+    )
     uvicorn.run(app, host=API_HOST, port=API_PORT)
