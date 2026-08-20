@@ -19,10 +19,12 @@ dependencies = [
     "torchaudio==2.7.1",
     "tqdm==4.70.0",
     "transformers==5.15.0",
+    "unitale-runtime",
 ]
 
 [dependency-groups]
 dev = [
+    "httpx2>=0.28",
     "pytest==9.1.1",
     "ruff>=0.15.9",
 ]
@@ -43,6 +45,7 @@ format = "flat"
 explicit = true
 
 [tool.uv.sources]
+unitale-runtime = { path = "../unitale_runtime", editable = true }
 torch = { index = "aliyun-pytorch-cu126" }
 torchaudio = { index = "aliyun-pytorch-cu126" }
 

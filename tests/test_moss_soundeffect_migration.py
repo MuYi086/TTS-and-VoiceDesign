@@ -72,7 +72,6 @@ class MossSoundEffectMigrationTests(unittest.TestCase):
 
         expected_routes = {
             ("GET", "/v1/health"),
-            ("POST", "/internal/unload_all"),
             ("POST", "/v1/moss/soundEffect"),
         }
         actual_routes = {

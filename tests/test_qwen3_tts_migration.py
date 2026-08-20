@@ -46,7 +46,6 @@ class Qwen3TtsMigrationTests(unittest.TestCase):
 
         expected_routes = {
             ("GET", "/v1/health"),
-            ("POST", "/internal/unload_all"),
             ("POST", "/v1/upload_audio"),
             ("GET", "/v1/check/audio"),
             ("POST", "/v1/qwen/clone"),
@@ -92,12 +91,7 @@ class Qwen3TtsMigrationTests(unittest.TestCase):
             check.json(),
             {"code": 200, "exists": True, "has_prompt_text": True},
         )
-        self.assertEqual(
-            (TEST_ROOT / "prompts" / f"{main.hash_filename(filename)}.prompt.txt").read_text(
-                encoding="utf-8"
-            ),
-            prompt_text,
-        )
+        self.assertEqual(main.load_prompt_text_sidecar(filename), prompt_text)
 
     def test_upload_storage_work_keeps_health_endpoint_responsive(self) -> None:
         from httpx import ASGITransport, AsyncClient
@@ -105,8 +99,8 @@ class Qwen3TtsMigrationTests(unittest.TestCase):
         delay_seconds = 0.2
         storage_work_started = threading.Event()
 
-        def slow_timbre_lookup(content: bytes) -> None:
-            del content
+        def slow_timbre_lookup(digest: str) -> None:
+            del digest
             storage_work_started.set()
             time.sleep(delay_seconds)
             return None
@@ -132,7 +126,9 @@ class Qwen3TtsMigrationTests(unittest.TestCase):
             return upload_response.status_code, health_response.status_code, elapsed
 
         with (
-            patch.object(main, "find_matching_timbre_audio", side_effect=slow_timbre_lookup),
+            patch.object(
+                main.reference_store, "_find_timbre_by_digest", side_effect=slow_timbre_lookup
+            ),
             patch.object(main, "cuda_status", return_value={"available": False, "source": "test"}),
         ):
             upload_status, health_status, elapsed = asyncio.run(request_upload_and_health_check())
@@ -159,6 +155,15 @@ class Qwen3TtsMigrationTests(unittest.TestCase):
         clone_path = TEST_ROOT / "prompts" / main.hash_filename(filename)
         self.assertFalse(clone_path.exists())
         self.assertEqual(main.prompt_audio_path(filename), str(timbre_path))
+        reference_path = (
+            TEST_ROOT
+            / "storage"
+            / "timbre"
+            / ".references"
+            / f"{main.hash_filename(filename)}.json"
+        )
+        self.assertTrue(reference_path.exists())
+        self.assertNotIn(str(timbre_path), reference_path.read_text(encoding="utf-8"))
         checked = TestClient(main.app).get("/v1/check/audio", params={"file_name": filename})
         self.assertEqual(checked.status_code, 200)
         self.assertTrue(checked.json()["exists"])

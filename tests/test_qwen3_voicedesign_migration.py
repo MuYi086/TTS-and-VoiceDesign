@@ -49,7 +49,6 @@ class Qwen3VoiceDesignMigrationTests(unittest.TestCase):
 
         expected_routes = {
             ("GET", "/v1/health"),
-            ("POST", "/internal/unload_all"),
             ("POST", "/v1/qwen/timbre"),
         }
         actual_routes = {
@@ -80,7 +79,7 @@ class Qwen3VoiceDesignMigrationTests(unittest.TestCase):
         payload = main.manager.build_worker_payload(request)
 
         self.assertEqual(request.text, "这是生成的参考音频预览。")
-        self.assertEqual(request.save_as, "designed_voice.wav")
+        self.assertEqual(request.max_chars_per_chunk, 0)
         self.assertEqual(payload["model_path"], str(TEST_ROOT / "model"))
         self.assertEqual(payload["language"], "Chinese")
         self.assertEqual(payload["max_new_tokens"], 2048)

@@ -4,22 +4,21 @@
 from __future__ import annotations
 
 # 学习入口：API 进程只处理参数和生命周期，MOSS 模型在一次性 uv worker 中运行。
-import fcntl
 import importlib.util
 import os
 import shutil
 import sys
 import threading
 import time
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field, field_validator
 from starlette.middleware.base import BaseHTTPMiddleware
+from unitale_runtime import GpuLockTimeoutError
+from unitale_runtime import gpu_runtime_lock as shared_gpu_runtime_lock
 
 from audio_output import persist_audio_bytes
 from runtime import UvWorkerConfig, cuda_status, run_uv_worker
@@ -120,6 +119,7 @@ for directory in (
 
 class ForceCORS(BaseHTTPMiddleware):
     """为本地 WebUI 提供跨域响应和 OPTIONS 预检支持。"""
+
     async def dispatch(self, request, call_next):
         if request.method == "OPTIONS":
             return Response(
@@ -138,6 +138,7 @@ class ForceCORS(BaseHTTPMiddleware):
 
 class SoundEffectGenerateRequest(BaseModel):
     """MOSS-SoundEffect v2 的文本、时长和扩散参数请求模型。"""
+
     prompt: str = Field(min_length=1, max_length=2_000)
     seconds: float = Field(default=MOSS_SOUNDEFFECT_DEFAULT_SECONDS, gt=0, le=30)
     num_inference_steps: int = Field(default=MOSS_SOUNDEFFECT_DEFAULT_STEPS, gt=0, le=500)
@@ -156,18 +157,9 @@ class SoundEffectGenerateRequest(BaseModel):
         return normalized
 
 
-@contextmanager
 def gpu_runtime_lock(label: str):
     """使用仓库级 GPU 文件锁串行化声效生成。"""
-    with open(GPU_LOCK_FILE, "a+", encoding="utf-8") as lock_file:
-        print(f"[GPU 锁] 等待进入: {label}")
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        print(f"[GPU 锁] 已进入: {label}")
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-            print(f"[GPU 锁] 已退出: {label}")
+    return shared_gpu_runtime_lock(GPU_LOCK_FILE, label)
 
 
 def wait_after_cuda_release() -> None:
@@ -176,15 +168,9 @@ def wait_after_cuda_release() -> None:
         time.sleep(CUDA_RELEASE_DELAY)
 
 
-def assert_local_request(request: Request) -> None:
-    """限制内部卸载接口只能从本机调用。"""
-    client_host = request.client.host if request.client else ""
-    if client_host not in {"127.0.0.1", "::1", "localhost"}:
-        raise HTTPException(status_code=403, detail="仅允许本机访问内部接口")
-
-
 class SoundEffectWorkerManager:
     """把声效请求转换为 worker JSON，并集中记录 worker 错误。"""
+
     def __init__(self) -> None:
         self.lock = threading.RLock()
         self.last_error: str | None = None
@@ -288,43 +274,38 @@ def health() -> dict[str, Any]:
     }
 
 
-@app.post("/internal/unload_all")
-def internal_unload_all(request: Request) -> JSONResponse:
-    """保留控制面兼容接口；一次性 worker 不需要常驻卸载。"""
-    assert_local_request(request)
-    with gpu_runtime_lock("soundeffect/unload"):
-        with manager.lock:
-            pass
-    return JSONResponse(
-        {
-            "code": 200,
-            "msg": "SoundEffect wrapper 无常驻模型；没有 worker 运行时显存已处于释放状态。",
-        }
-    )
-
-
 @app.post("/v1/moss/soundEffect")
 def generate(request: SoundEffectGenerateRequest) -> Response:
     """串行调用 worker、保存生成音效并返回 WAV 响应。"""
-    with gpu_runtime_lock("soundeffect/generate"):
-        with manager.lock:
-            try:
-                audio = manager.run_worker(manager.build_worker_payload(request))
-                if not audio:
-                    raise RuntimeError("SoundEffect worker 返回空音频。")
-                saved_output_path = persist_audio_bytes(
-                    audio,
-                    "moss_soundeffect",
-                    SOUNDEFFECT_STORAGE_DIR,
-                )
-                print(f"[MOSS-SoundEffect] 已保存音效: {saved_output_path}")
-                return Response(content=audio, media_type="audio/wav")
-            except HTTPException:
-                raise
-            except Exception as exc:
-                raise HTTPException(status_code=500, detail=str(exc)) from exc
-            finally:
-                wait_after_cuda_release()
+    try:
+        payload = manager.build_worker_payload(request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    try:
+        with gpu_runtime_lock("soundeffect/generate"):
+            with manager.lock:
+                try:
+                    audio = manager.run_worker(payload)
+                    if not audio:
+                        raise RuntimeError("SoundEffect worker 返回空音频。")
+                    saved_output_path = persist_audio_bytes(
+                        audio,
+                        "moss_soundeffect",
+                        SOUNDEFFECT_STORAGE_DIR,
+                    )
+                    print(f"[MOSS-SoundEffect] 已保存音效: {saved_output_path}")
+                    return Response(content=audio, media_type="audio/wav")
+                except HTTPException:
+                    raise
+                except Exception as exc:
+                    raise HTTPException(status_code=500, detail=str(exc)) from exc
+                finally:
+                    wait_after_cuda_release()
+    except GpuLockTimeoutError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 if __name__ == "__main__":

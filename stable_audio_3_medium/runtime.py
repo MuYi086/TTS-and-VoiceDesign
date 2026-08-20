@@ -15,11 +15,11 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from unitale_runtime import gpu_runtime_lock as shared_gpu_runtime_lock
 
 
 @dataclass(frozen=True)
@@ -248,21 +248,9 @@ def run_local_worker(payload: dict[str, Any], config: WorkerConfig) -> bytes:
                 pass
 
 
-@contextmanager
-def gpu_runtime_lock(lock_path: Path, label: str) -> Iterator[None]:
-    """持有共享 GPU 文件锁，保证模型请求不会并行争抢显存。"""
-    import fcntl
-
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(lock_path, "a+", encoding="utf-8") as lock_file:
-        print(f"[GPU 锁] 等待进入: {label}")
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        print(f"[GPU 锁] 已进入: {label}")
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-            print(f"[GPU 锁] 已退出: {label}")
+def gpu_runtime_lock(lock_path: Path, label: str):
+    """获取带等待上限和显存采样的仓库级 GPU 队列。"""
+    return shared_gpu_runtime_lock(lock_path, label)
 
 
 def persist_audio_bytes(audio_bytes: bytes, model_prefix: str, output_dir: Path) -> Path:

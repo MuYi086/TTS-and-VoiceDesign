@@ -85,15 +85,6 @@ class StableAudioApiContractTests(unittest.TestCase):
         self.assertEqual(len(saved_files), 1)
         self.assertTrue(all(path.parent == main.SOUNDEFFECT_STORAGE_DIR for path in saved_files))
 
-    def test_internal_unload_route_is_kept(self):
-        with (
-            patch.object(main, "assert_local_request"),
-            patch.object(main, "wait_after_cuda_release"),
-        ):
-            response = self.client.post("/internal/unload_all")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["code"], 200)
-
 
 class WorkerRuntimeTests(unittest.TestCase):
     def test_uv_worker_uses_current_python_and_cleans_temp_files(self):

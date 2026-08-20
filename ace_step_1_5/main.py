@@ -16,10 +16,10 @@ import time
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field, field_validator
 from starlette.middleware.base import BaseHTTPMiddleware
+from unitale_runtime import GpuLockTimeoutError
 
 from runtime import (
     WorkerConfig,
@@ -146,13 +146,6 @@ class AceStepBgmRequest(BaseModel):
             return None
         normalized = value.strip()
         return normalized or None
-
-
-def assert_local_request(request: Request) -> None:
-    """限制内部控制接口只能由本机访问。"""
-    client_host = request.client.host if request.client else ""
-    if client_host not in {"127.0.0.1", "::1", "localhost"}:
-        raise HTTPException(status_code=403, detail="仅允许本机访问内部接口")
 
 
 def model_status() -> dict[str, object]:
@@ -292,49 +285,47 @@ def health() -> dict[str, object]:
     }
 
 
-@app.post("/internal/unload_all")
-def internal_unload_all(request: Request) -> JSONResponse:
-    """保留控制面接口；一次性 worker 退出后不存在常驻模型可卸载。"""
-    assert_local_request(request)
-    with gpu_runtime_lock(GPU_LOCK_FILE, "ace_step_1_5/unload"):
-        with manager.lock:
-            pass
-    return JSONResponse(
-        {
-            "code": 200,
-            "msg": "ACE-Step 服务无常驻模型；worker 退出后显存已释放。",
-        }
-    )
-
-
 @app.post("/v1/aceStep/bgm")
 def generate_bgm(request: AceStepBgmRequest) -> Response:
     """串行执行一次 ACE-Step 生成，并将 WAV 保存到 BGM 目录。"""
-    with gpu_runtime_lock(GPU_LOCK_FILE, "ace_step_1_5/generate"):
-        with manager.lock:
-            try:
-                result = manager.run_worker(manager.build_worker_payload(request))
-                if isinstance(result, WorkerResult):
-                    audio = result.audio
-                    metadata = result.metadata
-                else:
-                    audio = result
-                    metadata = {}
-                saved_output_path = persist_audio_bytes(audio, "ace_step_1_5", ACESTEP_OUTPUT_DIR)
-                print(f"[ACE-Step] 已保存 BGM: {saved_output_path}")
-                headers = {
-                    "X-ACE-Step-Model": MODEL_NAME,
-                    "X-ACE-Step-Seed": str(metadata.get("seed", request.seed)),
-                    "X-ACE-Step-Sample-Rate": str(metadata.get("sample_rate", SAMPLE_RATE)),
-                }
-                return Response(content=audio, media_type="audio/wav", headers=headers)
-            except HTTPException:
-                raise
-            except Exception as exc:
-                LOGGER.exception("ACE-Step request failed")
-                raise HTTPException(status_code=500, detail=str(exc)) from exc
-            finally:
-                wait_after_cuda_release()
+    try:
+        payload = manager.build_worker_payload(request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        LOGGER.exception("ACE-Step request preflight failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    try:
+        with gpu_runtime_lock(GPU_LOCK_FILE, "ace_step_1_5/generate"):
+            with manager.lock:
+                try:
+                    result = manager.run_worker(payload)
+                    if isinstance(result, WorkerResult):
+                        audio = result.audio
+                        metadata = result.metadata
+                    else:
+                        audio = result
+                        metadata = {}
+                    saved_output_path = persist_audio_bytes(
+                        audio, "ace_step_1_5", ACESTEP_OUTPUT_DIR
+                    )
+                    print(f"[ACE-Step] 已保存 BGM: {saved_output_path}")
+                    headers = {
+                        "X-ACE-Step-Model": MODEL_NAME,
+                        "X-ACE-Step-Seed": str(metadata.get("seed", request.seed)),
+                        "X-ACE-Step-Sample-Rate": str(metadata.get("sample_rate", SAMPLE_RATE)),
+                    }
+                    return Response(content=audio, media_type="audio/wav", headers=headers)
+                except HTTPException:
+                    raise
+                except Exception as exc:
+                    LOGGER.exception("ACE-Step request failed")
+                    raise HTTPException(status_code=500, detail=str(exc)) from exc
+                finally:
+                    wait_after_cuda_release()
+    except GpuLockTimeoutError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 if __name__ == "__main__":

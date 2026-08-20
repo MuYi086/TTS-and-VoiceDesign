@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 # EditX 的模型依赖仅在 worker 中导入；API 进程因此可在无 CUDA 环境启动。
-import fcntl
 import os
 import shutil
 import signal
 import subprocess
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
 from typing import Any
+
+from unitale_runtime import gpu_runtime_lock as shared_gpu_runtime_lock
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -74,19 +73,9 @@ def cuda_status() -> dict[str, Any]:
     return status
 
 
-@contextmanager
-def gpu_runtime_lock(lock_file_path: str, label: str) -> Iterator[None]:
-    """通过仓库共享文件锁串行化 EditX 的 GPU 推理。"""
-    os.makedirs(os.path.dirname(lock_file_path) or ".", exist_ok=True)
-    with open(lock_file_path, "a+", encoding="utf-8") as lock_file:
-        print(f"[GPU 锁] 等待进入: {label}")
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        print(f"[GPU 锁] 已进入: {label}")
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-            print(f"[GPU 锁] 已退出: {label}")
+def gpu_runtime_lock(lock_file_path: str, label: str):
+    """获取带等待上限和显存采样的仓库级 GPU 队列。"""
+    return shared_gpu_runtime_lock(lock_file_path, label)
 
 
 def wait_after_cuda_release(delay: float, label: str = "") -> None:

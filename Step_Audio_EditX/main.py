@@ -8,7 +8,6 @@ API 进程刻意不导入 Torch、vLLM、ONNX Runtime 或上游模型代码。�
 from __future__ import annotations
 
 # 学习入口：EditX API 只负责参考音频、参数校验和 worker 生命周期，不导入模型依赖。
-import hashlib
 import importlib.util
 import json
 import logging
@@ -22,11 +21,19 @@ from pathlib import Path
 from typing import Any, Literal
 
 import uvicorn
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import Response
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, model_validator
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
+from unitale_runtime import (
+    AudioUploadError,
+    GpuLockTimeoutError,
+    StagedUpload,
+    commit_plain_upload,
+    stage_audio_upload,
+)
+from unitale_runtime.storage import hash_filename
 
 from audio_output import persist_audio_bytes
 from step_audio_editx_runtime import (
@@ -98,6 +105,7 @@ app = FastAPI(title="Unitale Step-Audio-EditX API")
 
 class ForceCORS(BaseHTTPMiddleware):
     """为本地 WebUI 提供跨域响应和 OPTIONS 预检处理。"""
+
     async def dispatch(self, request, call_next):
         if request.method == "OPTIONS":
             return Response(
@@ -120,13 +128,13 @@ app.add_middleware(ForceCORS)
 class StepAudioEditXEditRequest(BaseModel):
     """Step-Audio-EditX 编辑接口的请求参数与输入约束。"""
 
-    prompt_text: str | None = None
+    prompt_text: str | None = Field(default=None, max_length=12_000)
     prompt_audio: str = Field(
-        min_length=1, description="经 /v1/upload_audio 上传后的 prompt 音频路径"
+        min_length=1, max_length=1_024, description="经 /v1/upload_audio 上传后的 prompt 音频路径"
     )
-    generated_text: str | None = None
+    generated_text: str | None = Field(default=None, max_length=12_000)
     edit_type: Literal["emotion", "style", "paralinguistic", "denoise", "vad", "speed"]
-    edit_info: str = ""
+    edit_info: str = Field(default="", max_length=2_000)
 
     @model_validator(mode="after")
     def validate_edit_contract(self):
@@ -152,24 +160,25 @@ def module_available(module_name: str) -> bool:
         return False
 
 
-def hash_filename(filename: str) -> str:
-    """用逻辑路径哈希生成安全稳定的参考音频文件名。"""
-    extension = os.path.splitext(filename)[1] or ".wav"
-    digest = hashlib.md5(filename.encode("utf-8")).hexdigest()
-    return f"{digest}{extension}"
-
-
 def prompt_audio_path(filename: str) -> Path:
     """把 WebUI 逻辑路径解析为 clone 存储目录中的本地文件。"""
     return Path(PROMPTS_DIR) / hash_filename(filename)
 
 
-def store_uploaded_audio(content: bytes, full_path: str) -> dict[str, object]:
+def store_uploaded_audio(staged: StagedUpload, full_path: str) -> dict[str, object]:
     """同步保存 prompt 音频，供异步上传路由在线程池中调用。"""
+    if not full_path.strip() or len(full_path) > 1_024:
+        staged.path.unlink(missing_ok=True)
+        raise AudioUploadError("full_path 不能为空且不得超过 1024 个字符。")
     save_path = prompt_audio_path(full_path)
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    save_path.write_bytes(content)
-    return {"code": 200, "msg": "上传成功", "filename": full_path}
+    commit_plain_upload(staged, save_path)
+    return {
+        "code": 200,
+        "msg": "上传成功",
+        "filename": full_path,
+        "sha256": staged.sha256,
+        "size_bytes": staged.size_bytes,
+    }
 
 
 def worker_error_excerpt(output: str) -> str:
@@ -365,20 +374,14 @@ def health():
     }
 
 
-@app.post("/internal/unload_all")
-def internal_unload_all(request: Request):
-    """保留本机控制契约；一次性 worker 退出后不存在常驻模型。"""
-    client_host = request.client.host if request.client else ""
-    if client_host not in {"127.0.0.1", "::1", "localhost", "testclient"}:
-        raise HTTPException(status_code=403, detail="仅允许本机访问内部接口")
-    return {"code": 200, "msg": "Step-Audio-EditX worker 已退出，无常驻模型"}
-
-
 @app.post("/v1/upload_audio")
 async def upload_audio(audio: UploadFile = File(...), full_path: str = Form(...)):
     """在线程池中保存编辑用参考音频，避免阻塞事件循环。"""
-    content = await audio.read()
-    return await run_in_threadpool(store_uploaded_audio, content, full_path)
+    try:
+        staged = await stage_audio_upload(audio, Path(RUNTIME_CACHE_DIR) / "uploads")
+        return await run_in_threadpool(store_uploaded_audio, staged, full_path)
+    except AudioUploadError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
 
 
 @app.get("/v1/check/audio")
@@ -392,27 +395,39 @@ def check_audio_exists(file_name: str):
 def step_audio_editx_edit(request: StepAudioEditXEditRequest):
     """串行执行一次语音编辑，并返回保存后的 WAV。"""
     prompt_path = prompt_audio_path(request.prompt_audio)
-    with gpu_runtime_lock(GPU_LOCK_FILE, "step-audio-editx/edit"):
-        with manager.lock:
-            try:
-                payload = manager.build_worker_payload(request, prompt_path)
-                audio_bytes = manager.run_worker(payload)
-                saved_output_path = persist_audio_bytes(
-                    audio_bytes,
-                    "step_audio_editx",
-                    STEP_AUDIO_EDITX_OUTPUT_DIR,
-                )
-                print(f"[Step-Audio-EditX] 已保存语音音频: {saved_output_path}")
-                return Response(content=audio_bytes, media_type="audio/wav")
-            except FileNotFoundError as exc:
-                raise HTTPException(status_code=404, detail=str(exc)) from exc
-            except HTTPException:
-                raise
-            except Exception as exc:
-                LOGGER.exception("Step-Audio-EditX request failed")
-                raise HTTPException(status_code=500, detail=str(exc)) from exc
-            finally:
-                wait_after_cuda_release(CUDA_RELEASE_DELAY, "after Step-Audio-EditX worker")
+    try:
+        payload = manager.build_worker_payload(request, prompt_path)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        LOGGER.exception("Step-Audio-EditX request preflight failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    try:
+        with gpu_runtime_lock(GPU_LOCK_FILE, "step-audio-editx/edit"):
+            with manager.lock:
+                try:
+                    audio_bytes = manager.run_worker(payload)
+                    saved_output_path = persist_audio_bytes(
+                        audio_bytes,
+                        "step_audio_editx",
+                        STEP_AUDIO_EDITX_OUTPUT_DIR,
+                    )
+                    print(f"[Step-Audio-EditX] 已保存语音音频: {saved_output_path}")
+                    return Response(content=audio_bytes, media_type="audio/wav")
+                except FileNotFoundError as exc:
+                    raise HTTPException(status_code=404, detail=str(exc)) from exc
+                except HTTPException:
+                    raise
+                except Exception as exc:
+                    LOGGER.exception("Step-Audio-EditX request failed")
+                    raise HTTPException(status_code=500, detail=str(exc)) from exc
+                finally:
+                    wait_after_cuda_release(CUDA_RELEASE_DELAY, "after Step-Audio-EditX worker")
+    except GpuLockTimeoutError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ dependencies = [
     "numpy==2.1.0",
     "soundfile==0.14.0",
     "moss-tts",
+    "unitale-runtime",
 ]
 
 [dependency-groups]
@@ -41,6 +42,7 @@ explicit = true
 # MOSS-VoiceGenerator requires the locally prepared upstream checkout. Keep it
 # editable so deployment can use its preinstalled source without network access.
 moss-tts = { path = "/home/muyi086/tts-depency/MOSS-TTS", editable = true }
+unitale-runtime = { path = "../unitale_runtime", editable = true }
 torch = { index = "pytorch-cu130" }
 torchaudio = { index = "pytorch-cu130" }
 

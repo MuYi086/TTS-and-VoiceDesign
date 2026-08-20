@@ -32,8 +32,7 @@ curl -X POST http://127.0.0.1:8312/v1/moss/soundEffect \
   -o moss-sfx.wav
 ```
 
-接口只提供最终路由 `/v1/moss/soundEffect` 和本机内部路由
-`/internal/unload_all`。成功响应是 48 kHz 单声道 `audio/wav`；`seconds` 范围
+接口只提供最终路由 `/v1/moss/soundEffect`。成功响应是 48 kHz 单声道 `audio/wav`；`seconds` 范围
 为 `(0, 30]`。模型不会在 API 进程导入，真实推理通过同一 uv Python 启动
 `worker.py`。
 

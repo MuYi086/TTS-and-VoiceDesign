@@ -168,7 +168,13 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
 
     text = normalize_text(request.get("text"), "text")
     instruction = normalize_text(request.get("voice_description"), "voice_description")
-    chunks = split_text(text, int(request.get("max_chars_per_chunk") or 0))
+    # 0 明确表示不分片，不能被 ``or`` 变成其他默认值。
+    chunks = split_text(
+        text,
+        int(
+            request["max_chars_per_chunk"] if request.get("max_chars_per_chunk") is not None else 0
+        ),
+    )
     dtype = resolve_dtype(torch, request.get("dtype", "auto"))
     attention = resolve_attention(torch, request.get("attn_implementation", "auto"), dtype)
     load_kwargs = {
@@ -198,7 +204,11 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
             non_streaming_mode=True,
             **generation_kwargs,
         )
-        waveform = join_waveforms(wavs, int(sample_rate), int(request.get("pause_ms") or 250))
+        waveform = join_waveforms(
+            wavs,
+            int(sample_rate),
+            int(request["pause_ms"] if request.get("pause_ms") is not None else 250),
+        )
         output_wav.parent.mkdir(parents=True, exist_ok=True)
         sf.write(str(output_wav), waveform, int(sample_rate))
     finally:

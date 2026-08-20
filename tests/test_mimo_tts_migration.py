@@ -45,7 +45,6 @@ class MimoTtsMigrationTests(unittest.TestCase):
 
         expected_routes = {
             ("GET", "/v1/health"),
-            ("GET", "/v1/voice-design/providers"),
             ("POST", "/v1/mimo/timbre"),
         }
         actual_routes = {

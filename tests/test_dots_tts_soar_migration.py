@@ -57,14 +57,16 @@ class DotsTtsSoarMigrationTests(unittest.TestCase):
         self.filename = "migration-test.wav"
         self.prompt_text = "这是一条准确的参考文本。"
         (PROMPTS_DIR / main.hash_filename(self.filename)).write_bytes(b"RIFF" + b"\0" * 40)
-        main.save_prompt_text_sidecar(self.filename, self.prompt_text)
+        main.reference_store.prompt_sidecar_path(self.filename).write_text(
+            self.prompt_text,
+            encoding="utf-8",
+        )
 
     def test_routes_health_uv_runtime_and_flash_policy(self) -> None:
         from fastapi.testclient import TestClient
 
         expected_routes = {
             ("GET", "/v1/health"),
-            ("POST", "/internal/unload_all"),
             ("POST", "/v1/upload_audio"),
             ("GET", "/v1/check/audio"),
             ("POST", "/v2/dotsTTS/clone"),

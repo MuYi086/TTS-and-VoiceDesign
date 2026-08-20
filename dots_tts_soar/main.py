@@ -3,23 +3,31 @@
 from __future__ import annotations
 
 # 学习入口：dots 服务将每个请求序列化给当前 uv 环境的 worker，父进程不加载重型依赖。
-import fcntl
-import hashlib
 import importlib.util
 import logging
 import os
 import re
 import sys
 import threading
-from contextlib import contextmanager
 from typing import Literal
 
 import uvicorn
-from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import Field
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
+from unitale_runtime import (
+    AudioReferenceStore,
+    AudioUploadError,
+    GpuLockTimeoutError,
+    StagedUpload,
+    stage_audio_upload,
+)
+from unitale_runtime import (
+    gpu_runtime_lock as shared_gpu_runtime_lock,
+)
+from unitale_runtime.storage import sha256_file
 
 from runtime import UvWorkerConfig, cuda_status, persist_audio_bytes, run_uv_worker
 from synthesis_request import CloneSynthesisRequest
@@ -189,11 +197,14 @@ lock_dir = os.path.dirname(GPU_LOCK_FILE)
 if lock_dir:
     os.makedirs(lock_dir, exist_ok=True)
 
+reference_store = AudioReferenceStore(PROMPTS_DIR, TIMBRE_STORAGE_DIR)
+
 app = FastAPI(title="Unitale dots.tts-soar Voice Clone API")
 
 
 class ForceCORS(BaseHTTPMiddleware):
     """为本地 WebUI 提供跨域响应和 OPTIONS 预检支持。"""
+
     async def dispatch(self, request, call_next):
         if request.method == "OPTIONS":
             return Response(
@@ -214,143 +225,41 @@ app.add_middleware(ForceCORS)
 
 
 def hash_filename(filename: str) -> str:
-    ext = os.path.splitext(filename)[1] or ".wav"
-    digest = hashlib.md5(filename.encode("utf-8")).hexdigest()
-    return f"{digest}{ext}"
+    return reference_store.clone_path(filename).name
 
 
 def clone_prompt_audio_path(filename: str) -> str:
-    return os.path.join(PROMPTS_DIR, hash_filename(filename))
+    return str(reference_store.clone_path(filename))
 
 
 def timbre_reference_map_path(filename: str) -> str:
-    return os.path.join(TIMBRE_REFERENCE_DIR, f"{hash_filename(filename)}.path")
+    return str(reference_store.reference_path(filename))
 
 
 def prompt_audio_path(filename: str) -> str:
     """解析克隆上传，或解析只保存在音色目录中的设计音频。"""
-    clone_path = clone_prompt_audio_path(filename)
-    if os.path.isfile(clone_path):
-        return clone_path
-
-    reference_path = timbre_reference_map_path(filename)
-    if os.path.isfile(reference_path):
-        with open(reference_path, encoding="utf-8") as reference_file:
-            timbre_path = reference_file.read().strip()
-        if timbre_path and os.path.isfile(timbre_path):
-            return timbre_path
-    return clone_path
-
-
-def file_sha256(path: str) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def find_matching_timbre_audio(content: bytes) -> str | None:
-    """识别已生成的音色，避免把同一份 WAV 再复制到克隆目录。"""
-    content_digest = hashlib.sha256(content).hexdigest()
-    with os.scandir(TIMBRE_STORAGE_DIR) as entries:
-        for entry in entries:
-            if not entry.is_file() or not entry.name.lower().endswith(".wav"):
-                continue
-            if file_sha256(entry.path) == content_digest:
-                return entry.path
-    return None
+    return str(reference_store.prompt_audio_path(filename))
 
 
 def prompt_text_sidecar_path(filename: str) -> str:
-    clone_sidecar_path = os.path.join(PROMPTS_DIR, f"{hash_filename(filename)}.prompt.txt")
-    if os.path.isfile(clone_prompt_audio_path(filename)):
-        return clone_sidecar_path
-    if os.path.isfile(timbre_reference_map_path(filename)):
-        return os.path.join(TIMBRE_REFERENCE_DIR, f"{hash_filename(filename)}.prompt.txt")
-    return clone_sidecar_path
+    return str(reference_store.prompt_sidecar_path(filename))
 
 
 def load_prompt_text_sidecar(filename: str) -> str | None:
-    path = prompt_text_sidecar_path(filename)
-    if not os.path.isfile(path):
-        return None
-    with open(path, encoding="utf-8") as file:
-        return normalize_optional_text(file.read())
-
-
-def save_prompt_text_sidecar(filename: str, prompt_text: str | None) -> None:
-    path = prompt_text_sidecar_path(filename)
-    normalized = normalize_optional_text(prompt_text)
-    if normalized is None:
-        if os.path.exists(path):
-            os.remove(path)
-        return
-    with open(path, "w", encoding="utf-8") as file:
-        file.write(normalized)
+    return reference_store.load_prompt_text(filename)
 
 
 def store_uploaded_audio(
-    content: bytes,
+    staged: StagedUpload,
     full_path: str,
     prompt_text: str | None,
 ) -> dict[str, object]:
-    """同步保存参考音频和 sidecar，避免阻塞异步请求处理。"""
-    clone_path = clone_prompt_audio_path(full_path)
-    timbre_path = find_matching_timbre_audio(content)
-    if timbre_path:
-        # 设计音色的原始 WAV 只保存在 timbre；这里仅保存解析引用供克隆服务使用。
-        if os.path.isfile(clone_path):
-            os.remove(clone_path)
-        clone_sidecar_path = os.path.join(PROMPTS_DIR, f"{hash_filename(full_path)}.prompt.txt")
-        if os.path.isfile(clone_sidecar_path):
-            os.remove(clone_sidecar_path)
-        with open(timbre_reference_map_path(full_path), "w", encoding="utf-8") as reference_file:
-            reference_file.write(timbre_path)
-    else:
-        reference_map_path = timbre_reference_map_path(full_path)
-        if os.path.isfile(reference_map_path):
-            os.remove(reference_map_path)
-        with open(clone_path, "wb") as file:
-            file.write(content)
-
-    normalized_prompt_text = normalize_optional_text(prompt_text)
-    save_prompt_text_sidecar(full_path, normalized_prompt_text)
-    return {
-        "code": 200,
-        "msg": "上传成功",
-        "filename": full_path,
-        "size_bytes": len(content),
-        "sha256": hashlib.sha256(content).hexdigest(),
-        "has_prompt_text": bool(normalized_prompt_text),
-    }
+    """原子提交流式上传，避免并发请求互相覆盖。"""
+    return reference_store.commit_staged_upload(staged, full_path, prompt_text)
 
 
-def sha256_file(path: str) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as file:
-        for chunk in iter(lambda: file.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def assert_local_request(request: Request) -> None:
-    client_host = request.client.host if request.client else ""
-    if client_host not in {"127.0.0.1", "::1", "localhost"}:
-        raise HTTPException(status_code=403, detail="仅允许本机访问内部接口")
-
-
-@contextmanager
 def gpu_runtime_lock(label: str):
-    with open(GPU_LOCK_FILE, "a+", encoding="utf-8") as lock_file:
-        print(f"[GPU 锁] 等待进入: {label}")
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        print(f"[GPU 锁] 已进入: {label}")
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-            print(f"[GPU 锁] 已退出: {label}")
+    return shared_gpu_runtime_lock(GPU_LOCK_FILE, label)
 
 
 def wait_after_cuda_release(label: str) -> None:
@@ -364,22 +273,23 @@ def wait_after_cuda_release(label: str) -> None:
 class DotsTtsSoarSynthesizeRequest(CloneSynthesisRequest):
     """dots.tts-soar 官方克隆参数及本项目兼容字段。"""
 
-    text: str
-    audio_path: str
-    prompt_text: str | None = None
-    language: str | None = None
+    text: str = Field(min_length=1, max_length=12_000)
+    audio_path: str = Field(min_length=1, max_length=1_024)
+    backend: Literal["dots-tts-soar"] | None = None
+    prompt_text: str | None = Field(default=None, max_length=12_000)
+    language: str | None = Field(default=None, max_length=32)
     template_name: Literal["tts", "instruction_tts", "text_to_audio", "tts_interleave"] | None = (
         None
     )
-    precision: str | None = None
-    seed: int | None = None
-    ode_method: str | None = None
-    num_steps: int | None = Field(default=None, ge=1)
-    guidance_scale: float | None = Field(default=None, ge=0)
-    speaker_scale: float | None = Field(default=None, ge=0)
-    max_generate_length: int | None = Field(default=None, ge=1)
-    max_chars_per_chunk: int | None = Field(default=None, ge=0)
-    pause_ms: int | None = Field(default=None, ge=0)
+    precision: str | None = Field(default=None, max_length=32)
+    seed: int | None = Field(default=None, ge=0, le=4_294_967_295)
+    ode_method: str | None = Field(default=None, max_length=32)
+    num_steps: int | None = Field(default=None, ge=1, le=200)
+    guidance_scale: float | None = Field(default=None, ge=0, le=20)
+    speaker_scale: float | None = Field(default=None, ge=0, le=20)
+    max_generate_length: int | None = Field(default=None, ge=1, le=16_384)
+    max_chars_per_chunk: int | None = Field(default=None, ge=0, le=2_000)
+    pause_ms: int | None = Field(default=None, ge=0, le=10_000)
     normalize_text: bool | None = None
     profile_inference: bool | None = None
 
@@ -397,6 +307,7 @@ DOTS_TTS_SOAR_WORKER = UvWorkerConfig(
 
 class DotsTtsSoarWorkerManager:
     """管理 dots 参考音频解析、worker JSON 和进程清理。"""
+
     def __init__(self):
         self.lock = threading.RLock()
         self.last_error: str | None = None
@@ -547,16 +458,6 @@ def health():
     }
 
 
-@app.post("/internal/unload_all")
-def internal_unload_all(request: Request):
-    """保留本机控制接口；一次性 worker 已在请求结束时退出。"""
-    assert_local_request(request)
-    with gpu_runtime_lock("dots_tts_soar/unload"):
-        with manager.lock:
-            pass
-    return JSONResponse({"code": 200, "msg": "dots.tts-soar worker 已退出，无常驻模型"})
-
-
 @app.post("/v1/upload_audio")
 async def upload_audio(
     audio: UploadFile = File(...),
@@ -564,8 +465,11 @@ async def upload_audio(
     prompt_text: str | None = Form(None),
 ):
     """在线程池中保存参考音频和可选的文本 sidecar。"""
-    content = await audio.read()
-    return await run_in_threadpool(store_uploaded_audio, content, full_path, prompt_text)
+    try:
+        staged = await stage_audio_upload(audio, os.path.join(RUNTIME_CACHE_DIR, "uploads"))
+        return await run_in_threadpool(store_uploaded_audio, staged, full_path, prompt_text)
+    except AudioUploadError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
 
 
 @app.get("/v1/check/audio")
@@ -585,25 +489,35 @@ def check_audio_exists(file_name: str):
 @app.post("/v2/dotsTTS/clone")
 def synthesize_v2(request: DotsTtsSoarSynthesizeRequest):
     """串行执行 dots.tts-soar 克隆并返回生成 WAV。"""
-    with gpu_runtime_lock("dots_tts_soar/synthesize"):
-        with manager.lock:
-            try:
-                payload = manager.build_worker_payload(request)
-                audio_bytes = manager.run_worker(payload)
-                saved_output_path = persist_audio_bytes(
-                    audio_bytes,
-                    "dots_tts_soar",
-                    DOTS_TTS_SOAR_OUTPUT_DIR,
-                )
-                print(f"[dots.tts-soar] 已保存生成音频: {saved_output_path}")
-                return Response(content=audio_bytes, media_type="audio/wav")
-            except HTTPException:
-                raise
-            except Exception as exc:
-                LOGGER.exception("dots.tts-soar request failed")
-                raise HTTPException(status_code=500, detail=str(exc)) from exc
-            finally:
-                wait_after_cuda_release("after dots.tts-soar worker")
+    try:
+        payload = manager.build_worker_payload(request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        LOGGER.exception("dots.tts-soar request preflight failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    try:
+        with gpu_runtime_lock("dots_tts_soar/synthesize"):
+            with manager.lock:
+                try:
+                    audio_bytes = manager.run_worker(payload)
+                    saved_output_path = persist_audio_bytes(
+                        audio_bytes,
+                        "dots_tts_soar",
+                        DOTS_TTS_SOAR_OUTPUT_DIR,
+                    )
+                    print(f"[dots.tts-soar] 已保存生成音频: {saved_output_path}")
+                    return Response(content=audio_bytes, media_type="audio/wav")
+                except HTTPException:
+                    raise
+                except Exception as exc:
+                    LOGGER.exception("dots.tts-soar request failed")
+                    raise HTTPException(status_code=500, detail=str(exc)) from exc
+                finally:
+                    wait_after_cuda_release("after dots.tts-soar worker")
+    except GpuLockTimeoutError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 if __name__ == "__main__":

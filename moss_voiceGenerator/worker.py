@@ -14,9 +14,6 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-import soundfile as sf
-
 from moss_voice_design_compat import (
     install_moss_decode_compatibility,
     validate_moss_codec_compatibility,
@@ -113,8 +110,10 @@ def decode_message(processor, outputs):
     return messages[0].audio_codes_list[0]
 
 
-def join_waveforms(waveforms: list[Any], sample_rate: int, pause_ms: int, torch) -> np.ndarray:
+def join_waveforms(waveforms: list[Any], sample_rate: int, pause_ms: int, torch) -> Any:
     """在片段之间插入静音，并合并成可写入 WAV 的 numpy 波形。"""
+    import numpy as np
+
     if not waveforms:
         raise RuntimeError("MOSS-VoiceGenerator 未返回音频。")
     segments = []
@@ -149,6 +148,7 @@ def load_moss_processor(auto_processor, model_path: Path, codec_path: Path):
 def synthesize(request: dict[str, Any], output_wav: Path) -> None:
     """加载 MOSS VoiceGenerator，生成音色设计音频并写出 WAV。"""
     try:
+        import soundfile as sf
         import torch
         from transformers import AutoModel, AutoProcessor, processing_utils
     except ImportError as exc:
@@ -188,7 +188,15 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
         model.eval()
         sample_rate = int(processor.model_config.sampling_rate)
         waveforms = []
-        chunks = split_text(text, int(request.get("max_chars_per_chunk") or 0))
+        # 0 是调用方明确指定的不分片模式，不能用 ``or`` 改写。
+        chunks = split_text(
+            text,
+            int(
+                request["max_chars_per_chunk"]
+                if request.get("max_chars_per_chunk") is not None
+                else 0
+            ),
+        )
         for chunk in chunks:
             conversation = [[processor.build_user_message(text=chunk, instruction=instruction)]]
             batch = processor(conversation, mode="generation")
@@ -206,7 +214,10 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
                 )
             waveforms.append(decode_message(processor, outputs))
         waveform = join_waveforms(
-            waveforms, sample_rate, int(request.get("pause_ms") or 250), torch
+            waveforms,
+            sample_rate,
+            int(request["pause_ms"] if request.get("pause_ms") is not None else 250),
+            torch,
         )
         output_wav.parent.mkdir(parents=True, exist_ok=True)
         sf.write(str(output_wav), waveform, sample_rate)

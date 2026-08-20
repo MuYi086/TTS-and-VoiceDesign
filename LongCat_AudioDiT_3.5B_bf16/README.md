@@ -19,7 +19,6 @@ The service uses the final WebUI port `8323` and routes:
 - `POST /v1/upload_audio`
 - `GET /v1/check/audio`
 - `POST /v1/longCat/clone`
-- `POST /internal/unload_all`
 
 The default paths remain shared with the legacy service:
 

@@ -17,6 +17,7 @@ dependencies = [
     "soundfile==0.14.0",
     "numpy==2.2.6",
     "einops==0.8.2",
+    "unitale-runtime",
 ]
 
 [dependency-groups]
@@ -40,6 +41,7 @@ format = "flat"
 explicit = true
 
 [tool.uv.sources]
+unitale-runtime = { path = "../unitale_runtime", editable = true }
 torch = { index = "pytorch-cu130-aliyun" }
 torchaudio = { index = "pytorch-cu130-aliyun" }
 

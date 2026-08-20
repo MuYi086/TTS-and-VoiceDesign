@@ -3,6 +3,14 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MAIN_DIR="$PROJECT_DIR/main"
+# `--no-sync` 不会安装新增的本地 editable 依赖；显式暴露共享源码，确保部署前未重建
+# 各服务虚拟环境时仍能启动 API。正式同步环境后该路径仍保持兼容且不覆盖 site-packages。
+UNITALE_RUNTIME_SRC="$PROJECT_DIR/unitale_runtime/src"
+if [[ ! -f "$UNITALE_RUNTIME_SRC/unitale_runtime/__init__.py" ]]; then
+  echo "缺少共享运行时源码：$UNITALE_RUNTIME_SRC/unitale_runtime" >&2
+  exit 1
+fi
+export PYTHONPATH="$UNITALE_RUNTIME_SRC${PYTHONPATH:+:$PYTHONPATH}"
 # 所有服务共享同一个存储根目录；启动脚本只做路由和运行环境配置。
 STORAGE_DIR="${STORAGE_DIR:-$PROJECT_DIR/storage}"
 export STORAGE_DIR

@@ -7,8 +7,6 @@ CUDA 上下文始终留在独立子进程中，便于请求结束后彻底释放
 from __future__ import annotations
 
 # 学习入口：上传参考音频后，API 解析 prompt，持有 GPU 锁，再启动一次性 worker。
-import fcntl
-import hashlib
 import importlib.util
 import json
 import logging
@@ -19,16 +17,27 @@ import sys
 import tempfile
 import threading
 import time
-from contextlib import contextmanager
+from typing import Literal
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True,max_split_size_mb:128")
 os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
 
 import uvicorn
-from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
 from fastapi.responses import JSONResponse
+from pydantic import Field
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
+from unitale_runtime import (
+    AudioReferenceStore,
+    AudioUploadError,
+    GpuLockTimeoutError,
+    StagedUpload,
+    stage_audio_upload,
+)
+from unitale_runtime import (
+    gpu_runtime_lock as shared_gpu_runtime_lock,
+)
 
 from audio_output import persist_audio_bytes
 from gpu_runtime import cuda_status, terminate_process_group
@@ -233,11 +242,14 @@ gpu_lock_dir = os.path.dirname(GPU_LOCK_FILE)
 if gpu_lock_dir:
     os.makedirs(gpu_lock_dir, exist_ok=True)
 
+reference_store = AudioReferenceStore(PROMPTS_DIR, TIMBRE_STORAGE_DIR)
+
 app = FastAPI(title="Unitale Qwen3-TTS Voice Clone API")
 
 
 class ForceCORS(BaseHTTPMiddleware):
     """为本地 WebUI 请求添加跨域响应头。"""
+
     async def dispatch(self, request, call_next):
         if request.method == "OPTIONS":
             return Response(
@@ -258,139 +270,47 @@ app.add_middleware(ForceCORS)
 
 
 def hash_filename(filename: str) -> str:
-    ext = os.path.splitext(filename)[1] or ".wav"
-    h = hashlib.md5(filename.encode("utf-8")).hexdigest()
-    return f"{h}{ext}"
+    """将 WebUI 逻辑路径转换为稳定的存储文件名。"""
+    return reference_store.clone_path(filename).name
 
 
 def clone_prompt_audio_path(filename: str) -> str:
-    return os.path.join(PROMPTS_DIR, hash_filename(filename))
+    return str(reference_store.clone_path(filename))
 
 
 def timbre_reference_map_path(filename: str) -> str:
-    return os.path.join(TIMBRE_REFERENCE_DIR, f"{hash_filename(filename)}.path")
+    return str(reference_store.reference_path(filename))
 
 
 def prompt_audio_path(filename: str) -> str:
     """解析克隆上传，或解析克隆预览引用的音色设计资产。"""
-    clone_path = clone_prompt_audio_path(filename)
-    if os.path.isfile(clone_path):
-        return clone_path
-
-    reference_path = timbre_reference_map_path(filename)
-    if os.path.isfile(reference_path):
-        with open(reference_path, encoding="utf-8") as reference_file:
-            timbre_path = reference_file.read().strip()
-        if timbre_path and os.path.isfile(timbre_path):
-            return timbre_path
-    return clone_path
-
-
-def file_sha256(path: str) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def find_matching_timbre_audio(content: bytes) -> str | None:
-    """查找已有设计音频，避免将其复制到克隆存储目录。"""
-    content_digest = hashlib.sha256(content).hexdigest()
-    with os.scandir(TIMBRE_STORAGE_DIR) as entries:
-        for entry in entries:
-            if not entry.is_file() or not entry.name.lower().endswith(".wav"):
-                continue
-            if file_sha256(entry.path) == content_digest:
-                return entry.path
-    return None
+    return str(reference_store.prompt_audio_path(filename))
 
 
 def prompt_text_sidecar_path(filename: str) -> str:
-    clone_sidecar_path = os.path.join(PROMPTS_DIR, f"{hash_filename(filename)}.prompt.txt")
-    if os.path.isfile(clone_prompt_audio_path(filename)):
-        return clone_sidecar_path
-    if os.path.isfile(timbre_reference_map_path(filename)):
-        return os.path.join(TIMBRE_REFERENCE_DIR, f"{hash_filename(filename)}.prompt.txt")
-    return clone_sidecar_path
+    return str(reference_store.prompt_sidecar_path(filename))
 
 
 def load_prompt_text_sidecar(filename: str) -> str | None:
-    sidecar_path = prompt_text_sidecar_path(filename)
-    if not os.path.isfile(sidecar_path):
-        return None
-    with open(sidecar_path, encoding="utf-8") as f:
-        text = f.read().strip()
-    return text or None
-
-
-def save_prompt_text_sidecar(filename: str, prompt_text: str | None) -> None:
-    sidecar_path = prompt_text_sidecar_path(filename)
-    normalized = prompt_text.strip() if prompt_text and prompt_text.strip() else None
-    if normalized is None:
-        if os.path.exists(sidecar_path):
-            os.remove(sidecar_path)
-        return
-    with open(sidecar_path, "w", encoding="utf-8") as f:
-        f.write(normalized)
+    return reference_store.load_prompt_text(filename)
 
 
 def store_uploaded_audio(
-    content: bytes,
+    staged: StagedUpload,
     full_path: str,
     prompt_text: str | None,
 ) -> dict[str, object]:
-    """同步保存参考音频和 sidecar，避免阻塞异步请求处理。"""
-    clone_path = clone_prompt_audio_path(full_path)
-    timbre_path = find_matching_timbre_audio(content)
-    if timbre_path:
-        # 同一份设计音色可能会再次上传用于克隆预览；实际 WAV 只保存在音色目录，
-        # 这里只持久化一份轻量的解析映射。
-        if os.path.isfile(clone_path):
-            os.remove(clone_path)
-        clone_sidecar_path = os.path.join(PROMPTS_DIR, f"{hash_filename(full_path)}.prompt.txt")
-        if os.path.isfile(clone_sidecar_path):
-            os.remove(clone_sidecar_path)
-        with open(timbre_reference_map_path(full_path), "w", encoding="utf-8") as reference_file:
-            reference_file.write(timbre_path)
-    else:
-        reference_map_path = timbre_reference_map_path(full_path)
-        if os.path.isfile(reference_map_path):
-            os.remove(reference_map_path)
-        with open(clone_path, "wb") as file:
-            file.write(content)
-
-    normalized_prompt_text = prompt_text.strip() if prompt_text and prompt_text.strip() else None
-    save_prompt_text_sidecar(full_path, normalized_prompt_text)
-    return {
-        "code": 200,
-        "msg": "上传成功",
-        "filename": full_path,
-        "has_prompt_text": bool(normalized_prompt_text),
-    }
+    """在线程池提交流式暂存文件，并保持音色 WAV 不复制。"""
+    return reference_store.commit_staged_upload(staged, full_path, prompt_text)
 
 
 def module_available(module_name: str) -> bool:
     return importlib.util.find_spec(module_name) is not None
 
 
-def assert_local_request(request: Request) -> None:
-    client_host = request.client.host if request.client else ""
-    if client_host not in {"127.0.0.1", "::1", "localhost"}:
-        raise HTTPException(status_code=403, detail="仅允许本机访问内部接口")
-
-
-@contextmanager
 def gpu_runtime_lock(label: str):
-    with open(GPU_LOCK_FILE, "a+", encoding="utf-8") as lock_file:
-        print(f"[GPU 锁] 等待进入: {label}")
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        print(f"[GPU 锁] 已进入: {label}")
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-            print(f"[GPU 锁] 已退出: {label}")
+    """复用带超时和显存观测的共享 GPU 队列。"""
+    return shared_gpu_runtime_lock(GPU_LOCK_FILE, label)
 
 
 def wait_after_cuda_release(label: str = "") -> None:
@@ -418,29 +338,32 @@ def worker_error_excerpt(output: str) -> str:
 
 class Qwen3TtsSynthesizeRequest(CloneSynthesisRequest):
     """Qwen3-TTS 克隆请求，补充模型专用的生成参数。"""
-    text: str
-    audio_path: str
-    prompt_text: str | None = None
-    language: str | None = None
+
+    text: str = Field(min_length=1, max_length=12_000)
+    audio_path: str = Field(min_length=1, max_length=1_024)
+    backend: Literal["qwen3-tts"] | None = None
+    prompt_text: str | None = Field(default=None, max_length=12_000)
+    language: str | None = Field(default=None, max_length=32)
     x_vector_only: bool | None = None
-    device_map: str | None = None
-    dtype: str | None = None
-    attn_implementation: str | None = None
-    max_new_tokens: int | None = None
-    top_p: float | None = None
-    temperature: float | None = None
-    max_chars_per_chunk: int | None = None
-    pause_ms: int | None = None
+    device_map: str | None = Field(default=None, max_length=128)
+    dtype: str | None = Field(default=None, max_length=32)
+    attn_implementation: str | None = Field(default=None, max_length=64)
+    max_new_tokens: int | None = Field(default=None, ge=1, le=4_096)
+    top_p: float | None = Field(default=None, gt=0, le=1)
+    temperature: float | None = Field(default=None, ge=0, le=5)
+    max_chars_per_chunk: int | None = Field(default=None, ge=0, le=2_000)
+    pause_ms: int | None = Field(default=None, ge=0, le=10_000)
     trim_leading_silence: bool | None = None
-    trim_leading_silence_threshold_db: float | None = None
-    trim_leading_silence_min_ms: int | None = None
-    trim_leading_silence_analysis_window_ms: int | None = None
-    trim_leading_silence_pre_roll_ms: int | None = None
-    trim_leading_silence_max_ms: int | None = None
+    trim_leading_silence_threshold_db: float | None = Field(default=None, ge=-100, le=0)
+    trim_leading_silence_min_ms: int | None = Field(default=None, ge=0, le=10_000)
+    trim_leading_silence_analysis_window_ms: int | None = Field(default=None, ge=1, le=1_000)
+    trim_leading_silence_pre_roll_ms: int | None = Field(default=None, ge=0, le=5_000)
+    trim_leading_silence_max_ms: int | None = Field(default=None, ge=0, le=30_000)
 
 
 class Qwen3TtsWorkerManager:
     """管理参考音频解析、worker JSON 和一次性推理生命周期。"""
+
     def __init__(self):
         self.lock = threading.RLock()
         self.last_error: str | None = None
@@ -683,16 +606,6 @@ def health():
     }
 
 
-@app.post("/internal/unload_all")
-def internal_unload_all(request: Request):
-    """保留本机控制接口；模型已由一次性 worker 自行释放。"""
-    assert_local_request(request)
-    with gpu_runtime_lock("qwen3_tts/unload"):
-        with manager.lock:
-            pass
-    return JSONResponse({"code": 200, "msg": "qwen3_tts worker 已退出，无常驻模型"})
-
-
 @app.post("/v1/upload_audio")
 async def upload_audio(
     audio: UploadFile = File(...),
@@ -700,8 +613,11 @@ async def upload_audio(
     prompt_text: str | None = Form(None),
 ):
     """在线程池中保存上传参考音频，避免阻塞 FastAPI 事件循环。"""
-    content = await audio.read()
-    return await run_in_threadpool(store_uploaded_audio, content, full_path, prompt_text)
+    try:
+        staged = await stage_audio_upload(audio, os.path.join(RUNTIME_CACHE_DIR, "uploads"))
+        return await run_in_threadpool(store_uploaded_audio, staged, full_path, prompt_text)
+    except AudioUploadError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
 
 
 @app.get("/v1/check/audio")
@@ -718,29 +634,39 @@ def check_audio_exists(file_name: str):
 @app.post("/v1/qwen/clone")
 def synthesize_v2(request: Qwen3TtsSynthesizeRequest):
     """串行执行一次 Qwen3-TTS 克隆，并返回生成 WAV。"""
-    with gpu_runtime_lock("qwen3_tts/synthesize"):
-        with manager.lock:
-            try:
-                payload = manager.build_worker_payload(request)
-                manager.last_output_path = None
-                audio_bytes = manager.run_worker(payload)
-                if manager.last_output_path is None:
-                    saved_output_path = persist_audio_bytes(
-                        audio_bytes,
-                        "qwen3_tts",
-                        QWEN3_TTS_OUTPUT_DIR,
-                    )
-                else:
-                    saved_output_path = manager.last_output_path
-                print(f"[Qwen3-TTS] 已保存生成音频: {saved_output_path}")
-                return Response(content=audio_bytes, media_type="audio/wav")
-            except HTTPException:
-                raise
-            except Exception as exc:
-                LOGGER.exception("Qwen3-TTS request failed")
-                raise HTTPException(status_code=500, detail=str(exc)) from exc
-            finally:
-                wait_after_cuda_release("after qwen3_tts worker")
+    try:
+        payload = manager.build_worker_payload(request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        LOGGER.exception("Qwen3-TTS request preflight failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    try:
+        with gpu_runtime_lock("qwen3_tts/synthesize"):
+            with manager.lock:
+                try:
+                    manager.last_output_path = None
+                    audio_bytes = manager.run_worker(payload)
+                    if manager.last_output_path is None:
+                        saved_output_path = persist_audio_bytes(
+                            audio_bytes,
+                            "qwen3_tts",
+                            QWEN3_TTS_OUTPUT_DIR,
+                        )
+                    else:
+                        saved_output_path = manager.last_output_path
+                    print(f"[Qwen3-TTS] 已保存生成音频: {saved_output_path}")
+                    return Response(content=audio_bytes, media_type="audio/wav")
+                except HTTPException:
+                    raise
+                except Exception as exc:
+                    LOGGER.exception("Qwen3-TTS request failed")
+                    raise HTTPException(status_code=500, detail=str(exc)) from exc
+                finally:
+                    wait_after_cuda_release("after qwen3_tts worker")
+    except GpuLockTimeoutError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 if __name__ == "__main__":

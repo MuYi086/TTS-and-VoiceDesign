@@ -68,10 +68,6 @@ uv sync --project ace_step_1_5 --locked
 成功时返回 `audio/wav`，原生 48kHz 双声道，并附带 `X-ACE-Step-Seed`、
 `X-ACE-Step-Sample-Rate` 和 `X-ACE-Step-Model` 响应头。
 
-### `POST /internal/unload_all`
-
-保留本机控制协议。服务没有常驻 Pipeline，worker 退出后即完成显存释放。
-
 ## 无模型测试
 
 测试不会下载权重、导入真实 Diffusers Pipeline、调用 CUDA 或执行网络请求：

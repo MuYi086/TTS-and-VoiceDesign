@@ -1,0 +1,15 @@
+name: no-model quality gate
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  qa:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12.13"
+      - run: bash scripts/quality_gate.sh

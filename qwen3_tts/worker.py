@@ -371,8 +371,11 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
         device,
         dtype,
     )
-    max_chars_per_chunk = int(request.get("max_chars_per_chunk") or 120)
-    pause_ms = int(request.get("pause_ms") or 250)
+    # 0 是 API 约定的“不分片/无停顿”，不能用 ``or`` 误替换为默认值。
+    max_chars_per_chunk = int(
+        request["max_chars_per_chunk"] if request.get("max_chars_per_chunk") is not None else 120
+    )
+    pause_ms = int(request["pause_ms"] if request.get("pause_ms") is not None else 250)
     trim_leading_silence_enabled = bool(request.get("trim_leading_silence", True))
     trim_leading_silence_threshold_db = (
         float(request["trim_leading_silence_threshold_db"])

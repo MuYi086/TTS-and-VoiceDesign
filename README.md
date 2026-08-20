@@ -16,21 +16,20 @@ SoundEffect 生成。仓库采用“一个服务一个 uv 项目”的边界：H
 | MOSS-SoundEffect v2 | 8312 | 文本生成声效 | `/v1/moss/soundEffect` |
 | ACE-Step 1.5 XL Turbo | 8313 | 有声小说 BGM、主题音乐和 underscore | `/v1/aceStep/bgm` |
 | Qwen3-TTS Base | 8321 | 参考音频语音克隆 | `/v1/qwen/clone` |
-| VoxCPM2 | 8322 | 语音克隆、音色设计 | `/v1/voxcpm2/clone` |
+| VoxCPM2 | 8322 | 语音克隆 | `/v1/voxcpm2/clone` |
 | LongCat-AudioDiT-3.5B | 8323 | 参考音频语音克隆 | `/v1/longCat/clone` |
 | dots.tts-soar | 8324 | 参考音频语音克隆 | `/v2/dotsTTS/clone` |
 | Step-Audio-EditX | 8331 | 语音编辑 | `/v1/stepAudioEditx/edit` |
 
-每个服务都提供 `GET /v1/health`。除控制面和 MiMo 外，服务还保留本机访问的
-`POST /internal/unload_all` 兼容路由；该路由只返回“一次性 worker 已退出”的状态，
-不会加载常驻模型。成功生成接口返回 `audio/wav`，并在服务端保存一份 WAV。
+每个服务都提供 `GET /v1/health`。后端只注册表中列出的最终接口；成功生成接口返回
+`audio/wav`，并在服务端保存一份 WAV。
 
 ## 目录与运行数据
 
 ```text
 main/                         8300 控制面，不包含模型推理
 qwen3_tts/                    Qwen3-TTS Base 的 HTTP 服务和 worker
-voxcpm2/                      VoxCPM2 的 HTTP 服务、克隆和音色设计 worker
+voxcpm2/                      VoxCPM2 的 HTTP 服务和克隆 worker
 LongCat_AudioDiT_3.5B_bf16/  LongCat-AudioDiT 服务和 worker
 dots_tts_soar/                dots.tts-soar 服务和 worker
 moss_soundEffect/             MOSS-SoundEffect v2 服务和 worker
@@ -56,9 +55,10 @@ storage/                      上传音频、生成音频、sidecar、缓存和 
 | `storage/.cache/runtime/` | worker 临时文件、库缓存和共享 GPU 锁 | `RUNTIME_CACHE_DIR`、`GPU_LOCK_FILE` |
 
 如果上传音频的内容与 `storage/timbre/` 中已有的设计音色一致，Qwen3-TTS、VoxCPM2、
-LongCat 和 dots.tts-soar 会在 `storage/timbre/.references/` 保存引用映射，不再把同一 WAV
-复制到 `storage/clone/`；普通用户上传的参考音频仍保存到 `storage/clone/`。这些目录是运行
-数据，不要提交到 Git。
+LongCat 和 dots.tts-soar 会在 `storage/timbre/.references/` 保存带 SHA-256 和相对路径的
+小型 JSON 引用映射，不再把同一 WAV 复制到 `storage/clone/`；普通用户上传的参考音频仍保存到
+`storage/clone/`。上传按块暂存并通过原子替换提交，默认上限为 64 MiB，可用
+`UPLOAD_MAX_BYTES` 覆盖。这些目录是运行数据，不要提交到 Git。
 
 ## 安装与启动
 
@@ -95,7 +95,9 @@ bash start.sh
 `start.sh` 会启动 8300、8301、8302、8303、8311、8312、8313、8321、8322、8323、8324 和
 8331 共 12 个进程；8300 使用 `qwen3_tts` uv 项目中的轻量 HTTP 依赖，其余服务使用
 各自的 uv 项目。启动命令统一使用 `uv run --no-sync`，不会在运行阶段联网解析依赖；
-本地 GPU 服务通过 `GPU_LOCK_FILE` 串行访问 GPU。
+本地 GPU 服务通过 `GPU_LOCK_FILE` 串行访问 GPU。默认最多排队 900 秒，超过时返回
+`503`；用 `GPU_LOCK_WAIT_TIMEOUT` 调整（设为非正值可关闭时限）。健康检查可结合
+`nvidia-smi` 观察显存，持锁期间会记录本次请求的峰值显存。
 任一子进程退出时脚本会终止其余进程组并清理 worker。
 
 健康检查：
@@ -235,7 +237,7 @@ curl -X POST http://127.0.0.1:8311/v1/stableAudio/soundEffect \
   -o stable-audio-sfx.wav
 ```
 
-两个服务都保留旧请求格式的兼容别名。脚本制作场景的提示词规范、
+两个服务只使用本文列出的最终接口与字段。脚本制作场景的提示词规范、
 `prompt_en` 约束和 GPU 示例见 [`soundEffect/README.md`](soundEffect/README.md) 与
 [`soundEffect/声效提示词说明.md`](soundEffect/声效提示词说明.md)。
 
@@ -289,10 +291,18 @@ curl -X POST http://127.0.0.1:8331/v1/stepAudioEditx/edit \
 - 健康检查不会加载模型；`available`、`paths`、`runtime` 和 `last_errors` 用于区分依赖、
   权重、CUDA、worker 和配置问题。
 - 请求校验失败通常返回 `422`；上传后找不到参考音频通常返回 `404`。
-- `POST /internal/unload_all` 只允许本机访问，外部请求返回 `403`。
 - 模型 worker 失败或超时会清理临时文件和进程组，再返回服务错误；共享 GPU 锁在
   `finally` 中释放。
-- 生成接口响应体是 WAV，同时会写入语义对应的输出目录；这些文件不会自动清理。
+- 生成接口响应体是 WAV，同时会写入语义对应的输出目录。保留策略默认关闭：先通过
+  `GET /v1/control` 的 `storage` 字段查看所在文件系统的容量与可用空间；需要治理历史
+  生成结果时，再由运维显式配置并执行维护脚本，绝不自动删除用户上传或音色引用：
+
+  ```bash
+  export STORAGE_RETENTION_HOURS=168
+  # 先预览，再显式确认删除；脚本只匹配已知的生成文件前缀。
+  uv run --project qwen3_tts python main/storage_maintenance.py
+  uv run --project qwen3_tts python main/storage_maintenance.py --apply
+  ```
 
 ## 测试与开发
 

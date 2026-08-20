@@ -8,6 +8,7 @@ dependencies = [
     "starlette==1.6.0",
     "uvicorn==0.52.1",
     "pydantic==2.13.4",
+    "unitale-runtime",
 ]
 
 [dependency-groups]
@@ -18,6 +19,9 @@ dev = [
 [tool.uv]
 package = false
 index-strategy = "first-index"
+
+[tool.uv.sources]
+unitale-runtime = { path = "../unitale_runtime", editable = true }
 
 [[tool.uv.index]]
 name = "pypi"

@@ -23,8 +23,9 @@ from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.middleware.base import BaseHTTPMiddleware
+from unitale_runtime import AudioReferenceStore
 
 from audio_output import persist_audio_bytes
 
@@ -64,11 +65,14 @@ API_PORT = int(os.getenv("MIMO_TTS_PORT", os.getenv("PORT", "8303")))
 os.makedirs(TIMBRE_STORAGE_DIR, exist_ok=True)
 os.makedirs(RUNTIME_CACHE_DIR, exist_ok=True)
 
+reference_store = AudioReferenceStore(Path(STORAGE_DIR) / "clone", TIMBRE_STORAGE_DIR)
+
 app = FastAPI(title="Unitale MiMo TTS VoiceDesign API")
 
 
 class ForceCORS(BaseHTTPMiddleware):
     """为本地 WebUI 请求提供跨域响应和预检处理。"""
+
     async def dispatch(self, request, call_next):
         if request.method == "OPTIONS":
             return Response(
@@ -90,25 +94,25 @@ app.add_middleware(ForceCORS)
 
 class MimoDesignRequest(BaseModel):
     """MiMo VoiceDesign 请求，包含音色描述、文本和生成控制参数。"""
-    voice_description: str
-    text: str = "这是生成的参考音频预览。"
-    save_as: str | None = "designed_voice.wav"
-    api_key: str | None = None
-    base_url: str | None = None
-    model: str | None = None
-    auth_header: str | None = None
-    timeout: float | None = None
-    max_chars_per_chunk: int | None = None
-    pause_ms: int | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+    voice_description: str = Field(min_length=1, max_length=2_000)
+    text: str = Field(default="这是生成的参考音频预览。", min_length=1, max_length=12_000)
+    model: str | None = Field(default=None, max_length=64)
+    timeout: float | None = Field(default=None, gt=0, le=900)
+    max_chars_per_chunk: int | None = Field(default=None, ge=1, le=2_000)
+    pause_ms: int | None = Field(default=None, ge=0, le=10_000)
     optimize_text_preview: bool | None = None
-    min_request_interval_seconds: float | None = None
-    max_retries: int | None = None
-    retry_base_seconds: float | None = None
-    retry_max_seconds: float | None = None
+    min_request_interval_seconds: float | None = Field(default=None, ge=0, le=60)
+    max_retries: int | None = Field(default=None, ge=0, le=8)
+    retry_base_seconds: float | None = Field(default=None, gt=0, le=60)
+    retry_max_seconds: float | None = Field(default=None, gt=0, le=300)
 
 
 class MiMoHTTPError(RuntimeError):
     """记录 MiMo HTTP 状态、响应体和可选的 Retry-After 信息。"""
+
     def __init__(self, status_code: int, body: str, retry_after: float | None = None):
         self.status_code = status_code
         self.body = body
@@ -180,11 +184,11 @@ def split_voice_design_text(text: str, max_chars: int) -> list[str]:
     return chunks
 
 
-def resolve_mimo_api_key(api_key: str | None) -> str:
-    """优先使用请求传入的 key，否则读取 MIMO_API_KEY 环境变量。"""
-    resolved = api_key or os.getenv("MIMO_API_KEY")
+def resolve_mimo_api_key() -> str:
+    """只从进程环境读取 MiMo 凭据，避免请求覆盖服务身份。"""
+    resolved = os.getenv("MIMO_API_KEY")
     if not resolved:
-        raise RuntimeError("MiMo API key 缺失。请设置 MIMO_API_KEY，或在请求中传入 api_key。")
+        raise RuntimeError("MiMo API key 缺失。请设置 MIMO_API_KEY。")
     return resolved
 
 
@@ -367,9 +371,9 @@ def run_mimo_voice_design(request_data: dict[str, Any]) -> bytes:
     if model != "mimo-v2.5-tts-voicedesign":
         raise RuntimeError(f"MiMo 音色设计仅支持 mimo-v2.5-tts-voicedesign，当前为: {model}")
 
-    api_key = resolve_mimo_api_key(request_data.get("api_key"))
-    base_url = str(request_data.get("base_url") or MIMO_BASE_URL)
-    auth_header = str(request_data.get("auth_header") or MIMO_AUTH_HEADER)
+    api_key = resolve_mimo_api_key()
+    base_url = MIMO_BASE_URL
+    auth_header = MIMO_AUTH_HEADER
     timeout = float(
         request_data.get("timeout") if request_data.get("timeout") is not None else MIMO_TIMEOUT
     )
@@ -469,23 +473,6 @@ def health():
     }
 
 
-@app.get("/v1/voice-design/providers")
-def voice_design_providers():
-    """列出当前可用的音色设计 provider 及其路由信息。"""
-    return {
-        "code": 200,
-        "providers": [
-            {
-                "id": "mimo",
-                "name": "MiMo TTS VoiceDesign",
-                "route": "/v1/mimo/timbre",
-                "type": "cloud_api",
-                "ready": bool(os.getenv("MIMO_API_KEY")),
-            }
-        ],
-    }
-
-
 @app.post("/v1/mimo/timbre")
 def mimo_design(request: MimoDesignRequest):
     """校验请求、调用 MiMo 并把生成 WAV 原子保存到 timbre 目录。"""
@@ -515,6 +502,7 @@ def mimo_design(request: MimoDesignRequest):
         "mimo_voicedesign",
         TIMBRE_STORAGE_DIR,
     )
+    reference_store.register_timbre_file(saved_output_path)
     print(f"[MiMo] 已保存音色音频: {saved_output_path}")
     return Response(content=audio_bytes, media_type="audio/wav")
 

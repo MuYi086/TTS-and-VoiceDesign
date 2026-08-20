@@ -7,8 +7,6 @@ API/worker 实现已移除，uv 迁移已经通过真实 GPU 和 HTTP 金丝雀�
 from __future__ import annotations
 
 # 学习入口：LongCat API 只管理参考音频、GPU 锁和 uv worker，不在父进程加载模型。
-import fcntl
-import hashlib
 import importlib.util
 import json
 import logging
@@ -20,16 +18,26 @@ import sys
 import tempfile
 import threading
 import time
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal
 
 import uvicorn
-from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
+from unitale_runtime import (
+    AudioReferenceStore,
+    AudioUploadError,
+    GpuLockTimeoutError,
+    StagedUpload,
+    stage_audio_upload,
+)
+from unitale_runtime import (
+    gpu_runtime_lock as shared_gpu_runtime_lock,
+)
+from unitale_runtime.storage import sha256_file
 
 from runtime import cuda_status, terminate_process_group
 
@@ -181,12 +189,15 @@ for directory in (
     if directory:
         os.makedirs(directory, exist_ok=True)
 
+reference_store = AudioReferenceStore(PROMPTS_DIR, TIMBRE_STORAGE_DIR)
+
 
 app = FastAPI(title="Unitale LongCat-AudioDiT-3.5B Voice Clone API")
 
 
 class ForceCORS(BaseHTTPMiddleware):
     """为本地 WebUI 请求提供跨域响应和预检处理。"""
+
     async def dispatch(self, request, call_next):
         if request.method == "OPTIONS":
             return Response(
@@ -208,117 +219,37 @@ app.add_middleware(ForceCORS)
 
 def hash_filename(filename: str) -> str:
     """把 WebUI 逻辑路径哈希成安全的本地文件名。"""
-    ext = os.path.splitext(filename)[1] or ".wav"
-    digest = hashlib.md5(filename.encode("utf-8")).hexdigest()
-    return f"{digest}{ext}"
+    return reference_store.clone_path(filename).name
 
 
 def clone_prompt_audio_path(filename: str) -> str:
-    return os.path.join(PROMPTS_DIR, hash_filename(filename))
+    return str(reference_store.clone_path(filename))
 
 
 def timbre_reference_map_path(filename: str) -> str:
-    return str(TIMBRE_REFERENCE_DIR / f"{hash_filename(filename)}.path")
+    return str(reference_store.reference_path(filename))
 
 
 def prompt_audio_path(filename: str) -> str:
     """解析克隆上传，或解析只保存在音色目录中的设计音频。"""
-    clone_path = clone_prompt_audio_path(filename)
-    if os.path.isfile(clone_path):
-        return clone_path
-
-    reference_path = timbre_reference_map_path(filename)
-    if os.path.isfile(reference_path):
-        with open(reference_path, encoding="utf-8") as reference_file:
-            timbre_path = reference_file.read().strip()
-        if timbre_path and os.path.isfile(timbre_path):
-            return timbre_path
-    return clone_path
-
-
-def file_sha256(path: str) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def find_matching_timbre_audio(content: bytes) -> str | None:
-    """识别已生成的音色，避免把同一份 WAV 再复制到克隆目录。"""
-    content_digest = hashlib.sha256(content).hexdigest()
-    with os.scandir(TIMBRE_STORAGE_DIR) as entries:
-        for entry in entries:
-            if not entry.is_file() or not entry.name.lower().endswith(".wav"):
-                continue
-            if file_sha256(entry.path) == content_digest:
-                return entry.path
-    return None
+    return str(reference_store.prompt_audio_path(filename))
 
 
 def prompt_text_sidecar_path(filename: str) -> str:
-    clone_sidecar_path = os.path.join(PROMPTS_DIR, f"{hash_filename(filename)}.prompt.txt")
-    if os.path.isfile(clone_prompt_audio_path(filename)):
-        return clone_sidecar_path
-    if os.path.isfile(timbre_reference_map_path(filename)):
-        return str(TIMBRE_REFERENCE_DIR / f"{hash_filename(filename)}.prompt.txt")
-    return clone_sidecar_path
+    return str(reference_store.prompt_sidecar_path(filename))
 
 
 def load_prompt_text_sidecar(filename: str) -> str | None:
-    path = prompt_text_sidecar_path(filename)
-    if not os.path.isfile(path):
-        return None
-    with open(path, encoding="utf-8") as file:
-        text = file.read().strip()
-    return text or None
-
-
-def save_prompt_text_sidecar(filename: str, prompt_text: str | None) -> None:
-    path = prompt_text_sidecar_path(filename)
-    normalized = prompt_text.strip() if prompt_text and prompt_text.strip() else None
-    if normalized is None:
-        if os.path.exists(path):
-            os.remove(path)
-        return
-    with open(path, "w", encoding="utf-8") as file:
-        file.write(normalized)
+    return reference_store.load_prompt_text(filename)
 
 
 def store_uploaded_audio(
-    content: bytes,
+    staged: StagedUpload,
     full_path: str,
     prompt_text: str | None,
 ) -> dict[str, object]:
-    """保存普通克隆音频，或记录 timbre 设计音频的引用映射。"""
-    clone_path = clone_prompt_audio_path(full_path)
-    timbre_path = find_matching_timbre_audio(content)
-    if timbre_path:
-        # 设计音色的原始 WAV 只保存在 timbre；这里仅保存解析引用供克隆服务使用。
-        if os.path.isfile(clone_path):
-            os.remove(clone_path)
-        clone_sidecar_path = os.path.join(PROMPTS_DIR, f"{hash_filename(full_path)}.prompt.txt")
-        if os.path.isfile(clone_sidecar_path):
-            os.remove(clone_sidecar_path)
-        with open(timbre_reference_map_path(full_path), "w", encoding="utf-8") as reference_file:
-            reference_file.write(timbre_path)
-    else:
-        reference_map_path = timbre_reference_map_path(full_path)
-        if os.path.isfile(reference_map_path):
-            os.remove(reference_map_path)
-        with open(clone_path, "wb") as file:
-            file.write(content)
-
-    normalized_prompt_text = normalize_optional_text(prompt_text)
-    save_prompt_text_sidecar(full_path, normalized_prompt_text)
-    return {
-        "code": 200,
-        "msg": "上传成功",
-        "filename": full_path,
-        "size_bytes": len(content),
-        "sha256": hashlib.sha256(content).hexdigest(),
-        "has_prompt_text": bool(normalized_prompt_text),
-    }
+    """原子提交流式上传，并为设计音色创建相对引用。"""
+    return reference_store.commit_staged_upload(staged, full_path, prompt_text)
 
 
 def persist_audio_bytes(audio_bytes: bytes, model_prefix: str, output_dir: str) -> Path:
@@ -356,14 +287,6 @@ def persist_audio_bytes(audio_bytes: bytes, model_prefix: str, output_dir: str) 
         raise
 
 
-def sha256_file(path: str) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as file:
-        for chunk in iter(lambda: file.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def normalize_synthesis_text(text: str) -> str:
     """去除 Markdown 标题标记，减少 WebUI 文本被误读的机会。"""
     normalized = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", (text or "").strip())
@@ -373,25 +296,9 @@ def normalize_synthesis_text(text: str) -> str:
     return normalized
 
 
-def assert_local_request(request: Request) -> None:
-    """限制内部控制接口只能由本机调用。"""
-    client_host = request.client.host if request.client else ""
-    if client_host not in {"127.0.0.1", "::1", "localhost"}:
-        raise HTTPException(status_code=403, detail="仅允许本机访问内部接口")
-
-
-@contextmanager
 def gpu_runtime_lock(label: str):
     """通过共享文件锁串行化 LongCat 的 GPU 推理。"""
-    with open(GPU_LOCK_FILE, "a+", encoding="utf-8") as lock_file:
-        print(f"[GPU 锁] 等待进入: {label}")
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        print(f"[GPU 锁] 已进入: {label}")
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-            print(f"[GPU 锁] 已退出: {label}")
+    return shared_gpu_runtime_lock(GPU_LOCK_FILE, label)
 
 
 def wait_after_cuda_release(label: str = "") -> None:
@@ -406,7 +313,7 @@ def wait_after_cuda_release(label: str = "") -> None:
 class CloneSynthesisRequest(BaseModel):
     """本地参考音频克隆接口共用的兼容请求基类。"""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
     @model_validator(mode="before")
     @classmethod
@@ -417,21 +324,23 @@ class CloneSynthesisRequest(BaseModel):
 
 
 class LongCatAudioDitSynthesizeRequest(CloneSynthesisRequest):
-    text: str
-    audio_path: str
-    prompt_text: str | None = None
-    max_chars_per_chunk: int | None = Field(default=None, ge=0)
-    pause_ms: int | None = Field(default=None, ge=0)
-    nfe: int | None = Field(default=None, ge=2)
-    guidance_strength: float | None = Field(default=None, ge=0)
+    text: str = Field(min_length=1, max_length=12_000)
+    audio_path: str = Field(min_length=1, max_length=1_024)
+    backend: Literal["longcat-audiodit"] | None = None
+    prompt_text: str | None = Field(default=None, max_length=12_000)
+    max_chars_per_chunk: int | None = Field(default=None, ge=0, le=2_000)
+    pause_ms: int | None = Field(default=None, ge=0, le=10_000)
+    nfe: int | None = Field(default=None, ge=2, le=200)
+    guidance_strength: float | None = Field(default=None, ge=0, le=20)
     guidance_method: Literal["cfg", "apg"] | None = None
-    seed: int | None = None
-    duration_scale: float | None = Field(default=None, gt=0)
+    seed: int | None = Field(default=None, ge=0, le=4_294_967_295)
+    duration_scale: float | None = Field(default=None, gt=0, le=10)
     vae_dtype: Literal["float16", "float32"] | None = None
 
 
 class LongCatAudioDitWorkerManager:
     """管理 LongCat 参考音频解析、worker 启动和临时文件清理。"""
+
     def __init__(self):
         self.lock = threading.RLock()
         self.last_error: str | None = None
@@ -651,16 +560,6 @@ def health():
     }
 
 
-@app.post("/internal/unload_all")
-def internal_unload_all(request: Request):
-    """保留本机控制接口；一次性 worker 退出后没有常驻模型。"""
-    assert_local_request(request)
-    with gpu_runtime_lock("longcat_audiodit/unload"):
-        with manager.lock:
-            pass
-    return JSONResponse({"code": 200, "msg": "LongCat worker 已退出，无常驻模型"})
-
-
 @app.post("/v1/upload_audio")
 async def upload_audio(
     audio: UploadFile = File(...),
@@ -668,8 +567,11 @@ async def upload_audio(
     prompt_text: str | None = Form(None),
 ):
     """在线程池中保存克隆参考音频和可选文本 sidecar。"""
-    content = await audio.read()
-    return await run_in_threadpool(store_uploaded_audio, content, full_path, prompt_text)
+    try:
+        staged = await stage_audio_upload(audio, Path(RUNTIME_CACHE_DIR) / "uploads")
+        return await run_in_threadpool(store_uploaded_audio, staged, full_path, prompt_text)
+    except AudioUploadError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
 
 
 @app.get("/v1/check/audio")
@@ -689,25 +591,35 @@ def check_audio_exists(file_name: str):
 @app.post("/v1/longCat/clone")
 def synthesize_v2(request: LongCatAudioDitSynthesizeRequest):
     """串行执行 LongCat 克隆并返回生成 WAV。"""
-    with gpu_runtime_lock("longcat_audiodit/synthesize"):
-        with manager.lock:
-            try:
-                payload = manager.build_worker_payload(request)
-                audio_bytes = manager.run_worker(payload)
-                saved_output_path = persist_audio_bytes(
-                    audio_bytes,
-                    "longcat_audiodit",
-                    LONGCAT_AUDIODIT_OUTPUT_DIR,
-                )
-                print(f"[LongCat-AudioDiT] 已保存生成音频: {saved_output_path}")
-                return Response(content=audio_bytes, media_type="audio/wav")
-            except HTTPException:
-                raise
-            except Exception as exc:
-                LOGGER.exception("LongCat-AudioDiT request failed")
-                raise HTTPException(status_code=500, detail=str(exc)) from exc
-            finally:
-                wait_after_cuda_release("after LongCat-AudioDiT worker")
+    try:
+        payload = manager.build_worker_payload(request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        LOGGER.exception("LongCat-AudioDiT request preflight failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    try:
+        with gpu_runtime_lock("longcat_audiodit/synthesize"):
+            with manager.lock:
+                try:
+                    audio_bytes = manager.run_worker(payload)
+                    saved_output_path = persist_audio_bytes(
+                        audio_bytes,
+                        "longcat_audiodit",
+                        LONGCAT_AUDIODIT_OUTPUT_DIR,
+                    )
+                    print(f"[LongCat-AudioDiT] 已保存生成音频: {saved_output_path}")
+                    return Response(content=audio_bytes, media_type="audio/wav")
+                except HTTPException:
+                    raise
+                except Exception as exc:
+                    LOGGER.exception("LongCat-AudioDiT request failed")
+                    raise HTTPException(status_code=500, detail=str(exc)) from exc
+                finally:
+                    wait_after_cuda_release("after LongCat-AudioDiT worker")
+    except GpuLockTimeoutError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 if __name__ == "__main__":

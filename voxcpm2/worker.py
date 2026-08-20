@@ -237,8 +237,11 @@ def synthesize(request: dict[str, Any], output_wav: Path) -> None:
     seed_value = request.get("seed")
     seed = int(seed_value if seed_value is not None else -1)
     seed_label = str(seed) if seed >= 0 else "random"
-    max_chars_per_chunk = int(request.get("max_chars_per_chunk") or 0)
-    pause_ms = int(request.get("pause_ms") or 250)
+    # 0 分别表示不分片和不插入片段停顿，不能被 ``or`` 覆盖为默认值。
+    max_chars_per_chunk = int(
+        request["max_chars_per_chunk"] if request.get("max_chars_per_chunk") is not None else 0
+    )
+    pause_ms = int(request["pause_ms"] if request.get("pause_ms") is not None else 250)
     helper_args = build_helper_args(request)
     ref_audio_path = require_path(str(request.get("ref_audio_path") or ""), "参考音频")
     prompt_text = normalize_optional_text(request.get("prompt_text"))

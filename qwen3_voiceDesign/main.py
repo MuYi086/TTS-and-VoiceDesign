@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 # 学习入口：VoiceDesign API 不导入模型，只负责请求校验、锁、worker 和音频存储。
-import fcntl
 import importlib.util
 import json
 import logging
@@ -14,14 +13,20 @@ import sys
 import tempfile
 import threading
 import time
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, Response
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException, Response
+from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
+from unitale_runtime import (
+    AudioReferenceStore,
+    GpuLockTimeoutError,
+)
+from unitale_runtime import (
+    gpu_runtime_lock as shared_gpu_runtime_lock,
+)
 
 from audio_output import persist_audio_bytes
 from voicedesign_runtime import cuda_status, terminate_process_group
@@ -101,11 +106,14 @@ os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 os.makedirs(os.environ["XDG_CACHE_HOME"], exist_ok=True)
 os.makedirs(os.path.dirname(GPU_LOCK_FILE) or ".", exist_ok=True)
 
+reference_store = AudioReferenceStore(STORAGE_DIR / "clone", TIMBRE_STORAGE_DIR)
+
 app = FastAPI(title="Unitale Qwen3-TTS VoiceDesign API")
 
 
 class ForceCORS(BaseHTTPMiddleware):
     """给本地 WebUI 请求补充跨域响应头。"""
+
     async def dispatch(self, request, call_next):
         if request.method == "OPTIONS":
             return Response(
@@ -128,18 +136,17 @@ app.add_middleware(ForceCORS)
 class QwenDesignRequest(BaseModel):
     """独立 VoiceDesign 服务的请求参数，文本和音色描述均由 WebUI 提供。"""
 
-    voice_description: str
-    text: str = "这是生成的参考音频预览。"
-    save_as: str | None = "designed_voice.wav"
-    language: str | None = "Chinese"
-    max_chars_per_chunk: int | None = 0
-    pause_ms: int | None = 250
-    max_new_tokens: int | None = 2048
-    top_p: float | None = None
-    temperature: float | None = None
-    dtype: str | None = "auto"
-    attn_implementation: str | None = "auto"
-    device_map: str | None = "cuda:0"
+    voice_description: str = Field(min_length=1, max_length=2_000)
+    text: str = Field(default="这是生成的参考音频预览。", min_length=1, max_length=12_000)
+    language: str | None = Field(default="Chinese", max_length=32)
+    max_chars_per_chunk: int | None = Field(default=0, ge=0, le=2_000)
+    pause_ms: int | None = Field(default=250, ge=0, le=10_000)
+    max_new_tokens: int | None = Field(default=2048, ge=1, le=4_096)
+    top_p: float | None = Field(default=None, gt=0, le=1)
+    temperature: float | None = Field(default=None, ge=0, le=5)
+    dtype: str | None = Field(default="auto", max_length=32)
+    attn_implementation: str | None = Field(default="auto", max_length=64)
+    device_map: str | None = Field(default="cuda:0", max_length=128)
 
 
 def module_available(module_name: str) -> bool:
@@ -150,18 +157,9 @@ def module_available(module_name: str) -> bool:
         return False
 
 
-@contextmanager
 def gpu_runtime_lock(label: str):
     """通过共享文件锁保证多个本地 GPU 服务不同时推理。"""
-    with open(GPU_LOCK_FILE, "a+", encoding="utf-8") as lock_file:
-        print(f"[GPU 锁] 等待进入: {label}")
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        print(f"[GPU 锁] 已进入: {label}")
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-            print(f"[GPU 锁] 已退出: {label}")
+    return shared_gpu_runtime_lock(GPU_LOCK_FILE, label)
 
 
 def wait_after_cuda_release(label: str = "") -> None:
@@ -182,6 +180,7 @@ def worker_error_excerpt(output: str) -> str:
 
 class QwenVoiceDesignWorkerManager:
     """组装 VoiceDesign worker 请求并管理临时 JSON/WAV 文件。"""
+
     def __init__(self):
         self.lock = threading.RLock()
         self.last_error: str | None = None
@@ -352,36 +351,39 @@ def health():
     }
 
 
-@app.post("/internal/unload_all")
-def internal_unload_all(request: Request):
-    """保留内部控制契约；一次性 worker 已在请求结束时退出。"""
-    client_host = request.client.host if request.client else ""
-    if client_host not in {"127.0.0.1", "::1", "localhost"}:
-        raise HTTPException(status_code=403, detail="仅允许本机访问内部接口")
-    return {"code": 200, "msg": "qwen3_voiceDesign worker 已退出，无常驻模型"}
-
-
 @app.post("/v1/qwen/timbre")
 def qwen_design(request: QwenDesignRequest):
     """串行执行一次音色设计，并将 WAV 保存到 timbre 目录。"""
-    with gpu_runtime_lock("qwen/design"):
-        with manager.lock:
-            try:
-                audio_bytes = manager.run_worker(manager.build_worker_payload(request))
-                saved_output_path = persist_audio_bytes(
-                    audio_bytes,
-                    "qwen_voicedesign",
-                    TIMBRE_STORAGE_DIR,
-                )
-                print(f"[Qwen3-TTS VoiceDesign] 已保存音色音频: {saved_output_path}")
-                return Response(content=audio_bytes, media_type="audio/wav")
-            except HTTPException:
-                raise
-            except Exception as exc:
-                LOGGER.exception("Qwen3 VoiceDesign request failed")
-                raise HTTPException(status_code=500, detail=str(exc)) from exc
-            finally:
-                wait_after_cuda_release("after Qwen VoiceDesign worker")
+    try:
+        payload = manager.build_worker_payload(request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        LOGGER.exception("Qwen3 VoiceDesign request preflight failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    try:
+        with gpu_runtime_lock("qwen/design"):
+            with manager.lock:
+                try:
+                    audio_bytes = manager.run_worker(payload)
+                    saved_output_path = persist_audio_bytes(
+                        audio_bytes,
+                        "qwen_voicedesign",
+                        TIMBRE_STORAGE_DIR,
+                    )
+                    reference_store.register_timbre_file(saved_output_path)
+                    print(f"[Qwen3-TTS VoiceDesign] 已保存音色音频: {saved_output_path}")
+                    return Response(content=audio_bytes, media_type="audio/wav")
+                except HTTPException:
+                    raise
+                except Exception as exc:
+                    LOGGER.exception("Qwen3 VoiceDesign request failed")
+                    raise HTTPException(status_code=500, detail=str(exc)) from exc
+                finally:
+                    wait_after_cuda_release("after Qwen VoiceDesign worker")
+    except GpuLockTimeoutError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 if __name__ == "__main__":

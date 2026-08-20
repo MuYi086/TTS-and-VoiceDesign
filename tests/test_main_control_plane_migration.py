@@ -90,7 +90,7 @@ class MainControlPlaneMigrationTests(unittest.TestCase):
         self.assertFalse((Path(main.PROMPTS_DIR) / main.hash_filename("designed.wav")).exists())
         self.assertTrue(
             (
-                Path(main.TIMBRE_REFERENCE_DIR) / f"{main.hash_filename('designed.wav')}.path"
+                Path(main.TIMBRE_REFERENCE_DIR) / f"{main.hash_filename('designed.wav')}.json"
             ).exists()
         )
         checked = client.get("/v1/check/audio", params={"file_name": "designed.wav"})

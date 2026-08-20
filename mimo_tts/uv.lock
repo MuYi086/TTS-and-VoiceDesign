@@ -96,6 +96,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "pydantic" },
     { name = "starlette" },
+    { name = "unitale-runtime" },
     { name = "uvicorn" },
 ]
 
@@ -109,6 +110,7 @@ requires-dist = [
     { name = "fastapi", specifier = "==0.141.1" },
     { name = "pydantic", specifier = "==2.13.4" },
     { name = "starlette", specifier = "==1.6.0" },
+    { name = "unitale-runtime", editable = "../unitale_runtime" },
     { name = "uvicorn", specifier = "==0.52.1" },
 ]
 
@@ -218,6 +220,11 @@ sdist = { url = "https://files.pythonhosted.org/packages/a3/26/b09b8010994eccc3c
 wheels = [
     { url = "https://files.pythonhosted.org/packages/67/81/4add07e5172b7ac40d8ed5ff580409a7801a4fe26d529bdd915401dabfbe/typing_inspection-0.4.4-py3-none-any.whl", hash = "sha256:65b8397ba37ccbce054456aaccddfc91e6e3083c92824df348d96ca832f3f147", size = 14750, upload-time = "2026-08-12T12:37:24.648Z" },
 ]
+
+[[package]]
+name = "unitale-runtime"
+version = "0.1.0"
+source = { editable = "../unitale_runtime" }
 
 [[package]]
 name = "uvicorn"

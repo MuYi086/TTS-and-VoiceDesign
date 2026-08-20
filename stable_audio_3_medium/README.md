@@ -55,7 +55,6 @@ CUDA devel toolkit 的环境中从固定版本的 `/home/muyi086/tts-depency/fla
 
 - `GET /v1/health`
 - `POST /v1/stableAudio/soundEffect`
-- `POST /internal/unload_all`
 - `prompt`、`seconds`、`duration`、`steps`、`cfg_scale`、`seed`、`device`、`dtype`
 
 生成成功返回 `audio/wav`。`seconds` 是 WebUI 兼容字段，`duration` 是官方

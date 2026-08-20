@@ -17,10 +17,10 @@ from pathlib import Path
 from typing import Literal
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, Field, field_validator, model_validator
 from starlette.middleware.base import BaseHTTPMiddleware
+from unitale_runtime import GpuLockTimeoutError
 
 from runtime import (
     WorkerConfig,
@@ -172,13 +172,6 @@ class StableAudio3MediumGenerateRequest(BaseModel):
         return self
 
 
-def assert_local_request(request: Request) -> None:
-    """限制内部控制接口只能由本机调用，避免远程触发 worker 管理动作。"""
-    client_host = request.client.host if request.client else ""
-    if client_host not in {"127.0.0.1", "::1", "localhost"}:
-        raise HTTPException(status_code=403, detail="仅允许本机访问内部接口")
-
-
 def wait_after_cuda_release() -> None:
     """worker 退出后短暂等待 CUDA 上下文消失，再释放共享 GPU 锁。"""
     if CUDA_RELEASE_DELAY > 0:
@@ -327,42 +320,38 @@ def health() -> dict:
     }
 
 
-@app.post("/internal/unload_all")
-def internal_unload_all(request: Request) -> JSONResponse:
-    """保留内部控制契约；由于模型按请求加载，这里无需常驻模型卸载。"""
-    assert_local_request(request)
-    with gpu_runtime_lock(GPU_LOCK_FILE, "stable_audio_3_medium/unload"):
-        with manager.lock:
-            pass
-    return JSONResponse(
-        {
-            "code": 200,
-            "msg": "Stable Audio 3 Medium uv 服务无常驻模型；worker 退出后显存已释放。",
-        }
-    )
-
-
 @app.post("/v1/stableAudio/soundEffect")
 def generate(request: StableAudio3MediumGenerateRequest) -> Response:
     """串行持有共享 GPU 锁，生成 WAV 并写入 soundEffect 存储目录。"""
-    with gpu_runtime_lock(GPU_LOCK_FILE, "stable_audio_3_medium/generate"):
-        with manager.lock:
-            try:
-                audio = manager.run_worker(manager.build_worker_payload(request))
-                saved_output_path = persist_audio_bytes(
-                    audio,
-                    "stable_audio_3_medium",
-                    STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR,
-                )
-                print(f"[Stable Audio 3 Medium] 已保存生成音频: {saved_output_path}")
-                return Response(content=audio, media_type="audio/wav")
-            except HTTPException:
-                raise
-            except Exception as exc:
-                LOGGER.exception("Stable Audio 3 Medium request failed")
-                raise HTTPException(status_code=500, detail=str(exc)) from exc
-            finally:
-                wait_after_cuda_release()
+    try:
+        payload = manager.build_worker_payload(request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        LOGGER.exception("Stable Audio 3 Medium request preflight failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    try:
+        with gpu_runtime_lock(GPU_LOCK_FILE, "stable_audio_3_medium/generate"):
+            with manager.lock:
+                try:
+                    audio = manager.run_worker(payload)
+                    saved_output_path = persist_audio_bytes(
+                        audio,
+                        "stable_audio_3_medium",
+                        STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR,
+                    )
+                    print(f"[Stable Audio 3 Medium] 已保存生成音频: {saved_output_path}")
+                    return Response(content=audio, media_type="audio/wav")
+                except HTTPException:
+                    raise
+                except Exception as exc:
+                    LOGGER.exception("Stable Audio 3 Medium request failed")
+                    raise HTTPException(status_code=500, detail=str(exc)) from exc
+                finally:
+                    wait_after_cuda_release()
+    except GpuLockTimeoutError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 if __name__ == "__main__":

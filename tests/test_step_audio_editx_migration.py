@@ -62,7 +62,6 @@ class StepAudioEditXMigrationTests(unittest.TestCase):
 
         expected_routes = {
             ("GET", "/v1/health"),
-            ("POST", "/internal/unload_all"),
             ("POST", "/v1/upload_audio"),
             ("GET", "/v1/check/audio"),
             ("POST", "/v1/stepAudioEditx/edit"),

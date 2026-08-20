@@ -23,6 +23,7 @@ dependencies = [
     "descript-audiotools==0.7.2",
     "torch==2.9.0+cu128",
     "torchaudio==2.9.0+cu128",
+    "unitale-runtime",
 ]
 
 [dependency-groups]
@@ -46,6 +47,7 @@ format = "flat"
 explicit = true
 
 [tool.uv.sources]
+unitale-runtime = { path = "../unitale_runtime", editable = true }
 torch = { index = "aliyun-pytorch-cu128" }
 torchaudio = { index = "aliyun-pytorch-cu128" }
 

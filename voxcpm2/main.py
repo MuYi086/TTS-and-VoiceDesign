@@ -1,4 +1,4 @@
-"""VoxCPM2 本地语音克隆与音色设计 HTTP 服务。
+"""VoxCPM2 本地语音克隆 HTTP 服务。
 
 API 层只承担输入校验、参考音频管理、GPU 文件锁和 worker 生命周期。
 真正的模型导入与推理由当前 uv 项目中的一次性子进程完成。
@@ -6,9 +6,7 @@ API 层只承担输入校验、参考音频管理、GPU 文件锁和 worker 生�
 
 from __future__ import annotations
 
-# 学习入口：VoxCPM2 同时支持克隆和音色设计，两条路径共用 GPU 锁与 worker 管理。
-import fcntl
-import hashlib
+# 学习入口：VoxCPM2 只负责参考音频克隆，模型推理由一次性 worker 完成。
 import importlib.util
 import json
 import logging
@@ -19,18 +17,27 @@ import sys
 import tempfile
 import threading
 import time
-from contextlib import contextmanager
 from typing import Literal
 
 # 官方文档: https://voxcpm.readthedocs.io/zh-cn/latest/cookbook.html
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, model_validator
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
+from unitale_runtime import (
+    AudioReferenceStore,
+    AudioUploadError,
+    GpuLockTimeoutError,
+    StagedUpload,
+    stage_audio_upload,
+)
+from unitale_runtime import (
+    gpu_runtime_lock as shared_gpu_runtime_lock,
+)
 
-from audio_output import persist_audio_bytes, persist_audio_file
+from audio_output import persist_audio_bytes
 from gpu_runtime import cuda_status, terminate_process_group
 from synthesis_request import CloneSynthesisRequest
 
@@ -150,8 +157,6 @@ VOXCPM2_OUTPUT_DIR = expand_path(
         CLONE_STORAGE_DIR,
     )
 )
-VOXCPM2_TIMBRE_OUTPUT_DIR = expand_path(os.getenv("VOXCPM2_TIMBRE_OUTPUT_DIR", TIMBRE_STORAGE_DIR))
-VOXCPM2_VOICE_DESIGN_WORKER_SCRIPT = os.path.join(SERVICE_DIR, "voice_design_worker.py")
 
 os.environ.setdefault("HF_HOME", HF_MIRROR_DIR)
 os.environ.setdefault("HF_MODULES_CACHE", os.path.join(RUNTIME_CACHE_DIR, "hf_modules"))
@@ -171,16 +176,18 @@ os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 os.makedirs(os.environ["XDG_CACHE_HOME"], exist_ok=True)
 os.makedirs(VOXCPM2_WORKER_TMP_DIR, exist_ok=True)
 os.makedirs(VOXCPM2_OUTPUT_DIR, exist_ok=True)
-os.makedirs(VOXCPM2_TIMBRE_OUTPUT_DIR, exist_ok=True)
 gpu_lock_dir = os.path.dirname(GPU_LOCK_FILE)
 if gpu_lock_dir:
     os.makedirs(gpu_lock_dir, exist_ok=True)
+
+reference_store = AudioReferenceStore(PROMPTS_DIR, TIMBRE_STORAGE_DIR)
 
 app = FastAPI(title="Unitale VoxCPM2 Voice Clone API")
 
 
 class ForceCORS(BaseHTTPMiddleware):
     """为本地 WebUI 提供跨域响应和预检处理。"""
+
     async def dispatch(self, request, call_next):
         if request.method == "OPTIONS":
             return Response(
@@ -202,165 +209,58 @@ app.add_middleware(ForceCORS)
 
 def hash_filename(filename: str) -> str:
     """使用逻辑路径哈希生成安全且稳定的参考音频文件名。"""
-    ext = os.path.splitext(filename)[1] or ".wav"
-    h = hashlib.md5(filename.encode("utf-8")).hexdigest()
-    return f"{h}{ext}"
+    return reference_store.clone_path(filename).name
 
 
 def clone_prompt_audio_path(filename: str) -> str:
-    return os.path.join(PROMPTS_DIR, hash_filename(filename))
+    return str(reference_store.clone_path(filename))
 
 
 def timbre_reference_map_path(filename: str) -> str:
-    return os.path.join(TIMBRE_REFERENCE_DIR, f"{hash_filename(filename)}.path")
+    return str(reference_store.reference_path(filename))
 
 
 def prompt_audio_path(filename: str) -> str:
     """解析克隆上传，或解析只保存在音色目录中的设计音频。"""
-    clone_path = clone_prompt_audio_path(filename)
-    if os.path.isfile(clone_path):
-        return clone_path
-
-    reference_path = timbre_reference_map_path(filename)
-    if os.path.isfile(reference_path):
-        with open(reference_path, encoding="utf-8") as reference_file:
-            timbre_path = reference_file.read().strip()
-        if timbre_path and os.path.isfile(timbre_path):
-            return timbre_path
-    return clone_path
-
-
-def file_sha256(path: str) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def find_matching_timbre_audio(content: bytes) -> str | None:
-    """识别已生成的音色，避免把同一份 WAV 再复制到克隆目录。"""
-    content_digest = hashlib.sha256(content).hexdigest()
-    with os.scandir(TIMBRE_STORAGE_DIR) as entries:
-        for entry in entries:
-            if not entry.is_file() or not entry.name.lower().endswith(".wav"):
-                continue
-            if file_sha256(entry.path) == content_digest:
-                return entry.path
-    return None
+    return str(reference_store.prompt_audio_path(filename))
 
 
 def prompt_text_sidecar_path(filename: str) -> str:
-    clone_sidecar_path = os.path.join(PROMPTS_DIR, f"{hash_filename(filename)}.prompt.txt")
-    if os.path.isfile(clone_prompt_audio_path(filename)):
-        return clone_sidecar_path
-    if os.path.isfile(timbre_reference_map_path(filename)):
-        return os.path.join(TIMBRE_REFERENCE_DIR, f"{hash_filename(filename)}.prompt.txt")
-    return clone_sidecar_path
+    return str(reference_store.prompt_sidecar_path(filename))
 
 
 def load_prompt_text_sidecar(filename: str) -> str | None:
-    sidecar_path = prompt_text_sidecar_path(filename)
-    if not os.path.isfile(sidecar_path):
-        return None
-    with open(sidecar_path, encoding="utf-8") as f:
-        text = f.read().strip()
-    return text or None
-
-
-def save_prompt_text_sidecar(filename: str, prompt_text: str | None) -> None:
-    sidecar_path = prompt_text_sidecar_path(filename)
-    normalized = prompt_text.strip() if prompt_text and prompt_text.strip() else None
-    if normalized is None:
-        if os.path.exists(sidecar_path):
-            os.remove(sidecar_path)
-        return
-    with open(sidecar_path, "w", encoding="utf-8") as f:
-        f.write(normalized)
+    return reference_store.load_prompt_text(filename)
 
 
 def store_uploaded_audio(
-    content: bytes,
+    staged: StagedUpload,
     full_path: str,
     prompt_text: str | None,
 ) -> dict[str, object]:
-    """保存普通克隆上传，或为已设计音色写入轻量引用映射。"""
-    clone_path = clone_prompt_audio_path(full_path)
-    timbre_path = find_matching_timbre_audio(content)
-    if timbre_path:
-        # 设计音色的原始 WAV 只保存在 timbre；这里仅保存解析引用供克隆服务使用。
-        if os.path.isfile(clone_path):
-            os.remove(clone_path)
-        clone_sidecar_path = os.path.join(PROMPTS_DIR, f"{hash_filename(full_path)}.prompt.txt")
-        if os.path.isfile(clone_sidecar_path):
-            os.remove(clone_sidecar_path)
-        with open(timbre_reference_map_path(full_path), "w", encoding="utf-8") as reference_file:
-            reference_file.write(timbre_path)
-    else:
-        reference_map_path = timbre_reference_map_path(full_path)
-        if os.path.isfile(reference_map_path):
-            os.remove(reference_map_path)
-        with open(clone_path, "wb") as file:
-            file.write(content)
-
-    normalized_prompt_text = prompt_text.strip() if prompt_text and prompt_text.strip() else None
-    save_prompt_text_sidecar(full_path, normalized_prompt_text)
-    return {
-        "code": 200,
-        "msg": "上传成功",
-        "filename": full_path,
-        "size_bytes": len(content),
-        "sha256": hashlib.sha256(content).hexdigest(),
-        "has_prompt_text": bool(normalized_prompt_text),
-    }
+    """原子提交暂存上传，避免覆盖同名引用时留下半成品。"""
+    return reference_store.commit_staged_upload(staged, full_path, prompt_text)
 
 
 def module_available(module_name: str) -> bool:
     return importlib.util.find_spec(module_name) is not None
 
 
-def persist_generated_audio(source_path: str, operation: str = "clone") -> str:
-    """将校验后的 worker WAV 保存到对应业务目录，而不是混用存储空间。"""
-    output_dir = VOXCPM2_TIMBRE_OUTPUT_DIR if operation == "voice_design" else VOXCPM2_OUTPUT_DIR
-    prefix = "voxcpm2_voicedesign" if operation == "voice_design" else "voxcpm2"
-    return str(persist_audio_file(source_path, prefix, output_dir))
-
-
-def persist_generated_audio_bytes(audio_bytes: bytes, operation: str = "clone") -> str:
-    """保存路由输出，包括测试替身直接返回的 WAV 字节。"""
-    output_dir = VOXCPM2_TIMBRE_OUTPUT_DIR if operation == "voice_design" else VOXCPM2_OUTPUT_DIR
-    prefix = "voxcpm2_voicedesign" if operation == "voice_design" else "voxcpm2"
-    return str(persist_audio_bytes(audio_bytes, prefix, output_dir))
+def persist_generated_audio_bytes(audio_bytes: bytes) -> str:
+    """保存克隆结果，包括测试替身直接返回的 WAV 字节。"""
+    return str(persist_audio_bytes(audio_bytes, "voxcpm2", VOXCPM2_OUTPUT_DIR))
 
 
 def sha256_file(path: str) -> str:
     """返回用于检测同名旧上传的内容哈希。"""
-    digest = hashlib.sha256()
-    with open(path, "rb") as file_obj:
-        for chunk in iter(lambda: file_obj.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    from unitale_runtime.storage import sha256_file as shared_sha256_file
+
+    return shared_sha256_file(path)
 
 
-def assert_local_request(request: Request) -> None:
-    """限制内部 worker 控制接口只能由本机访问。"""
-    client_host = request.client.host if request.client else ""
-    if client_host not in {"127.0.0.1", "::1", "localhost"}:
-        raise HTTPException(status_code=403, detail="仅允许本机访问内部接口")
-
-
-@contextmanager
 def gpu_runtime_lock(label: str):
     """通过共享文件锁串行化克隆和音色设计推理。"""
-    with open(GPU_LOCK_FILE, "a+", encoding="utf-8") as lock_file:
-        print(f"[GPU 锁] 等待进入: {label}")
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        print(f"[GPU 锁] 已进入: {label}")
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-            print(f"[GPU 锁] 已退出: {label}")
+    return shared_gpu_runtime_lock(GPU_LOCK_FILE, label)
 
 
 def wait_after_cuda_release(label: str = "") -> None:
@@ -423,25 +323,27 @@ def contains_nonverbal_tag_marker(text: str | None) -> bool:
 
 class VoxCpm2SynthesizeRequest(CloneSynthesisRequest):
     """VoxCPM2 克隆请求及其可选控制参数。"""
-    text: str
-    audio_path: str
-    prompt_text: str | None = None
+
+    text: str = Field(min_length=1, max_length=12_000)
+    audio_path: str = Field(min_length=1, max_length=1_024)
+    backend: Literal["voxcpm2"] | None = None
+    prompt_text: str | None = Field(default=None, max_length=12_000)
     # Ultimate Cloning 使用参考转写；可控克隆使用控制指令，二者按 VoxCPM2 官方接口互斥。
     clone_mode: Literal["ultimate", "controllable"] | None = None
-    control_instruction: str | None = None
+    control_instruction: str | None = Field(default=None, max_length=2_000)
     # 仅保存官方标签名；worker 会将其拼成 [tag] 并且只写入模型目标文本。
     nonverbal_tags: list[str] = Field(default_factory=list, max_length=1)
-    cfg_value: float | None = None
-    inference_timesteps: int | None = None
+    cfg_value: float | None = Field(default=None, ge=0, le=10)
+    inference_timesteps: int | None = Field(default=None, ge=1, le=200)
     normalize: bool | None = None
     denoise: bool | None = None
     retry_badcase: bool | None = None
     load_denoiser: bool | None = None
     optimize: bool | None = None
-    device: str | None = None
-    seed: int | None = None
-    max_chars_per_chunk: int | None = None
-    pause_ms: int | None = None
+    device: str | None = Field(default=None, max_length=32)
+    seed: int | None = Field(default=None, ge=0, le=4_294_967_295)
+    max_chars_per_chunk: int | None = Field(default=None, ge=0, le=2_000)
+    pause_ms: int | None = Field(default=None, ge=0, le=10_000)
 
     @model_validator(mode="after")
     def validate_clone_mode_contract(self):
@@ -471,6 +373,7 @@ class VoxCpm2SynthesizeRequest(CloneSynthesisRequest):
 
 class VoxCpm2WorkerManager:
     """管理 VoxCPM2 克隆 worker 和输出文件的生命周期。"""
+
     def __init__(self):
         self.lock = threading.RLock()
         self.last_error: str | None = None
@@ -547,10 +450,9 @@ class VoxCpm2WorkerManager:
             "hf_mirror_dir": HF_MIRROR_DIR,
         }
 
-    def _run_worker_once(self, payload: dict, worker_script: str | None = None) -> bytes:
-        selected_worker_script = worker_script or VOXCPM2_WORKER_SCRIPT
-        if not os.path.isfile(selected_worker_script):
-            raise RuntimeError(f"VoxCPM2 worker 脚本不存在: {selected_worker_script}")
+    def _run_worker_once(self, payload: dict) -> bytes:
+        if not os.path.isfile(VOXCPM2_WORKER_SCRIPT):
+            raise RuntimeError(f"VoxCPM2 worker 脚本不存在: {VOXCPM2_WORKER_SCRIPT}")
         if not os.path.isdir(VOXCPM2_MODEL_DIR):
             raise RuntimeError(f"VoxCPM2 模型目录不存在: {VOXCPM2_MODEL_DIR}")
         if not os.path.isfile(VOXCPM2_HELPER_SCRIPT):
@@ -576,7 +478,7 @@ class VoxCpm2WorkerManager:
 
             command = [
                 sys.executable,
-                selected_worker_script,
+                VOXCPM2_WORKER_SCRIPT,
                 "--input-json",
                 request_path,
                 "--output-wav",
@@ -627,10 +529,10 @@ class VoxCpm2WorkerManager:
                 except Exception:
                     pass
 
-    def run_worker(self, payload: dict, worker_script: str | None = None) -> bytes:
+    def run_worker(self, payload: dict) -> bytes:
         """执行克隆 worker；异常时保留错误摘要并清理进程组。"""
         try:
-            audio_bytes = self._run_worker_once(payload, worker_script=worker_script)
+            audio_bytes = self._run_worker_once(payload)
             self.last_error = None
             return audio_bytes
         except Exception as exc:
@@ -641,46 +543,9 @@ class VoxCpm2WorkerManager:
 manager = VoxCpm2WorkerManager()
 
 
-class VoxCpm2VoiceDesignRequest(BaseModel):
-    """与主 API 兼容的无参考音频音色设计请求。"""
-
-    voice_description: str
-    text: str = "这是生成的参考音频预览。"
-    save_as: str | None = "designed_voice.wav"
-    cfg_value: float | None = None
-    inference_timesteps: int | None = None
-    normalize: bool | None = None
-    denoise: bool | None = None
-    retry_badcase: bool | None = None
-    load_denoiser: bool | None = None
-    optimize: bool | None = None
-    device: str | None = None
-    seed: int | None = None
-
-
-def build_voice_design_worker_payload(request: VoxCpm2VoiceDesignRequest) -> dict:
-    voice_description = normalize_optional_text(request.voice_description)
-    if not voice_description:
-        raise HTTPException(status_code=422, detail="VoxCPM2 音色设计需要 voice_description。")
-    return {
-        "operation": "voice_design",
-        "text": normalize_synthesis_text(request.text),
-        "voice_description": voice_description,
-        **manager.build_generation_settings(request),
-    }
-
-
-def voice_design_is_ready() -> bool:
-    return (
-        os.path.isdir(VOXCPM2_MODEL_DIR)
-        and os.path.isfile(VOXCPM2_VOICE_DESIGN_WORKER_SCRIPT)
-        and os.path.isfile(VOXCPM2_HELPER_SCRIPT)
-    )
-
-
 @app.get("/v1/health")
 def health():
-    """返回 VoxCPM2、音色设计 worker 和 GPU 的就绪状态。"""
+    """返回 VoxCPM2 克隆 worker 和 GPU 的就绪状态。"""
     cuda = cuda_status()
     return {
         "code": 200,
@@ -691,16 +556,13 @@ def health():
             "prompts_dir": PROMPTS_DIR,
             "gpu_lock_file": GPU_LOCK_FILE,
             "worker_script": VOXCPM2_WORKER_SCRIPT,
-            "voice_design_worker_script": VOXCPM2_VOICE_DESIGN_WORKER_SCRIPT,
             "worker_tmp_dir": VOXCPM2_WORKER_TMP_DIR,
             "output_dir": VOXCPM2_OUTPUT_DIR,
             "clone_storage_dir": VOXCPM2_OUTPUT_DIR,
-            "timbre_storage_dir": VOXCPM2_TIMBRE_OUTPUT_DIR,
         },
         "available": {
             "python": sys.executable,
             "worker_script": os.path.isfile(VOXCPM2_WORKER_SCRIPT),
-            "voice_design_worker_script": os.path.isfile(VOXCPM2_VOICE_DESIGN_WORKER_SCRIPT),
             "voxcpm2_model_dir": os.path.isdir(VOXCPM2_MODEL_DIR),
             "voxcpm2_helper_script": os.path.isfile(VOXCPM2_HELPER_SCRIPT),
             "torch": module_available("torch"),
@@ -744,41 +606,6 @@ def health():
     }
 
 
-def voxcpm2_design(request: VoxCpm2VoiceDesignRequest):
-    """串行执行无参考音频的 VoxCPM2 音色设计。"""
-    with gpu_runtime_lock("voxcpm2/design"):
-        try:
-            payload = build_voice_design_worker_payload(request)
-            with manager.lock:
-                audio_bytes = manager.run_worker(
-                    payload,
-                    worker_script=VOXCPM2_VOICE_DESIGN_WORKER_SCRIPT,
-                )
-            saved_output_path = persist_generated_audio_bytes(
-                audio_bytes,
-                operation="voice_design",
-            )
-            print(f"[VoxCPM2] 已保存音色音频: {saved_output_path}")
-            return Response(content=audio_bytes, media_type="audio/wav")
-        except HTTPException:
-            raise
-        except Exception as exc:
-            LOGGER.exception("VoxCPM2 voice-design request failed")
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
-        finally:
-            wait_after_cuda_release("after VoxCPM2 voice design")
-
-
-@app.post("/internal/unload_all")
-def internal_unload_all(request: Request):
-    """保留本机控制契约；一次性 worker 退出后没有常驻模型。"""
-    assert_local_request(request)
-    with gpu_runtime_lock("voxcpm2/unload"):
-        with manager.lock:
-            pass
-    return JSONResponse({"code": 200, "msg": "voxcpm2 worker 已退出，无常驻模型"})
-
-
 @app.post("/v1/upload_audio")
 async def upload_audio(
     audio: UploadFile = File(...),
@@ -786,8 +613,11 @@ async def upload_audio(
     prompt_text: str | None = Form(None),
 ):
     """在线程池中保存克隆参考音频，避免阻塞事件循环。"""
-    content = await audio.read()
-    return await run_in_threadpool(store_uploaded_audio, content, full_path, prompt_text)
+    try:
+        staged = await stage_audio_upload(audio, os.path.join(RUNTIME_CACHE_DIR, "uploads"))
+        return await run_in_threadpool(store_uploaded_audio, staged, full_path, prompt_text)
+    except AudioUploadError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
 
 
 @app.get("/v1/check/audio")
@@ -806,23 +636,32 @@ def check_audio_exists(file_name: str):
 
 def synthesize_voxcpm2_payload(data: object) -> Response:
     """在共享 GPU 锁内执行同步克隆流程并持久化结果。"""
-    with gpu_runtime_lock("voxcpm2/synthesize"):
-        try:
-            with manager.lock:
-                payload = manager.build_worker_payload(
-                    VoxCpm2SynthesizeRequest.model_validate(data)
-                )
-                audio_bytes = manager.run_worker(payload)
-            saved_output_path = persist_generated_audio_bytes(audio_bytes, operation="clone")
-            print(f"[VoxCPM2] 已保存生成音频: {saved_output_path}")
-            return Response(content=audio_bytes, media_type="audio/wav")
-        except HTTPException:
-            raise
-        except Exception as exc:
-            LOGGER.exception("VoxCPM2 clone request failed")
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
-        finally:
-            wait_after_cuda_release("after 8322 worker")
+    try:
+        request = VoxCpm2SynthesizeRequest.model_validate(data)
+        payload = manager.build_worker_payload(request)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        LOGGER.exception("VoxCPM2 clone request preflight failed")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    try:
+        with gpu_runtime_lock("voxcpm2/synthesize"):
+            try:
+                with manager.lock:
+                    audio_bytes = manager.run_worker(payload)
+                saved_output_path = persist_generated_audio_bytes(audio_bytes)
+                print(f"[VoxCPM2] 已保存生成音频: {saved_output_path}")
+                return Response(content=audio_bytes, media_type="audio/wav")
+            except HTTPException:
+                raise
+            except Exception as exc:
+                LOGGER.exception("VoxCPM2 clone request failed")
+                raise HTTPException(status_code=500, detail=str(exc)) from exc
+            finally:
+                wait_after_cuda_release("after 8322 worker")
+    except GpuLockTimeoutError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.post("/v1/voxcpm2/clone")
@@ -842,7 +681,6 @@ if __name__ == "__main__":
     print(f"[配置] prompts 目录: {PROMPTS_DIR}")
     print(f"[配置] GPU 锁文件: {GPU_LOCK_FILE}")
     print(f"[配置] worker 脚本: {VOXCPM2_WORKER_SCRIPT}")
-    print(f"[配置] VoiceDesign worker 脚本: {VOXCPM2_VOICE_DESIGN_WORKER_SCRIPT}")
     print(
         f"[配置] cfg_value={VOXCPM2_CFG_VALUE}, inference_timesteps={VOXCPM2_INFERENCE_TIMESTEPS}, "
         f"seed={VOXCPM2_SEED}"

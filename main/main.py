@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import os
 import urllib.error
 import urllib.request
@@ -20,6 +19,14 @@ from fastapi.responses import JSONResponse, Response
 from gpu_runtime import cuda_status
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
+
+from unitale_runtime import (
+    AudioReferenceStore,
+    AudioUploadError,
+    StagedUpload,
+    stage_audio_upload,
+    storage_disk_status,
+)
 
 MAIN_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = MAIN_DIR.parent
@@ -67,6 +74,8 @@ for directory in (
     RUNTIME_CACHE_DIR,
 ):
     os.makedirs(directory, exist_ok=True)
+
+reference_store = AudioReferenceStore(PROMPTS_DIR, TIMBRE_STORAGE_DIR)
 
 
 app = FastAPI(title="Unitale AI Control Plane")
@@ -126,47 +135,17 @@ def forward_mimo_design_request(body: bytes, accept: str) -> tuple[int, bytes, s
 
 def hash_filename(filename: str) -> str:
     """将 WebUI 的逻辑路径映射为稳定文件名，避免直接使用用户输入作路径。"""
-    extension = os.path.splitext(filename)[1] or ".wav"
-    digest = hashlib.md5(filename.encode("utf-8")).hexdigest()
-    return f"{digest}{extension}"
+    return reference_store.clone_path(filename).name
 
 
 def prompt_audio_path(filename: str) -> Path:
     """解析普通克隆上传，或解析预览时引用的音色设计音频。"""
-    clone_path = Path(PROMPTS_DIR) / hash_filename(filename)
-    if clone_path.is_file():
-        return clone_path
-    reference_path = Path(TIMBRE_REFERENCE_DIR) / f"{hash_filename(filename)}.path"
-    if reference_path.is_file():
-        timbre_path = Path(reference_path.read_text(encoding="utf-8").strip())
-        if timbre_path.is_file():
-            return timbre_path
-    return clone_path
+    return reference_store.prompt_audio_path(filename)
 
 
-def find_matching_timbre_audio(content: bytes) -> Path | None:
-    """重新上传设计音频时避免将其复制到克隆存储目录。"""
-    content_digest = hashlib.sha256(content).hexdigest()
-    for timbre_path in Path(TIMBRE_STORAGE_DIR).glob("*.wav"):
-        if hashlib.sha256(timbre_path.read_bytes()).hexdigest() == content_digest:
-            return timbre_path
-    return None
-
-
-def store_uploaded_audio(content: bytes, full_path: str) -> dict[str, object]:
-    """同步写入上传音频，供异步路由在线程池中调用。"""
-    save_path = Path(PROMPTS_DIR) / hash_filename(full_path)
-    timbre_path = find_matching_timbre_audio(content)
-    reference_path = Path(TIMBRE_REFERENCE_DIR) / f"{hash_filename(full_path)}.path"
-    if timbre_path is not None:
-        save_path.unlink(missing_ok=True)
-        Path(f"{save_path}.prompt.txt").unlink(missing_ok=True)
-        reference_path.write_text(str(timbre_path), encoding="utf-8")
-    else:
-        reference_path.unlink(missing_ok=True)
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-        save_path.write_bytes(content)
-    return {"code": 200, "msg": "上传成功", "filename": full_path}
+def store_uploaded_audio(staged: StagedUpload, full_path: str) -> dict[str, object]:
+    """在线程池中原子提交流式暂存的参考音频。"""
+    return reference_store.commit_staged_upload(staged, full_path)
 
 
 @app.get("/v1/health")
@@ -190,6 +169,7 @@ def health():
             "cuda": cuda["available"],
         },
         "cuda": cuda,
+        "storage": storage_disk_status(STORAGE_DIR),
         "last_errors": {},
         "offline": {
             "local_files_only": LOCAL_FILES_ONLY,
@@ -226,8 +206,11 @@ async def mimo_design_proxy(request: Request):
 @app.post("/v1/upload_audio")
 async def upload_audio(audio: UploadFile = File(...), full_path: str = Form(...)):
     """上传克隆参考音频，但不复制已有的音色设计资产。"""
-    content = await audio.read()
-    return await run_in_threadpool(store_uploaded_audio, content, full_path)
+    try:
+        staged = await stage_audio_upload(audio, Path(RUNTIME_CACHE_DIR) / "uploads")
+        return await run_in_threadpool(store_uploaded_audio, staged, full_path)
+    except AudioUploadError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
 
 
 @app.get("/v1/check/audio")

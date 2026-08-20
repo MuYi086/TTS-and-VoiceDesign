@@ -44,46 +44,39 @@ class FastApiExecutionModelTests(unittest.TestCase):
             "main/main.py": {"/v1/health", "/v1/check/audio"},
             "mimo_tts/main.py": {
                 "/v1/health",
-                "/v1/voice-design/providers",
                 "/v1/mimo/timbre",
             },
             "qwen3_tts/main.py": {
                 "/v1/health",
-                "/internal/unload_all",
                 "/v1/check/audio",
                 "/v1/qwen/clone",
             },
-            "voxcpm2/main.py": {"/v1/health", "/internal/unload_all", "/v1/check/audio"},
+            "voxcpm2/main.py": {"/v1/health", "/v1/check/audio"},
             "LongCat_AudioDiT_3.5B_bf16/main.py": {
                 "/v1/health",
-                "/internal/unload_all",
                 "/v1/check/audio",
                 "/v1/longCat/clone",
             },
             "dots_tts_soar/main.py": {
                 "/v1/health",
-                "/internal/unload_all",
                 "/v1/check/audio",
                 "/v2/dotsTTS/clone",
             },
             "moss_soundEffect/main.py": {
                 "/v1/health",
-                "/internal/unload_all",
                 "/v1/moss/soundEffect",
             },
             "stable_audio_3_medium/main.py": {
                 "/v1/health",
-                "/internal/unload_all",
                 "/v1/stableAudio/soundEffect",
             },
             "ace_step_1_5/main.py": {
                 "/v1/health",
-                "/internal/unload_all",
                 "/v1/aceStep/bgm",
             },
-            "qwen3_voiceDesign/main.py": {"/v1/health", "/internal/unload_all"},
-            "moss_voiceGenerator/main.py": {"/v1/health", "/internal/unload_all"},
-            "Step_Audio_EditX/main.py": {"/v1/health", "/internal/unload_all", "/v1/check/audio"},
+            "qwen3_voiceDesign/main.py": {"/v1/health"},
+            "moss_voiceGenerator/main.py": {"/v1/health"},
+            "Step_Audio_EditX/main.py": {"/v1/health", "/v1/check/audio"},
         }
 
         for relative_path, routes in expected_routes.items():

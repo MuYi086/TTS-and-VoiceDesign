@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-# VoxCPM2 测试覆盖克隆/音色设计分流、sidecar 以及 worker 错误清理。
+# VoxCPM2 测试覆盖克隆、sidecar 和 worker 错误清理。
 import hashlib
 import importlib.util
 import io
@@ -62,14 +62,15 @@ class VoxCpm2MigrationTests(unittest.TestCase):
         self.filename = "migration-reference.wav"
         content = b"RIFF" + b"\0" * 40
         (PROMPTS_DIR / main.hash_filename(self.filename)).write_bytes(content)
-        main.save_prompt_text_sidecar(self.filename, "准确的参考转写。")
+        main.reference_store.prompt_sidecar_path(self.filename).write_text(
+            "准确的参考转写。", encoding="utf-8"
+        )
 
     def test_routes_and_health_report_uv_runtime(self) -> None:
         from fastapi.testclient import TestClient
 
         expected_routes = {
             ("GET", "/v1/health"),
-            ("POST", "/internal/unload_all"),
             ("POST", "/v1/upload_audio"),
             ("GET", "/v1/check/audio"),
             ("POST", "/v1/voxcpm2/clone"),
@@ -94,7 +95,6 @@ class VoxCpm2MigrationTests(unittest.TestCase):
         self.assertEqual(payload["runtime"]["worker_python"], sys.executable)
         self.assertEqual(payload["available"]["python"], sys.executable)
         self.assertTrue(payload["available"]["worker_script"])
-        self.assertTrue(payload["available"]["voice_design_worker_script"])
         self.assertIn("not required", payload["runtime"]["flash_attention_policy"])
 
     def test_upload_and_check_audio_keep_webui_contract(self) -> None:
@@ -142,7 +142,7 @@ class VoxCpm2MigrationTests(unittest.TestCase):
         self.assertEqual(checked.status_code, 200)
         self.assertTrue(checked.json()["exists"])
 
-    def test_clone_and_voice_design_payloads_keep_contract(self) -> None:
+    def test_clone_payloads_keep_contract(self) -> None:
         clone_request = main.VoxCpm2SynthesizeRequest(
             text="# 要合成的台词",
             audio_path=self.filename,
@@ -174,12 +174,6 @@ class VoxCpm2MigrationTests(unittest.TestCase):
                 control_instruction="轻快地说",
                 prompt_text="不应同时出现",
             )
-
-        design = main.VoxCpm2VoiceDesignRequest(voice_description="温柔、清晰的成年女性")
-        design_payload = main.build_voice_design_worker_payload(design)
-        self.assertEqual(design_payload["operation"], "voice_design")
-        self.assertEqual(design_payload["voice_description"], "温柔、清晰的成年女性")
-        self.assertEqual(design_payload["text"], "这是生成的参考音频预览。")
 
     def test_clone_route_returns_wav_without_model(self) -> None:
         from fastapi.testclient import TestClient
@@ -257,6 +251,7 @@ class VoxCpm2MigrationTests(unittest.TestCase):
         control_plane = (REPOSITORY_DIR / "main/main.py").read_text(encoding="utf-8")
         self.assertNotIn("voxcpm2_voice_design", control_plane)
         self.assertNotIn("VOXCPM2_RUNTIME", control_plane)
+        self.assertFalse((SERVICE_DIR / "voice_design_worker.py").exists())
         for filename in (
             "voxcpm2_api.py",
             "voxcpm2_helpers.py",
