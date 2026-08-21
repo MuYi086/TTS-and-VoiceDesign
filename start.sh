@@ -26,6 +26,7 @@ DOTS_TTS_SOAR_PROJECT_DIR="${DOTS_TTS_SOAR_PROJECT_DIR:-$PROJECT_DIR/dots_tts_so
 STABLE_AUDIO_3_MEDIUM_PROJECT_DIR="${STABLE_AUDIO_3_MEDIUM_PROJECT_DIR:-$PROJECT_DIR/stable_audio_3_medium}"
 ACESTEP_PROJECT_DIR="${ACESTEP_PROJECT_DIR:-$PROJECT_DIR/ace_step_1_5}"
 VOXCPM2_PROJECT_DIR="${VOXCPM2_PROJECT_DIR:-$PROJECT_DIR/voxcpm2}"
+FIRERED_TTS3_PROJECT_DIR="${FIRERED_TTS3_PROJECT_DIR:-$PROJECT_DIR/firered_tts3}"
 
 export HF_MIRROR_DIR="${HF_MIRROR_DIR:-$HOME/hf-mirror}"
 export QWEN_VOICEDESIGN_MODEL_DIR="${QWEN_VOICEDESIGN_MODEL_DIR:-$HF_MIRROR_DIR/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign}"
@@ -76,6 +77,8 @@ export ACESTEP_DEFAULT_SEED="${ACESTEP_DEFAULT_SEED:--1}"
 export ACESTEP_REQUEST_TIMEOUT="${ACESTEP_REQUEST_TIMEOUT:-1800}"
 export QWEN3_TTS_MODEL_DIR="${QWEN3_TTS_MODEL_DIR:-$HF_MIRROR_DIR/Qwen/Qwen3-TTS-12Hz-1.7B-Base}"
 export VOXCPM2_MODEL_DIR="${VOXCPM2_MODEL_DIR:-$HF_MIRROR_DIR/openbmb/VoxCPM2}"
+export FIRERED_TTS3_MODEL_DIR="${FIRERED_TTS3_MODEL_DIR:-$HF_MIRROR_DIR/drbaph/FireRedTTS3-bf16}"
+export FIRERED_TTS3_CODE_PATH="${FIRERED_TTS3_CODE_PATH:-$HOME/tts-depency/FireRedTTS3}"
 export QWEN_LIBS="${QWEN_LIBS:-$QWEN3_TTS_PROJECT_DIR/vendor/qwen_libs}"
 export TIMBRE_STORAGE_DIR="${TIMBRE_STORAGE_DIR:-$STORAGE_DIR/timbre}"
 export SOUNDEFFECT_STORAGE_DIR="${SOUNDEFFECT_STORAGE_DIR:-$STORAGE_DIR/soundEffect}"
@@ -85,6 +88,7 @@ export QWEN3_TTS_OUTPUT_DIR="${QWEN3_TTS_OUTPUT_DIR:-$CLONE_STORAGE_DIR}"
 export VOXCPM2_OUTPUT_DIR="${VOXCPM2_OUTPUT_DIR:-$CLONE_STORAGE_DIR}"
 export LONGCAT_AUDIODIT_OUTPUT_DIR="${LONGCAT_AUDIODIT_OUTPUT_DIR:-$CLONE_STORAGE_DIR}"
 export DOTS_TTS_SOAR_OUTPUT_DIR="${DOTS_TTS_SOAR_OUTPUT_DIR:-$CLONE_STORAGE_DIR}"
+export FIRERED_TTS3_REQUEST_TIMEOUT="${FIRERED_TTS3_REQUEST_TIMEOUT:-900}"
 export STEP_AUDIO_EDITX_OUTPUT_DIR="${STEP_AUDIO_EDITX_OUTPUT_DIR:-$CLONE_STORAGE_DIR}"
 export PROMPTS_DIR="${PROMPTS_DIR:-$CLONE_STORAGE_DIR}"
 export RUNTIME_CACHE_DIR="${RUNTIME_CACHE_DIR:-$STORAGE_DIR/.cache/runtime}"
@@ -133,6 +137,10 @@ export LONGCAT_AUDIODIT_HOST="${LONGCAT_AUDIODIT_HOST:-$HOST}"
 export LONGCAT_AUDIODIT_PORT="${LONGCAT_AUDIODIT_PORT:-8323}"
 export DOTS_TTS_SOAR_HOST="${DOTS_TTS_SOAR_HOST:-$HOST}"
 export DOTS_TTS_SOAR_PORT="${DOTS_TTS_SOAR_PORT:-8324}"
+export FIRERED_TTS3_TIMBRE_HOST="${FIRERED_TTS3_TIMBRE_HOST:-$HOST}"
+export FIRERED_TTS3_TIMBRE_PORT="${FIRERED_TTS3_TIMBRE_PORT:-8304}"
+export FIRERED_TTS3_CLONE_HOST="${FIRERED_TTS3_CLONE_HOST:-$HOST}"
+export FIRERED_TTS3_CLONE_PORT="${FIRERED_TTS3_CLONE_PORT:-8325}"
 export QWEN_VOICEDESIGN_HOST="${QWEN_VOICEDESIGN_HOST:-$HOST}"
 export QWEN_VOICEDESIGN_PORT="${QWEN_VOICEDESIGN_PORT:-8301}"
 export MOSS_VOICEGENERATOR_HOST="${MOSS_VOICEGENERATOR_HOST:-$HOST}"
@@ -187,6 +195,9 @@ echo "LongCat config:      managed by $LONGCAT_AUDIODIT_PROJECT_DIR/main.py"
 echo "dots.tts-soar uv project: $DOTS_TTS_SOAR_PROJECT_DIR"
 echo "dots.tts-soar model: $DOTS_TTS_SOAR_MODEL_DIR"
 echo "dots.tts-soar config: managed by $DOTS_TTS_SOAR_PROJECT_DIR/main.py"
+echo "FireRedTTS3 uv project: $FIRERED_TTS3_PROJECT_DIR"
+echo "FireRedTTS3 model: $FIRERED_TTS3_MODEL_DIR"
+echo "FireRedTTS3 official code: $FIRERED_TTS3_CODE_PATH"
 echo "VoxCPM2 config:      managed by $VOXCPM2_PROJECT_DIR/main.py"
 echo "Qwen3-TTS config:    managed by qwen3_tts/main.py"
 echo "Qwen sidecar libs:   $QWEN_LIBS"
@@ -220,6 +231,8 @@ echo "VoxCPM2 API:         http://$VOXCPM2_HOST:$VOXCPM2_PORT"
 echo "VoxCPM2 health:      http://127.0.0.1:$VOXCPM2_PORT/v1/health"
 echo "LongCat health:      http://127.0.0.1:$LONGCAT_AUDIODIT_PORT/v1/health"
 echo "dots.tts-soar health: http://127.0.0.1:$DOTS_TTS_SOAR_PORT/v1/health"
+echo "FireRedTTS3 timbre health: http://127.0.0.1:$FIRERED_TTS3_TIMBRE_PORT/v1/health"
+echo "FireRedTTS3 clone health: http://127.0.0.1:$FIRERED_TTS3_CLONE_PORT/v1/health"
 echo "MOSS timbre route:   http://127.0.0.1:$MOSS_VOICEGENERATOR_PORT/v1/moss/timbre"
 echo "MiMo timbre route:   http://127.0.0.1:$MIMO_TTS_PORT/v1/mimo/timbre"
 echo "Step-Audio-EditX route: http://127.0.0.1:$STEP_AUDIO_EDITX_PORT/v1/stepAudioEditx/edit"
@@ -231,6 +244,8 @@ echo "Qwen3-TTS clone:     http://127.0.0.1:$QWEN3_TTS_PORT/v1/qwen/clone"
 echo "VoxCPM2 clone:       http://127.0.0.1:$VOXCPM2_PORT/v1/voxcpm2/clone"
 echo "LongCat clone:       http://127.0.0.1:$LONGCAT_AUDIODIT_PORT/v1/longCat/clone"
 echo "dots.tts-soar clone: http://127.0.0.1:$DOTS_TTS_SOAR_PORT/v2/dotsTTS/clone"
+echo "FireRedTTS3 timbre: http://127.0.0.1:$FIRERED_TTS3_TIMBRE_PORT/v1/FireRedTTS3/timbre"
+echo "FireRedTTS3 clone: http://127.0.0.1:$FIRERED_TTS3_CLONE_PORT/v1/FireRedTTS3/clone"
 echo ""
 echo "模型接口与端口映射"
 printf '%-24s %-6s %s\n' '服务' '端口' '最终接口'
@@ -245,6 +260,8 @@ printf '%-24s %-6s %s\n' 'Qwen3-TTS Base' "$QWEN3_TTS_PORT" '/v1/qwen/clone'
 printf '%-24s %-6s %s\n' 'VoxCPM2' "$VOXCPM2_PORT" '/v1/voxcpm2/clone'
 printf '%-24s %-6s %s\n' 'LongCat-AudioDiT' "$LONGCAT_AUDIODIT_PORT" '/v1/longCat/clone'
 printf '%-24s %-6s %s\n' 'dots.tts-soar' "$DOTS_TTS_SOAR_PORT" '/v2/dotsTTS/clone'
+printf '%-24s %-6s %s\n' 'FireRedTTS3 Instruct' "$FIRERED_TTS3_TIMBRE_PORT" '/v1/FireRedTTS3/timbre'
+printf '%-24s %-6s %s\n' 'FireRedTTS3 Base' "$FIRERED_TTS3_CLONE_PORT" '/v1/FireRedTTS3/clone'
 printf '%-24s %-6s %s\n' 'Step-Audio-EditX' "$STEP_AUDIO_EDITX_PORT" '/v1/stepAudioEditx/edit'
 echo "=================================================="
 
@@ -259,6 +276,8 @@ qwen3_tts_pid=""
 voxcpm2_pid=""
 longcat_audiodit_pid=""
 dots_tts_soar_pid=""
+firered_tts3_timbre_pid=""
+firered_tts3_clone_pid=""
 qwen_voicedesign_pid=""
 moss_voicegenerator_pid=""
 step_audio_editx_pid=""
@@ -278,6 +297,8 @@ cleanup() {
     "$voxcpm2_pid"
     "$longcat_audiodit_pid"
     "$dots_tts_soar_pid"
+    "$firered_tts3_timbre_pid"
+    "$firered_tts3_clone_pid"
   )
   trap - INT TERM EXIT
 
@@ -364,5 +385,17 @@ HOST="$DOTS_TTS_SOAR_HOST" PORT="$DOTS_TTS_SOAR_PORT" \
   setsid uv run --no-sync --project "$DOTS_TTS_SOAR_PROJECT_DIR" \
     python "$DOTS_TTS_SOAR_PROJECT_DIR/main.py" &
 dots_tts_soar_pid=$!
+# FireRedTTS3 Instruct 音色设计服务：8304 只启动 Instruct worker 模式。
+FIRERED_TTS3_MODE="timbre" FIRERED_TTS3_HOST="$FIRERED_TTS3_TIMBRE_HOST" \
+  FIRERED_TTS3_PORT="$FIRERED_TTS3_TIMBRE_PORT" HOST="$FIRERED_TTS3_TIMBRE_HOST" \
+  PORT="$FIRERED_TTS3_TIMBRE_PORT" setsid uv run --no-sync --project "$FIRERED_TTS3_PROJECT_DIR" \
+  python "$FIRERED_TTS3_PROJECT_DIR/main.py" &
+firered_tts3_timbre_pid=$!
+# FireRedTTS3 Base 克隆服务：8325 只启动 Base worker 模式。
+FIRERED_TTS3_MODE="clone" FIRERED_TTS3_HOST="$FIRERED_TTS3_CLONE_HOST" \
+  FIRERED_TTS3_PORT="$FIRERED_TTS3_CLONE_PORT" HOST="$FIRERED_TTS3_CLONE_HOST" \
+  PORT="$FIRERED_TTS3_CLONE_PORT" setsid uv run --no-sync --project "$FIRERED_TTS3_PROJECT_DIR" \
+  python "$FIRERED_TTS3_PROJECT_DIR/main.py" &
+firered_tts3_clone_pid=$!
 
-wait -n "$main_pid" "$mimo_tts_pid" "$soundeffect_pid" "$stable_audio_3_medium_pid" "$acestep_pid" "$qwen3_tts_pid" "$qwen_voicedesign_pid" "$moss_voicegenerator_pid" "$step_audio_editx_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid"
+wait -n "$main_pid" "$mimo_tts_pid" "$soundeffect_pid" "$stable_audio_3_medium_pid" "$acestep_pid" "$qwen3_tts_pid" "$qwen_voicedesign_pid" "$moss_voicegenerator_pid" "$step_audio_editx_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid" "$firered_tts3_timbre_pid" "$firered_tts3_clone_pid"

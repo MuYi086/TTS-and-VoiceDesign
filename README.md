@@ -12,6 +12,7 @@ SoundEffect 生成。仓库采用“一个服务一个 uv 项目”的边界：H
 | Qwen3-TTS VoiceDesign | 8301 | 本地音色设计 | `/v1/qwen/timbre` |
 | MOSS VoiceGenerator | 8302 | 本地音色设计 | `/v1/moss/timbre` |
 | MiMo TTS VoiceDesign | 8303 | 云端音色设计 | `/v1/mimo/timbre` |
+| FireRedTTS3 Instruct | 8304 | 指令式音色设计 | `/v1/FireRedTTS3/timbre` |
 | Stable Audio 3 Medium | 8311 | 文本生成音乐或声效 | `/v1/stableAudio/soundEffect` |
 | MOSS-SoundEffect v2 | 8312 | 文本生成声效 | `/v1/moss/soundEffect` |
 | ACE-Step 1.5 XL Turbo | 8313 | 有声小说 BGM、主题音乐和 underscore | `/v1/aceStep/bgm` |
@@ -19,6 +20,7 @@ SoundEffect 生成。仓库采用“一个服务一个 uv 项目”的边界：H
 | VoxCPM2 | 8322 | 语音克隆 | `/v1/voxcpm2/clone` |
 | LongCat-AudioDiT-3.5B | 8323 | 参考音频语音克隆 | `/v1/longCat/clone` |
 | dots.tts-soar | 8324 | 参考音频语音克隆 | `/v2/dotsTTS/clone` |
+| FireRedTTS3 Base | 8325 | 参考音频语音克隆 | `/v1/FireRedTTS3/clone` |
 | Step-Audio-EditX | 8331 | 语音编辑 | `/v1/stepAudioEditx/edit` |
 
 每个服务都提供 `GET /v1/health`。后端只注册表中列出的最终接口；成功生成接口返回
@@ -39,6 +41,7 @@ qwen3_voiceDesign/            Qwen VoiceDesign 服务和 worker
 moss_voiceGenerator/          MOSS VoiceGenerator 服务和 worker
 mimo_tts/                     MiMo 云端编排服务
 Step_Audio_EditX/             Step-Audio-EditX 服务和 worker
+firered_tts3/                 FireRedTTS3 Instruct/Base 服务和 worker
 tests/                        根目录无模型回归测试
 soundEffect/                  MOSS GPU 示例和提示词说明
 storage/                      上传音频、生成音频、sidecar、缓存和 GPU 锁
@@ -48,14 +51,14 @@ storage/                      上传音频、生成音频、sidecar、缓存和 
 
 | 目录 | 内容 | 覆盖变量 |
 | --- | --- | --- |
-| `storage/timbre/` | Qwen、MOSS、VoxCPM2、MiMo 生成的音色参考音频 | `TIMBRE_STORAGE_DIR` |
+| `storage/timbre/` | Qwen、MOSS、MiMo、FireRedTTS3 生成的音色参考音频 | `TIMBRE_STORAGE_DIR` |
 | `storage/soundEffect/` | MOSS 和 Stable Audio 生成的声效 | `SOUNDEFFECT_STORAGE_DIR`、`STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR` |
 | `storage/bgm/` | ACE-Step 有声小说 BGM 和 OST | `BGM_STORAGE_DIR`、`ACESTEP_OUTPUT_DIR` |
 | `storage/clone/` | 参考音频、克隆结果和 Step 编辑结果 | `CLONE_STORAGE_DIR`、各服务的 `*_OUTPUT_DIR` |
 | `storage/.cache/runtime/` | worker 临时文件、库缓存和共享 GPU 锁 | `RUNTIME_CACHE_DIR`、`GPU_LOCK_FILE` |
 
 如果上传音频的内容与 `storage/timbre/` 中已有的设计音色一致，Qwen3-TTS、VoxCPM2、
-LongCat 和 dots.tts-soar 会在 `storage/timbre/.references/` 保存带 SHA-256 和相对路径的
+LongCat、dots.tts-soar 和 FireRedTTS3 会在 `storage/timbre/.references/` 保存带 SHA-256 和相对路径的
 小型 JSON 引用映射，不再把同一 WAV 复制到 `storage/clone/`；普通用户上传的参考音频仍保存到
 `storage/clone/`。上传按块暂存并通过原子替换提交，默认上限为 64 MiB，可用
 `UPLOAD_MAX_BYTES` 覆盖。这些目录是运行数据，不要提交到 Git。
@@ -70,7 +73,7 @@ LongCat 和 dots.tts-soar 会在 `storage/timbre/.references/` 保存带 SHA-256
 ```bash
 for project in qwen3_tts mimo_tts voxcpm2 LongCat_AudioDiT_3.5B_bf16 \
   dots_tts_soar moss_soundEffect stable_audio_3_medium ace_step_1_5 \
-  qwen3_voiceDesign moss_voiceGenerator Step_Audio_EditX; do
+  qwen3_voiceDesign moss_voiceGenerator Step_Audio_EditX firered_tts3; do
   uv sync --project "$project" --locked
 done
 ```
@@ -92,8 +95,8 @@ Tokenizer 和上游源码就绪后启动全部服务：
 bash start.sh
 ```
 
-`start.sh` 会启动 8300、8301、8302、8303、8311、8312、8313、8321、8322、8323、8324 和
-8331 共 12 个进程；8300 使用 `qwen3_tts` uv 项目中的轻量 HTTP 依赖，其余服务使用
+`start.sh` 会启动 8300、8301、8302、8303、8304、8311、8312、8313、8321、8322、8323、8324、8325 和
+8331 共 14 个进程；8300 使用 `qwen3_tts` uv 项目中的轻量 HTTP 依赖，其余服务使用
 各自的 uv 项目。启动命令统一使用 `uv run --no-sync`，不会在运行阶段联网解析依赖；
 本地 GPU 服务通过 `GPU_LOCK_FILE` 串行访问 GPU。默认最多排队 900 秒，超过时返回
 `503`；用 `GPU_LOCK_WAIT_TIMEOUT` 调整（设为非正值可关闭时限）。健康检查可结合
@@ -103,7 +106,7 @@ bash start.sh
 健康检查：
 
 ```bash
-for port in 8300 8301 8302 8303 8311 8312 8313 8321 8322 8323 8324 8331; do
+for port in 8300 8301 8302 8303 8304 8311 8312 8313 8321 8322 8323 8324 8325 8331; do
   curl -fsS "http://127.0.0.1:${port}/v1/health" >/dev/null && echo "${port}: ok"
 done
 ```
@@ -132,13 +135,17 @@ HOST=127.0.0.1 PORT=8321 \
 | LongCat-AudioDiT | `$HF_MIRROR_DIR/drbaph/LongCat-AudioDiT-3.5B-bf16` | `LONGCAT_AUDIODIT_REPO_PATH`、`LONGCAT_AUDIODIT_TOKENIZER_PATH` |
 | dots.tts-soar | `$HF_MIRROR_DIR/rednote-hilab/dots.tts-soar` | `DOTS_TTS_SOAR_MODEL_DIR` |
 | Step-Audio-EditX | `$HF_MIRROR_DIR/stepfun-ai/Step-Audio-EditX` | `STEP_AUDIO_TOKENIZER_PATH`、`STEP_AUDIO_EDITX_CODE_PATH` |
+| FireRedTTS3 Base/Instruct | `$HF_MIRROR_DIR/drbaph/FireRedTTS3-bf16` | `FIRERED_TTS3_MODEL_DIR`、`FIRERED_TTS3_CODE_PATH` |
 
 通用配置包括 `HOST`、`PORT`、`STORAGE_DIR`、`PROMPTS_DIR`、`RUNTIME_CACHE_DIR`、
 `GPU_LOCK_FILE`、`LOCAL_FILES_ONLY` 和 `CUDA_RELEASE_DELAY`。服务专用配置使用对应
 前缀，例如 `QWEN3_TTS_*`、`VOXCPM2_*`、`LONGCAT_AUDIODIT_*`、`DOTS_TTS_SOAR_*`、
 `MOSS_SOUNDEFFECT_*`、`STABLE_AUDIO_3_MEDIUM_*`、`ACESTEP_*`、`STEP_AUDIO_EDITX_*`、
-`QWEN_VOICEDESIGN_*` 和 `MOSS_VOICEGENERATOR_*`。每个服务的 `/v1/health` 会报告
+`QWEN_VOICEDESIGN_*`、`MOSS_VOICEGENERATOR_*` 和 `FIRERED_TTS3_*`。每个服务的 `/v1/health` 会报告
 生效的路径、运行时和可用性。
+FireRedTTS3 的官方源码默认位于 `$HOME/tts-depency/FireRedTTS3`，通过
+`FIRERED_TTS3_CODE_PATH` 覆盖；8304 以 `timbre` 模式加载 Instruct，8325 以 `clone` 模式加载
+Base，两者不会同时在 worker 中常驻显存。
 
 Stable Audio 3 默认允许上游的 flex-attention/SDPA 回退；只有需要严格检查
 FlashAttention 时才设置 `STABLE_AUDIO_3_MEDIUM_REQUIRE_FLASH_ATTN=1`。VoxCPM2、
@@ -147,12 +154,16 @@ LongCat、dots.tts-soar 和 Step-Audio-EditX 的默认项目路径不要求安�
 
 ## 参考音频克隆
 
-Qwen3-TTS、VoxCPM2、LongCat 和 dots.tts-soar 使用相同的三步 WebUI 流程：
+Qwen3-TTS、VoxCPM2、LongCat、dots.tts-soar 和 FireRedTTS3 使用相同的三步 WebUI 流程：
 
-1. `POST /v1/upload_audio`，表单字段为 `audio`、`full_path`；Qwen、VoxCPM2、LongCat
-   和 dots.tts-soar 还接受可选的 `prompt_text`。
+1. `POST /v1/upload_audio`，表单字段为 `audio`、`full_path`；Qwen、VoxCPM2、LongCat、
+   dots.tts-soar 和 FireRedTTS3 还接受可选的 `prompt_text`。
 2. `GET /v1/check/audio?file_name=...` 检查服务自己的存储状态。
 3. 调用当前模型的克隆路由，请求中的 `audio_path` 使用上传时的 `full_path` 文件名。
+
+FireRedTTS3 Base 使用同样的上传与检查接口，最终克隆路由为
+`POST http://127.0.0.1:8325/v1/FireRedTTS3/clone`。它要求参考音频对应的准确
+`prompt_text`；默认语言为 `Chinese`，也可以在 JSON 请求中传入官方语言或方言标签。
 
 上传示例（以 Qwen3-TTS 8321 为例）：
 
@@ -203,11 +214,20 @@ curl -X POST http://127.0.0.1:8303/v1/mimo/timbre \
   -H 'Content-Type: application/json' \
   -d '{"voice_description":"成年女性，声音清晰自然，语速中等。","text":"你好。"}' \
   -o mimo-voice.wav
+
+curl -X POST http://127.0.0.1:8304/v1/FireRedTTS3/timbre \
+  -H 'Content-Type: application/json' \
+  -d '{"voice_description":"成年女性，声音清晰自然，语速中等。","text":"你好。"}' \
+  -o fireredtts3-voice.wav
 ```
 
 MiMo 的 8303 服务只做云端请求编排、重试、分段和本地音色缓存；8300 控制面保留兼容
 代理。后端无法连接 MiMo API 时，独立服务和代理会返回 `503`，请检查
 `MIMO_API_KEY`、`MIMO_BASE_URL`、DNS、HTTPS 出网和 `HTTPS_PROXY`。
+
+FireRedTTS3 Instruct 音色设计监听 `8304`，只接收 `voice_description` 和 `text`，并将
+生成 WAV 保存在 `storage/timbre/`。最终路由为
+`POST http://127.0.0.1:8304/v1/FireRedTTS3/timbre`。
 
 MOSS VoiceGenerator 必须使用 **MOSS-Audio-Tokenizer v1**（24 kHz、单声道）。
 不要把 48 kHz 双声道的 v2 codec 作为该服务的 tokenizer；8302 的健康检查中
