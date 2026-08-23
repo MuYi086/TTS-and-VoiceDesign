@@ -3,8 +3,8 @@
 ## 适用范围
 
 本仓库是 Unitale 的本地语音后端，提供语音合成、音色设计、语音编辑和音效生成能力。
-项目采用多项目 uv workspace 结构；每个服务独立维护自己的 `pyproject.toml`、
-`uv.lock`、HTTP 入口和 worker。
+项目采用多项目 uv 结构；每个服务独立维护自己的 `pyproject.toml`、`uv.lock`、
+HTTP 入口和 worker。
 
 ## 项目结构与服务速查
 
@@ -16,11 +16,13 @@
 - 模型服务位于 `mimo_tts/`、`qwen3_tts/`、`voxcpm2/`、
   `LongCat_AudioDiT_3.5B_bf16/`、`dots_tts_soar/`、`moss_soundEffect/`、
   `stable_audio_3_medium/`、`ace_step_1_5/`、`qwen3_voiceDesign/`、`moss_voiceGenerator/` 和
-  `Step_Audio_EditX/`。
+  `Step_Audio_EditX/`、`firered_tts3/`。其中 FireRedTTS3 通过两个独立进程分别提供
+  Instruct 音色设计和 Base 参考音频克隆。
 - 最终默认端口：`8300` 控制面、`8301` Qwen VoiceDesign、`8302` MOSS VoiceGenerator、
-  `8303` MiMo、`8311` Stable Audio 3 Medium、`8312` MOSS-SoundEffect、`8313` ACE-Step BGM、`8321` Qwen3-TTS、
-  `8322` VoxCPM2、`8323` LongCat、`8324` dots.tts-soar、`8331` Step-Audio-EditX。
-- `tests/` 存放无模型 `unittest` 迁移回归测试；Stable Audio 测试独立存放。
+  `8303` MiMo、`8304` FireRedTTS3 Instruct、`8311` Stable Audio 3 Medium、
+  `8312` MOSS-SoundEffect、`8313` ACE-Step BGM、`8321` Qwen3-TTS、`8322` VoxCPM2、
+  `8323` LongCat、`8324` dots.tts-soar、`8325` FireRedTTS3 Base、`8331` Step-Audio-EditX。
+- `tests/` 存放无模型 `unittest` 迁移回归测试；ACE-Step 和 Stable Audio 的服务内测试独立存放。
   `soundEffect/` 存放 MOSS GPU 示例；`storage/` 存放运行音频、sidecar、缓存和 GPU 锁，
   不得提交其内容。
 
@@ -32,17 +34,24 @@
 源码 `/home/muyi086/tts-depency/MOSS-TTS`，不得改为 Git/PyPI 下载；执行该项目的
 `uv sync` 前先确认该目录存在。
 `bash start.sh` 会在 `qwen3_tts` uv 项目中启动轻量的 8300 控制面，并在各自项目中启动其余
-11 个 HTTP 进程；端口、路径、项目和运行参数均通过环境变量覆盖。
+13 个 HTTP 进程（FireRedTTS3 占用 8304 和 8325 两个模式进程）；共启动 14 个进程。
+端口、路径、项目和运行参数均通过环境变量覆盖。
 启动脚本使用 `uv run --no-sync`，并将 `unitale_runtime/src` 放入 `PYTHONPATH` 作为共享包的
 离线兜底；新增或变更项目依赖仍必须提前执行对应项目的 `uv sync --locked`。
 
 ```bash
 bash -n start.sh
-bash start.sh
-uv run --project qwen3_tts python -m unittest discover -s tests -v
-(cd ace_step_1_5 && uv run --project . python -m unittest discover -s tests -v)
-(cd stable_audio_3_medium && uv run --project . python -m unittest discover -s tests -v)
-curl -fsS http://127.0.0.1:8300/v1/control
+bash scripts/quality_gate.sh
+```
+
+需要启动本地模型服务时，先准备 README 中列出的权重和外部源码，再执行 `bash start.sh`。
+服务启动后可用 `curl -fsS http://127.0.0.1:8300/v1/control` 检查控制面。
+无模型测试也可以单独从 QA 环境运行：
+
+```bash
+uv run --project qa --locked python -m unittest discover -s tests -v
+(cd ace_step_1_5 && uv run --project ../qa --locked python -m unittest discover -s tests -v)
+(cd stable_audio_3_medium && uv run --project ../qa --locked python -m unittest discover -s tests -v)
 ```
 
 测试不得下载权重、依赖 CUDA、调用 MiMo 或执行真实模型。应 mock worker、subprocess、
@@ -67,13 +76,14 @@ curl -fsS http://127.0.0.1:8300/v1/control
   保存：音色写入 `storage/timbre/`，音效写入 `storage/soundEffect/`，克隆/编辑音频写入
   `storage/clone/`；BGM 写入 `storage/bgm/`；这些目录都可覆盖。
 - 音色设计返回的 WAV 只能保存在 `storage/timbre/`。当 WebUI 为克隆预览把设计音频同步到
-  Qwen3-TTS、VoxCPM2、LongCat 或 dots 服务时，只能在 `storage/timbre/.references/` 写入
+  Qwen3-TTS、VoxCPM2、LongCat、dots 或 FireRedTTS3 服务时，只能在 `storage/timbre/.references/` 写入
   小型引用映射和文本 sidecar，不得在 `storage/clone/` 再复制一份设计 WAV；普通用户上传的
   参考音频仍保存到 `storage/clone/`。
 - 参考音频克隆使用 `/v1/qwen/clone`、`/v1/voxcpm2/clone`、`/v1/longCat/clone` 和
-  `/v2/dotsTTS/clone`；音色设计使用 `/v1/qwen/timbre`、`/v1/moss/timbre` 和
-  `/v1/mimo/timbre`；音效使用 `/v1/stableAudio/soundEffect`、
-  `/v1/moss/soundEffect`；BGM 使用 `/v1/aceStep/bgm`；语音编辑使用 `/v1/stepAudioEditx/edit`。
+  `/v2/dotsTTS/clone`、`/v1/FireRedTTS3/clone`；音色设计使用 `/v1/qwen/timbre`、
+  `/v1/moss/timbre`、`/v1/mimo/timbre` 和 `/v1/FireRedTTS3/timbre`；音效使用
+  `/v1/stableAudio/soundEffect`、`/v1/moss/soundEffect`；BGM 使用 `/v1/aceStep/bgm`；
+  语音编辑使用 `/v1/stepAudioEditx/edit`。
 - 后端只注册并使用上述最终接口；不得新增或保留任何旧接口兼容别名。
 - 模型默认值集中放在各服务模块顶部。`start.sh` 只负责路由、路径、端口、环境和共享运行参数，
   不应静默替换推理默认值。
@@ -88,7 +98,7 @@ Python 使用 4 个空格缩进，函数和变量使用 `snake_case`，Pydantic 
 遵循现有的类型标注、import、docstring 和换行风格；Ruff 规则按各项目 `pyproject.toml`
 配置，并由 `scripts/quality_gate.sh` 实际执行 `ruff check` 与 `ruff format --check`。
 路由、校验、存储或 worker 生命周期发生变化时，补充针对性的无模型测试，并同步更新
-`README.md` 中的 endpoint 或字段说明。
+`README.md` 中的 endpoint 或字段说明；根目录测试必须通过 `qa` 项目运行。
 - FastAPI TestClient 回归使用轻量 QA 环境的 `httpx2` 兼容依赖，不要恢复已弃用的旧客户端组合。
 
 不得加入模型权重、上传/参考音频、生成 WAV、虚拟环境、缓存、密钥或机器专用绝对路径；
