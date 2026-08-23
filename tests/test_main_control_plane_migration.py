@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 REPOSITORY_DIR = Path(__file__).resolve().parents[1]
@@ -53,6 +54,7 @@ class MainControlPlaneMigrationTests(unittest.TestCase):
             ("GET", "/v1/health"),
             ("GET", "/v1/control"),
             ("POST", "/v1/mimo/timbre"),
+            ("POST", "/v1/audio/export"),
             ("POST", "/v1/upload_audio"),
             ("GET", "/v1/check/audio"),
         }
@@ -73,6 +75,8 @@ class MainControlPlaneMigrationTests(unittest.TestCase):
             payload["runtime"]["model_inference"],
             "delegated to standalone services",
         )
+        self.assertEqual(payload["audio_export"]["sample_rate"], 48000)
+        self.assertEqual(payload["audio_export"]["profiles"], ["standard", "balanced", "immersive"])
 
     def test_upload_and_check_preserve_timbre_reference_without_clone_copy(self) -> None:
         from fastapi.testclient import TestClient
@@ -113,6 +117,61 @@ class MainControlPlaneMigrationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content, b"RIFF-proxy")
         forward.assert_called_once()
+
+    def test_audio_export_streams_processed_result_and_cleans_response_file(self) -> None:
+        from fastapi.testclient import TestClient
+
+        output_dir = TEST_ROOT / "processed"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / "result.mp3"
+        output_path.write_bytes(b"processed-mp3")
+        cleanup_called: list[bool] = []
+
+        def fake_export(staged, *, profile: str, output_format: str):
+            self.assertEqual(profile, "balanced")
+            self.assertEqual(output_format, "mp3")
+            self.assertTrue(staged.path.is_file())
+            staged.path.unlink()
+            return SimpleNamespace(
+                path=output_path,
+                media_type="audio/mpeg",
+                download_name="unitale_balanced.mp3",
+                cleanup=lambda: cleanup_called.append(True),
+            )
+
+        with patch.object(
+            main.spatial_audio_processor, "export", side_effect=fake_export
+        ) as export:
+            response = TestClient(main.app).post(
+                "/v1/audio/export",
+                files={"audio": ("mix.wav", b"RIFF-mixed-audio", "audio/wav")},
+                data={"profile": "balanced", "output_format": "mp3"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"processed-mp3")
+        self.assertEqual(response.headers["x-audio-sample-rate"], "48000")
+        self.assertEqual(response.headers["x-audio-profile"], "balanced")
+        self.assertIn("unitale_balanced.mp3", response.headers["content-disposition"])
+        self.assertIn(
+            "Content-Disposition",
+            response.headers["access-control-expose-headers"],
+        )
+        self.assertTrue(cleanup_called)
+        export.assert_called_once()
+
+    def test_audio_export_rejects_unknown_profile_before_processing(self) -> None:
+        from fastapi.testclient import TestClient
+
+        with patch.object(main.spatial_audio_processor, "export") as export:
+            response = TestClient(main.app).post(
+                "/v1/audio/export",
+                files={"audio": ("mix.wav", b"RIFF-mixed-audio", "audio/wav")},
+                data={"profile": "unknown", "output_format": "wav"},
+            )
+
+        self.assertEqual(response.status_code, 422)
+        export.assert_not_called()
 
     def test_api_directory_is_removed_after_migration(self) -> None:
         self.assertFalse((REPOSITORY_DIR / "api").exists())

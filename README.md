@@ -8,7 +8,7 @@ SoundEffect 生成。仓库采用“一个服务一个 uv 项目”的边界：H
 
 | 服务 | 端口 | 主要用途 | 主要路由 |
 | --- | ---: | --- | --- |
-| 控制面 | 8300 | 控制面、共享上传/检查、MiMo 兼容代理 | `/v1/control` |
+| 控制面 | 8300 | 控制面、共享上传/检查、48 kHz 音频导出、MiMo 兼容代理 | `/v1/control`、`/v1/audio/export` |
 | Qwen3-TTS VoiceDesign | 8301 | 本地音色设计 | `/v1/qwen/timbre` |
 | MOSS VoiceGenerator | 8302 | 本地音色设计 | `/v1/moss/timbre` |
 | MiMo TTS VoiceDesign | 8303 | 云端音色设计 | `/v1/mimo/timbre` |
@@ -23,8 +23,8 @@ SoundEffect 生成。仓库采用“一个服务一个 uv 项目”的边界：H
 | FireRedTTS3 Base | 8325 | 参考音频语音克隆 | `/v1/FireRedTTS3/clone` |
 | Step-Audio-EditX | 8331 | 语音编辑 | `/v1/stepAudioEditx/edit` |
 
-每个服务都提供 `GET /v1/health`。后端只注册表中列出的最终接口；成功生成接口返回
-`audio/wav`，并在服务端保存一份 WAV。
+每个服务都提供 `GET /v1/health`。后端只注册表中列出的最终接口；模型生成接口返回
+`audio/wav`，并在服务端保存一份 WAV。空间音频导出返回 WAV 或 MP3，响应完成后删除临时成品。
 
 ## 目录与运行数据
 
@@ -55,7 +55,7 @@ storage/                      上传音频、生成音频、sidecar、缓存和 
 | `storage/soundEffect/` | MOSS 和 Stable Audio 生成的声效 | `SOUNDEFFECT_STORAGE_DIR`、`STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR` |
 | `storage/bgm/` | ACE-Step 有声小说 BGM 和 OST | `BGM_STORAGE_DIR`、`ACESTEP_OUTPUT_DIR` |
 | `storage/clone/` | 参考音频、克隆结果和 Step 编辑结果 | `CLONE_STORAGE_DIR`、各服务的 `*_OUTPUT_DIR` |
-| `storage/.cache/runtime/` | worker 临时文件、库缓存和共享 GPU 锁 | `RUNTIME_CACHE_DIR`、`GPU_LOCK_FILE` |
+| `storage/.cache/runtime/` | worker 临时文件、空间音频导出缓存、库缓存和共享 GPU 锁 | `RUNTIME_CACHE_DIR`、`SPATIAL_EXPORT_CACHE_DIR`、`GPU_LOCK_FILE` |
 
 如果上传音频的内容与 `storage/timbre/` 中已有的设计音色一致，Qwen3-TTS、VoxCPM2、
 LongCat、dots.tts-soar 和 FireRedTTS3 会在 `storage/timbre/.references/` 保存带 SHA-256 和相对路径的
@@ -65,7 +65,7 @@ LongCat、dots.tts-soar 和 FireRedTTS3 会在 `storage/timbre/.references/` 保
 
 ## 安装与启动
 
-运行要求：Python `3.12.13`、`uv`、可用的 CUDA/NVIDIA 驱动（本地模型服务），以及
+运行要求：Python `3.12.13`、`uv`、FFmpeg、可用的 CUDA/NVIDIA 驱动（本地模型服务），以及
 下方列出的模型权重和外部源码目录。权重与第三方源码不放进本仓库。
 
 先为需要的服务同步锁定依赖；部署全部服务时可以执行：
@@ -138,7 +138,9 @@ HOST=127.0.0.1 PORT=8321 \
 | FireRedTTS3 Base/Instruct | `$HF_MIRROR_DIR/drbaph/FireRedTTS3-bf16` | `FIRERED_TTS3_MODEL_DIR`、`FIRERED_TTS3_CODE_PATH` |
 
 通用配置包括 `HOST`、`PORT`、`STORAGE_DIR`、`PROMPTS_DIR`、`RUNTIME_CACHE_DIR`、
-`GPU_LOCK_FILE`、`LOCAL_FILES_ONLY` 和 `CUDA_RELEASE_DELAY`。服务专用配置使用对应
+`GPU_LOCK_FILE`、`LOCAL_FILES_ONLY` 和 `CUDA_RELEASE_DELAY`。48 kHz 导出可用
+`SPATIAL_EXPORT_CACHE_DIR`、`SPATIAL_EXPORT_MAX_BYTES`、`SPATIAL_EXPORT_TIMEOUT` 和
+`SPATIAL_EXPORT_FFMPEG_BIN` 覆盖缓存目录、上传上限、处理超时和 FFmpeg 命令。服务专用配置使用对应
 前缀，例如 `QWEN3_TTS_*`、`VOXCPM2_*`、`LONGCAT_AUDIODIT_*`、`DOTS_TTS_SOAR_*`、
 `MOSS_SOUNDEFFECT_*`、`STABLE_AUDIO_3_MEDIUM_*`、`ACESTEP_*`、`STEP_AUDIO_EDITX_*`、
 `QWEN_VOICEDESIGN_*`、`MOSS_VOICEGENERATOR_*` 和 `FIRERED_TTS3_*`。每个服务的 `/v1/health` 会报告
@@ -146,6 +148,30 @@ HOST=127.0.0.1 PORT=8321 \
 FireRedTTS3 的官方源码默认位于 `$HOME/tts-depency/FireRedTTS3`，通过
 `FIRERED_TTS3_CODE_PATH` 覆盖；8304 以 `timbre` 模式加载 Instruct，8325 以 `clone` 模式加载
 Base，两者不会同时在 worker 中常驻显存。
+
+## 48 kHz 空间音频导出
+
+WebUI 在浏览器中按原时间线混合台词、BGM 和 SoundEffect，生成 48 kHz 双声道 WAV
+中间件；真正下载前调用控制面的 CPU 接口：
+
+```bash
+curl -X POST http://127.0.0.1:8300/v1/audio/export \
+  -F 'audio=@timeline-mix.wav;type=audio/wav' \
+  -F 'profile=balanced' \
+  -F 'output_format=wav' \
+  -o unitale-balanced.wav
+```
+
+`profile` 可为 `standard`、`balanced` 或 `immersive`，默认 `balanced`；`output_format`
+可为 `wav` 或 `mp3`，默认 `wav`。处理顺序固定为 SoXR 48 kHz 重采样、所选空间化档位、
+双遍 EBU R128 loudnorm 和最终编码。WAV 使用 24-bit PCM，MP3 使用 192 kbps，并为 MP3
+预留更保守的 true-peak 余量。该 CPU 任务不获取 GPU 锁、不改写模型原始音频；上传暂存、
+pre-master 和最终文件都会在失败或响应结束后清理。
+
+`standard` 保留原始立体声，不加入 Haas 或房间反射；`balanced` 使用保留中心对白的
+Side-only Haas 与早期反射湿床，适合作为默认耳机空间版；`immersive` 进一步提高 Side 湿声、
+左右延迟和反射强度。两条湿声在单声道折叠时会抵消，中心 dry 仍完整保留，因此不会用牺牲
+对白可懂度来换取空间宽度。
 
 Stable Audio 3 默认允许上游的 flex-attention/SDPA 回退；只有需要严格检查
 FlashAttention 时才设置 `STABLE_AUDIO_3_MEDIUM_REQUIRE_FLASH_ATTN=1`。VoxCPM2、

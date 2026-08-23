@@ -2,21 +2,30 @@
 """用于共享存储和运行时诊断的轻量控制面 API。
 
 模型推理不在这里执行。各模型服务自行管理推理生命周期；本进程只保留
-周边 WebUI 使用的 8300 端口健康检查、上传和文件检查工具。
+周边 WebUI 使用的 8300 端口健康检查、上传、文件检查和 CPU 音频导出工具。
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Literal
 
 import uvicorn
 from fastapi import FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from gpu_runtime import cuda_status
+from spatial_audio import (
+    SPATIAL_EXPORT_FORMATS,
+    SPATIAL_EXPORT_PROFILES,
+    SpatialAudioExportError,
+    SpatialAudioProcessor,
+)
+from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -24,6 +33,7 @@ from unitale_runtime import (
     AudioReferenceStore,
     AudioUploadError,
     StagedUpload,
+    UploadPolicy,
     stage_audio_upload,
     storage_disk_status,
 )
@@ -48,6 +58,19 @@ PROMPTS_DIR = expand_path(os.getenv("PROMPTS_DIR", CLONE_STORAGE_DIR))
 RUNTIME_CACHE_DIR = expand_path(
     os.getenv("RUNTIME_CACHE_DIR", str(Path(STORAGE_DIR) / ".cache/runtime"))
 )
+SPATIAL_EXPORT_CACHE_DIR = expand_path(
+    os.getenv(
+        "SPATIAL_EXPORT_CACHE_DIR",
+        str(Path(RUNTIME_CACHE_DIR) / "spatial_exports"),
+    )
+)
+SPATIAL_EXPORT_MAX_BYTES = int(os.getenv("SPATIAL_EXPORT_MAX_BYTES", str(512 * 1024 * 1024)))
+SPATIAL_EXPORT_TIMEOUT = float(os.getenv("SPATIAL_EXPORT_TIMEOUT", "600"))
+SPATIAL_EXPORT_FFMPEG_BIN = os.getenv("SPATIAL_EXPORT_FFMPEG_BIN", "ffmpeg")
+if SPATIAL_EXPORT_MAX_BYTES <= 0:
+    raise ValueError("SPATIAL_EXPORT_MAX_BYTES 必须为正整数。")
+if SPATIAL_EXPORT_TIMEOUT <= 0:
+    raise ValueError("SPATIAL_EXPORT_TIMEOUT 必须大于 0。")
 GPU_LOCK_FILE = expand_path(
     os.getenv("GPU_LOCK_FILE", str(Path(RUNTIME_CACHE_DIR) / "gpu-runtime.lock"))
 )
@@ -72,10 +95,21 @@ for directory in (
     CLONE_STORAGE_DIR,
     PROMPTS_DIR,
     RUNTIME_CACHE_DIR,
+    SPATIAL_EXPORT_CACHE_DIR,
 ):
     os.makedirs(directory, exist_ok=True)
 
 reference_store = AudioReferenceStore(PROMPTS_DIR, TIMBRE_STORAGE_DIR)
+spatial_audio_processor = SpatialAudioProcessor(
+    SPATIAL_EXPORT_CACHE_DIR,
+    ffmpeg_bin=SPATIAL_EXPORT_FFMPEG_BIN,
+    timeout_seconds=SPATIAL_EXPORT_TIMEOUT,
+)
+
+
+def spatial_export_available() -> bool:
+    """检查配置的 FFmpeg 命令是否能从当前控制面环境解析。"""
+    return shutil.which(SPATIAL_EXPORT_FFMPEG_BIN) is not None
 
 
 app = FastAPI(title="Unitale AI Control Plane")
@@ -97,6 +131,9 @@ class ForceCORS(BaseHTTPMiddleware):
             )
         response = await call_next(request)
         response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Expose-Headers"] = (
+            "Content-Disposition, X-Audio-Sample-Rate, X-Audio-Profile, X-Audio-Format"
+        )
         return response
 
 
@@ -162,6 +199,7 @@ def health():
             "clone_storage_dir": CLONE_STORAGE_DIR,
             "prompts_dir": PROMPTS_DIR,
             "runtime_cache_dir": RUNTIME_CACHE_DIR,
+            "spatial_export_cache_dir": SPATIAL_EXPORT_CACHE_DIR,
             "gpu_lock_file": GPU_LOCK_FILE,
             "mimo_tts_proxy_url": MIMO_TTS_PROXY_URL,
         },
@@ -179,6 +217,15 @@ def health():
         "runtime": {
             "service_role": "control_plane",
             "model_inference": "delegated to standalone services",
+        },
+        "audio_export": {
+            "available": spatial_export_available(),
+            "ffmpeg_bin": SPATIAL_EXPORT_FFMPEG_BIN,
+            "sample_rate": 48000,
+            "profiles": list(SPATIAL_EXPORT_PROFILES),
+            "formats": list(SPATIAL_EXPORT_FORMATS),
+            "max_bytes": SPATIAL_EXPORT_MAX_BYTES,
+            "timeout_seconds": SPATIAL_EXPORT_TIMEOUT,
         },
     }
 
@@ -211,6 +258,50 @@ async def upload_audio(audio: UploadFile = File(...), full_path: str = Form(...)
         return await run_in_threadpool(store_uploaded_audio, staged, full_path)
     except AudioUploadError as exc:
         return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
+
+
+@app.post("/v1/audio/export")
+async def export_audio(
+    audio: UploadFile = File(...),
+    profile: Literal["standard", "balanced", "immersive"] = Form("balanced"),
+    output_format: Literal["wav", "mp3"] = Form("wav"),
+):
+    """流式接收 WebUI 混音，经 CPU FFmpeg 处理后返回 48 kHz 成品。"""
+    upload_policy = UploadPolicy(max_bytes=SPATIAL_EXPORT_MAX_BYTES)
+    try:
+        staged = await stage_audio_upload(
+            audio,
+            Path(SPATIAL_EXPORT_CACHE_DIR) / "uploads",
+            policy=upload_policy,
+        )
+    except AudioUploadError as exc:
+        return JSONResponse(status_code=exc.status_code, content={"detail": str(exc)})
+
+    try:
+        result = await run_in_threadpool(
+            spatial_audio_processor.export,
+            staged,
+            profile=profile,
+            output_format=output_format,
+        )
+    except SpatialAudioExportError as exc:
+        staged.path.unlink(missing_ok=True)
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
+    except Exception:
+        staged.path.unlink(missing_ok=True)
+        raise
+
+    return FileResponse(
+        path=result.path,
+        media_type=result.media_type,
+        filename=result.download_name,
+        headers={
+            "X-Audio-Sample-Rate": "48000",
+            "X-Audio-Profile": profile,
+            "X-Audio-Format": output_format,
+        },
+        background=BackgroundTask(result.cleanup),
+    )
 
 
 @app.get("/v1/check/audio")
