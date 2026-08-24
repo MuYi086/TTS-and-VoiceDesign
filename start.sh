@@ -96,6 +96,15 @@ export SPATIAL_EXPORT_CACHE_DIR="${SPATIAL_EXPORT_CACHE_DIR:-$RUNTIME_CACHE_DIR/
 export SPATIAL_EXPORT_MAX_BYTES="${SPATIAL_EXPORT_MAX_BYTES:-536870912}"
 export SPATIAL_EXPORT_TIMEOUT="${SPATIAL_EXPORT_TIMEOUT:-600}"
 export SPATIAL_EXPORT_FFMPEG_BIN="${SPATIAL_EXPORT_FFMPEG_BIN:-ffmpeg}"
+export STEAM_AUDIO_RENDER_CACHE_DIR="${STEAM_AUDIO_RENDER_CACHE_DIR:-$RUNTIME_CACHE_DIR/steam_audio_renders}"
+export STEAM_AUDIO_RENDERER_BIN="${STEAM_AUDIO_RENDERER_BIN:-$PROJECT_DIR/steam_audio_renderer/build/steam-audio-render}"
+export STEAM_AUDIO_SDK_DIR="${STEAM_AUDIO_SDK_DIR:-}"
+export STEAM_AUDIO_HRTF_PATH="${STEAM_AUDIO_HRTF_PATH:-}"
+export STEAM_AUDIO_RENDER_TIMEOUT="${STEAM_AUDIO_RENDER_TIMEOUT:-900}"
+export STEAM_AUDIO_RENDER_MAX_ASSETS="${STEAM_AUDIO_RENDER_MAX_ASSETS:-500}"
+export STEAM_AUDIO_RENDER_MAX_MANIFEST_BYTES="${STEAM_AUDIO_RENDER_MAX_MANIFEST_BYTES:-8388608}"
+export STEAM_AUDIO_RENDER_MAX_BYTES="${STEAM_AUDIO_RENDER_MAX_BYTES:-2147483648}"
+export STEAM_AUDIO_RENDER_THREADS="${STEAM_AUDIO_RENDER_THREADS:-4}"
 export GPU_LOCK_FILE="${GPU_LOCK_FILE:-$RUNTIME_CACHE_DIR/gpu-runtime.lock}"
 export LOCAL_FILES_ONLY="${LOCAL_FILES_ONLY:-1}"
 # LongCat 的克隆默认值集中在对应 API 顶部；Qwen3-TTS 的默认值
@@ -157,7 +166,13 @@ export NUMBA_CACHE_DIR="${NUMBA_CACHE_DIR:-$RUNTIME_CACHE_DIR/numba}"
 export MPLCONFIGDIR="${MPLCONFIGDIR:-$RUNTIME_CACHE_DIR/matplotlib}"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$RUNTIME_CACHE_DIR/xdg}"
 # 先创建运行目录，避免服务第一次接收请求时才触发目录创建竞争。
-mkdir -p "$TIMBRE_STORAGE_DIR" "$SOUNDEFFECT_STORAGE_DIR" "$BGM_STORAGE_DIR" "$CLONE_STORAGE_DIR" "$PROMPTS_DIR" "$SPATIAL_EXPORT_CACHE_DIR" "$HF_MODULES_CACHE" "$NUMBA_CACHE_DIR" "$MPLCONFIGDIR" "$XDG_CACHE_HOME" "$(dirname "$GPU_LOCK_FILE")"
+mkdir -p "$TIMBRE_STORAGE_DIR" "$SOUNDEFFECT_STORAGE_DIR" "$BGM_STORAGE_DIR" "$CLONE_STORAGE_DIR" "$PROMPTS_DIR" "$SPATIAL_EXPORT_CACHE_DIR" "$STEAM_AUDIO_RENDER_CACHE_DIR" "$HF_MODULES_CACHE" "$NUMBA_CACHE_DIR" "$MPLCONFIGDIR" "$XDG_CACHE_HOME" "$(dirname "$GPU_LOCK_FILE")"
+
+# Steam Audio 是 CPU 正式导出的可选能力；缺失时不阻断 14 个语音/音效进程，健康检查会明确报告 unavailable。
+if [[ ! -x "$STEAM_AUDIO_RENDERER_BIN" ]]; then
+  echo "警告：Steam Audio renderer 不存在或不可执行：$STEAM_AUDIO_RENDERER_BIN" >&2
+  echo "      请先运行 scripts/build_steam_audio_renderer.sh；正式空间导出将返回 503。" >&2
+fi
 
 echo "=================================================="
 echo "   Unitale AI local backend"
@@ -216,9 +231,11 @@ echo "Reference audio dir: $PROMPTS_DIR"
 echo "HF modules cache:    $HF_MODULES_CACHE"
 echo "GPU lock file:       $GPU_LOCK_FILE"
 echo "Spatial audio export: $SPATIAL_EXPORT_FFMPEG_BIN -> $SPATIAL_EXPORT_CACHE_DIR"
+echo "Steam Audio renderer: $STEAM_AUDIO_RENDERER_BIN -> $STEAM_AUDIO_RENDER_CACHE_DIR"
 echo "Main API:            http://$HOST:$PORT"
 echo "Control route:       http://127.0.0.1:$PORT/v1/control"
 echo "Audio export route:  http://127.0.0.1:$PORT/v1/audio/export"
+echo "Formal spatial route: http://127.0.0.1:$PORT/v1/audio/spatial/render"
 echo "MiMo TTS API:        http://$MIMO_TTS_HOST:$MIMO_TTS_PORT"
 echo "MiMo TTS health:     http://127.0.0.1:$MIMO_TTS_PORT/v1/health"
 echo "SoundEffect API:     http://$SOUNDEFFECT_HOST:$SOUNDEFFECT_PORT"

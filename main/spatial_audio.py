@@ -141,8 +141,8 @@ def build_pre_master_filter(profile: str) -> str:
     )
 
 
-class SpatialAudioProcessor:
-    """以一次性 FFmpeg 进程生成可下载的空间音频。"""
+class AudioMasteringProcessor:
+    """对 48 kHz 立体声 pre-master 执行双遍响度归一化和最终编码。"""
 
     def __init__(
         self,
@@ -189,6 +189,95 @@ class SpatialAudioProcessor:
             raise SpatialAudioExportError(f"FFmpeg 空间音频处理失败:\n{excerpt}")
         return "\n".join(part for part in (stdout, stderr) if part)
 
+    def master_pre_master(
+        self,
+        pre_master_path: str | Path,
+        job_dir: str | Path,
+        *,
+        profile: str,
+        output_format: str,
+        download_prefix: str = "unitale",
+    ) -> SpatialAudioExportResult:
+        """只做母带与编码，不增加 Haas、声像或房间反射。
+
+        Steam Audio 已经完成对象级空间化，因此该入口故意不调用
+        :func:`build_pre_master_filter`，避免正式导出发生二次空间处理。
+        """
+        if profile not in SPATIAL_EXPORT_PROFILES:
+            raise SpatialAudioExportError(f"不支持的 profile: {profile}")
+        if output_format not in SPATIAL_EXPORT_FORMATS:
+            raise SpatialAudioExportError(f"不支持的 output_format: {output_format}")
+
+        pre_master = Path(pre_master_path)
+        output_dir = Path(job_dir)
+        temporary_output_path = output_dir / f"result.part.{output_format}"
+        output_path = output_dir / f"result.{output_format}"
+        true_peak = "-2.5" if output_format == "mp3" else "-2"
+
+        analyze_filter = f"loudnorm=I=-18:TP={true_peak}:LRA=7:print_format=json"
+        analyze_command = [
+            self.ffmpeg_bin,
+            "-hide_banner",
+            "-nostdin",
+            "-nostats",
+            "-i",
+            str(pre_master),
+            "-af",
+            analyze_filter,
+            "-f",
+            "null",
+            "-",
+        ]
+        measurement = parse_loudnorm_measurement(self._run_ffmpeg(analyze_command))
+
+        master_filter = (
+            f"loudnorm=I=-18:TP={true_peak}:LRA=7:"
+            f"measured_I={measurement.input_i}:"
+            f"measured_TP={measurement.input_tp}:"
+            f"measured_LRA={measurement.input_lra}:"
+            f"measured_thresh={measurement.input_thresh}:"
+            f"offset={measurement.target_offset}:"
+            "linear=true:print_format=summary"
+        )
+        master_command = [
+            self.ffmpeg_bin,
+            "-hide_banner",
+            "-nostdin",
+            "-nostats",
+            "-y",
+            "-i",
+            str(pre_master),
+            "-af",
+            master_filter,
+            "-ar",
+            "48000",
+            "-ac",
+            "2",
+        ]
+        if output_format == "wav":
+            master_command.extend(["-c:a", "pcm_s24le"])
+            media_type = "audio/wav"
+        else:
+            master_command.extend(["-c:a", "libmp3lame", "-b:a", "192k"])
+            media_type = "audio/mpeg"
+        master_command.append(str(temporary_output_path))
+        self._run_ffmpeg(master_command)
+        if not temporary_output_path.is_file() or temporary_output_path.stat().st_size == 0:
+            raise SpatialAudioExportError("FFmpeg 没有生成有效的导出音频。")
+        os.replace(temporary_output_path, output_path)
+        timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+        return SpatialAudioExportResult(
+            path=output_path,
+            media_type=media_type,
+            download_name=f"{download_prefix}_{profile}_{timestamp}.{output_format}",
+            profile=profile,
+            output_format=output_format,
+        )
+
+
+class SpatialAudioProcessor(AudioMasteringProcessor):
+    """以一次性 FFmpeg 进程保留 legacy 总线空间导出。"""
+
     def export(
         self,
         staged: StagedUpload,
@@ -205,10 +294,7 @@ class SpatialAudioProcessor:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         job_dir = Path(tempfile.mkdtemp(prefix="spatial_export_", dir=self.cache_dir))
         pre_master_path = job_dir / "pre-master.wav"
-        temporary_output_path = job_dir / f"result.part.{output_format}"
-        output_path = job_dir / f"result.{output_format}"
         succeeded = False
-        true_peak = "-2.5" if output_format == "mp3" else "-2"
         try:
             pre_master_command = [
                 self.ffmpeg_bin,
@@ -229,68 +315,16 @@ class SpatialAudioProcessor:
                 str(pre_master_path),
             ]
             self._run_ffmpeg(pre_master_command)
-
-            analyze_filter = f"loudnorm=I=-18:TP={true_peak}:LRA=7:print_format=json"
-            analyze_command = [
-                self.ffmpeg_bin,
-                "-hide_banner",
-                "-nostdin",
-                "-nostats",
-                "-i",
-                str(pre_master_path),
-                "-af",
-                analyze_filter,
-                "-f",
-                "null",
-                "-",
-            ]
-            measurement = parse_loudnorm_measurement(self._run_ffmpeg(analyze_command))
-
-            master_filter = (
-                f"loudnorm=I=-18:TP={true_peak}:LRA=7:"
-                f"measured_I={measurement.input_i}:"
-                f"measured_TP={measurement.input_tp}:"
-                f"measured_LRA={measurement.input_lra}:"
-                f"measured_thresh={measurement.input_thresh}:"
-                f"offset={measurement.target_offset}:"
-                "linear=true:print_format=summary"
-            )
-            master_command = [
-                self.ffmpeg_bin,
-                "-hide_banner",
-                "-nostdin",
-                "-nostats",
-                "-y",
-                "-i",
-                str(pre_master_path),
-                "-af",
-                master_filter,
-                "-ar",
-                "48000",
-            ]
-            if output_format == "wav":
-                master_command.extend(["-c:a", "pcm_s24le"])
-                media_type = "audio/wav"
-            else:
-                master_command.extend(["-c:a", "libmp3lame", "-b:a", "192k"])
-                media_type = "audio/mpeg"
-            master_command.append(str(temporary_output_path))
-            self._run_ffmpeg(master_command)
-            if not temporary_output_path.is_file() or temporary_output_path.stat().st_size == 0:
-                raise SpatialAudioExportError("FFmpeg 没有生成有效的导出音频。")
-            os.replace(temporary_output_path, output_path)
-            succeeded = True
-            timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
-            return SpatialAudioExportResult(
-                path=output_path,
-                media_type=media_type,
-                download_name=f"unitale_{profile}_{timestamp}.{output_format}",
+            result = self.master_pre_master(
+                pre_master_path,
+                job_dir,
                 profile=profile,
                 output_format=output_format,
             )
+            succeeded = True
+            return result
         finally:
             staged.path.unlink(missing_ok=True)
             pre_master_path.unlink(missing_ok=True)
-            temporary_output_path.unlink(missing_ok=True)
             if not succeeded:
                 shutil.rmtree(job_dir, ignore_errors=True)

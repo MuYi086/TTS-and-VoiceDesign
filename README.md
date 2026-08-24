@@ -8,7 +8,7 @@ SoundEffect 生成。仓库采用“一个服务一个 uv 项目”的边界：H
 
 | 服务 | 端口 | 主要用途 | 主要路由 |
 | --- | ---: | --- | --- |
-| 控制面 | 8300 | 控制面、共享上传/检查、48 kHz 音频导出、MiMo 兼容代理 | `/v1/control`、`/v1/audio/export` |
+| 控制面 | 8300 | 控制面、共享上传/检查、48 kHz 母带与 Steam Audio 正式导出、MiMo 兼容代理 | `/v1/control`、`/v1/audio/export`、`/v1/audio/spatial/render` |
 | Qwen3-TTS VoiceDesign | 8301 | 本地音色设计 | `/v1/qwen/timbre` |
 | MOSS VoiceGenerator | 8302 | 本地音色设计 | `/v1/moss/timbre` |
 | MiMo TTS VoiceDesign | 8303 | 云端音色设计 | `/v1/mimo/timbre` |
@@ -30,6 +30,7 @@ SoundEffect 生成。仓库采用“一个服务一个 uv 项目”的边界：H
 
 ```text
 main/                         8300 控制面，不包含模型推理
+steam_audio_renderer/         独立 C++17 Steam Audio CPU renderer
 qwen3_tts/                    Qwen3-TTS Base 的 HTTP 服务和 worker
 voxcpm2/                      VoxCPM2 的 HTTP 服务和克隆 worker
 LongCat_AudioDiT_3.5B_bf16/  LongCat-AudioDiT 服务和 worker
@@ -55,7 +56,7 @@ storage/                      上传音频、生成音频、sidecar、缓存和 
 | `storage/soundEffect/` | MOSS 和 Stable Audio 生成的声效 | `SOUNDEFFECT_STORAGE_DIR`、`STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR` |
 | `storage/bgm/` | ACE-Step 有声小说 BGM 和 OST | `BGM_STORAGE_DIR`、`ACESTEP_OUTPUT_DIR` |
 | `storage/clone/` | 参考音频、克隆结果和 Step 编辑结果 | `CLONE_STORAGE_DIR`、各服务的 `*_OUTPUT_DIR` |
-| `storage/.cache/runtime/` | worker 临时文件、空间音频导出缓存、库缓存和共享 GPU 锁 | `RUNTIME_CACHE_DIR`、`SPATIAL_EXPORT_CACHE_DIR`、`GPU_LOCK_FILE` |
+| `storage/.cache/runtime/` | worker 临时文件、母带/Steam Audio 任务缓存、库缓存和共享 GPU 锁 | `RUNTIME_CACHE_DIR`、`SPATIAL_EXPORT_CACHE_DIR`、`STEAM_AUDIO_RENDER_CACHE_DIR`、`GPU_LOCK_FILE` |
 
 如果上传音频的内容与 `storage/timbre/` 中已有的设计音色一致，Qwen3-TTS、VoxCPM2、
 LongCat、dots.tts-soar 和 FireRedTTS3 会在 `storage/timbre/.references/` 保存带 SHA-256 和相对路径的
@@ -140,7 +141,12 @@ HOST=127.0.0.1 PORT=8321 \
 通用配置包括 `HOST`、`PORT`、`STORAGE_DIR`、`PROMPTS_DIR`、`RUNTIME_CACHE_DIR`、
 `GPU_LOCK_FILE`、`LOCAL_FILES_ONLY` 和 `CUDA_RELEASE_DELAY`。48 kHz 导出可用
 `SPATIAL_EXPORT_CACHE_DIR`、`SPATIAL_EXPORT_MAX_BYTES`、`SPATIAL_EXPORT_TIMEOUT` 和
-`SPATIAL_EXPORT_FFMPEG_BIN` 覆盖缓存目录、上传上限、处理超时和 FFmpeg 命令。服务专用配置使用对应
+`SPATIAL_EXPORT_FFMPEG_BIN` 覆盖旧总线母带的缓存目录、上传上限、处理超时和 FFmpeg 命令。
+正式对象级导出使用 `STEAM_AUDIO_RENDERER_BIN`、`STEAM_AUDIO_SDK_DIR`、
+`STEAM_AUDIO_HRTF_PATH`、`STEAM_AUDIO_RENDER_CACHE_DIR`、`STEAM_AUDIO_RENDER_TIMEOUT`、
+`STEAM_AUDIO_RENDER_MAX_ASSETS`、`STEAM_AUDIO_RENDER_MAX_MANIFEST_BYTES`、
+`STEAM_AUDIO_RENDER_MAX_BYTES` 和
+`STEAM_AUDIO_RENDER_THREADS`。服务专用配置使用对应
 前缀，例如 `QWEN3_TTS_*`、`VOXCPM2_*`、`LONGCAT_AUDIODIT_*`、`DOTS_TTS_SOAR_*`、
 `MOSS_SOUNDEFFECT_*`、`STABLE_AUDIO_3_MEDIUM_*`、`ACESTEP_*`、`STEP_AUDIO_EDITX_*`、
 `QWEN_VOICEDESIGN_*`、`MOSS_VOICEGENERATOR_*` 和 `FIRERED_TTS3_*`。每个服务的 `/v1/health` 会报告
@@ -149,29 +155,72 @@ FireRedTTS3 的官方源码默认位于 `$HOME/tts-depency/FireRedTTS3`，通过
 `FIRERED_TTS3_CODE_PATH` 覆盖；8304 以 `timbre` 模式加载 Instruct，8325 以 `clone` 模式加载
 Base，两者不会同时在 worker 中常驻显存。
 
-## 48 kHz 空间音频导出
+## 48 kHz 母带与 Steam Audio 正式导出
 
-WebUI 在浏览器中按原时间线混合台词、BGM 和 SoundEffect，生成 48 kHz 双声道 WAV
-中间件；真正下载前调用控制面的 CPU 接口：
+控制面保留两条职责不同的 CPU 路径。`POST /v1/audio/export` 是兼容接口，只接收一个已混合
+双声道总线；WebUI 的 `standard` 档使用它完成 48 kHz 重采样、双遍 EBU R128 loudnorm 和编码，
+不加入 Haas、aecho 或其他空间处理：
 
 ```bash
 curl -X POST http://127.0.0.1:8300/v1/audio/export \
   -F 'audio=@timeline-mix.wav;type=audio/wav' \
-  -F 'profile=balanced' \
+  -F 'profile=standard' \
   -F 'output_format=wav' \
-  -o unitale-balanced.wav
+  -o unitale-standard.wav
 ```
 
-`profile` 可为 `standard`、`balanced` 或 `immersive`，默认 `balanced`；`output_format`
-可为 `wav` 或 `mp3`，默认 `wav`。处理顺序固定为 SoXR 48 kHz 重采样、所选空间化档位、
-双遍 EBU R128 loudnorm 和最终编码。WAV 使用 24-bit PCM，MP3 使用 192 kbps，并为 MP3
-预留更保守的 true-peak 余量。该 CPU 任务不获取 GPU 锁、不改写模型原始音频；上传暂存、
-pre-master 和最终文件都会在失败或响应结束后清理。
+`POST /v1/audio/spatial/render` 是 `balanced`/`immersive` 的正式路径。WebUI 上传 Render
+Manifest v1 和尚未预混的对白、SFX、环境声、BGM Blob；BGM 使用 `preserve_stereo`，其他对象
+按有限语义 DSL 映射为位置、距离、移动和 HRTF spatial blend。renderer 对每个对象执行 Steam
+Audio Direct Effect（距离衰减、空气吸收）和 Binaural Effect，再在磁盘上流式混合成 48 kHz
+双声道 pre-master。随后只执行 loudnorm 和最终编码，绝不叠加旧 Haas/aecho 链。该任务不获取
+GPU 锁，失败、超时和响应完成后都会清理暂存文件。
 
-`standard` 保留原始立体声，不加入 Haas 或房间反射；`balanced` 使用保留中心对白的
-Side-only Haas 与早期反射湿床，适合作为默认耳机空间版；`immersive` 进一步提高 Side 湿声、
-左右延迟和反射强度。两条湿声在单声道折叠时会抵消，中心 dry 仍完整保留，因此不会用牺牲
-对白可懂度来换取空间宽度。
+```bash
+manifest="$(tr -d '\n' < render-manifest.json)"
+curl -X POST http://127.0.0.1:8300/v1/audio/spatial/render \
+  -F "manifest=$manifest" \
+  -F 'assets=@narrator.wav;filename=asset_narrator.wav' \
+  -F 'assets=@door.wav;filename=asset_door.wav' \
+  -F 'profile=balanced' \
+  -F 'output_format=wav' \
+  -F 'job_id=job-example-12345678' \
+  -o unitale-steam-balanced.wav
+```
+
+WebUI 会为每次正式导出生成唯一 `job_id`，并在 POST 执行期间轮询
+`GET /v1/audio/spatial/render/progress/{job_id}`。状态包含 `state`、`stage`、`progress`（0–100）
+和中文 `message`；成功或失败终态默认保留 1 小时，可由
+`STEAM_AUDIO_PROGRESS_RETENTION_SECONDS` 调整。控制面终端使用同一 job ID 输出资产暂存、逐对象
+标准化、Steam Audio 逐对象渲染、母带和完成/失败阶段；标准化完成首个对象后，消息还会按实际
+平均耗时给出预计剩余时间。1× 倍速对象会跳过无意义的 `atempo=1`，避免 FFmpeg 6.1.1 在其后
+衔接 SoXR 时偶发无法结束滤镜链。成功响应还会返回
+`X-Spatial-Job-ID`；未传 `job_id` 的旧客户端仍可同步调用，但只能从响应头和终端获取服务端生成的 ID。
+
+每个 `asset_filename` 必须是安全 basename，并与重复 `assets` 字段的上传文件名一一对应；缺失、
+重复或未引用资产都会在暂存前拒绝。Manifest 固定 `version=1.0`、`sample_rate=48000`，最多
+500 个对象、最长 2 小时。首版支持点声源、居中干声、BGM 立体声保留、距离/空气吸收和简单
+移动；`diffuse`、非 `none` 遮挡、几何反射尚未实现，接口会显式拒绝而不是静默降级。输出 WAV
+为 24-bit PCM，MP3 为 192 kbps。
+
+### 构建正式 renderer
+
+Steam Audio SDK 不提交到仓库。下载并解压 Valve 官方 SDK 后，仅在构建时提供路径；启动脚本
+不会下载或编译第三方代码。SDK、动态库和 HRTF 的使用与分发须遵守 SDK 随附许可证，本仓库的
+Apache-2.0 许可证不替代第三方许可：
+
+```bash
+STEAM_AUDIO_SDK_DIR=/opt/steam-audio \
+  bash scripts/build_steam_audio_renderer.sh
+```
+
+Windows PowerShell 先设置 `$env:STEAM_AUDIO_SDK_DIR = "C:\\steam-audio"`，再运行
+`.\scripts\build_steam_audio_renderer.ps1`。默认可执行文件为
+`steam_audio_renderer/build/steam-audio-render`（Windows 为
+`steam_audio_renderer/build/Release/steam-audio-render.exe`）。可选
+`STEAM_AUDIO_HRTF_PATH` 指向 SOFA 文件；不设置时使用 SDK 内置 HRTF。`start.sh` 若发现可执行
+文件缺失会告警但仍启动既有服务，正式路由返回 `503`；`GET /v1/control` 的
+`spatial_renderer` 会报告 executable、SDK header/library、HRTF 和 GPU-lock 状态。
 
 Stable Audio 3 默认允许上游的 flex-attention/SDPA 回退；只有需要严格检查
 FlashAttention 时才设置 `STABLE_AUDIO_3_MEDIUM_REQUIRE_FLASH_ATTN=1`。VoxCPM2、
@@ -356,7 +405,7 @@ curl -X POST http://127.0.0.1:8331/v1/stepAudioEditx/edit \
 
 ```bash
 bash -n start.sh
-uv run --project qwen3_tts python -m unittest discover -s tests -v
+bash scripts/quality_gate.sh
 ```
 
 Stable Audio 的服务内测试需要从它自己的目录运行，否则 `test_migration.py` 无法解析

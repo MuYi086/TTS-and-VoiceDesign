@@ -21,6 +21,8 @@ qwen_test*.wav
 synth*.wav
 *.tmp.wav
 soundEffect/outputs/
+steam_audio_renderer/build/
+steam_audio_renderer/sdk/
 
 # Third-party source clones and side-loaded Python packages
 vendor/

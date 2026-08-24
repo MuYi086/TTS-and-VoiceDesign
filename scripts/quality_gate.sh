@@ -6,6 +6,7 @@ repository_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repository_dir"
 
 bash -n start.sh
+bash scripts/test_steam_audio_renderer_core.sh
 
 for project in qwen3_tts mimo_tts voxcpm2 LongCat_AudioDiT_3.5B_bf16 \
     dots_tts_soar moss_soundEffect stable_audio_3_medium ace_step_1_5 \

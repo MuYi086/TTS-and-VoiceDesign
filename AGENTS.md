@@ -10,6 +10,8 @@ HTTP 入口和 worker。
 
 - `main/main.py` 是轻量的 `8300` 控制面，负责控制路由、共享上传/检查工具和 MiMo 兼容代理；
   不得在其中加载模型包或执行推理。
+- `steam_audio_renderer/` 是独立 C++17 Steam Audio CPU renderer；正式空间导出必须保留对象
+  边界并走 `/v1/audio/spatial/render`，不得先在浏览器预混，也不得获取 GPU 锁。
 - `unitale_runtime/` 是所有服务共用的轻量运行时包，提供流式上传、内容寻址引用、原子提交、
   GPU 队列和存储容量/保留策略；不得在其中导入 FastAPI、Torch 或模型包。
 - `qa/` 是无模型质量门禁环境，`scripts/quality_gate.sh` 是统一的锁文件、Ruff、格式化和测试入口。
@@ -85,6 +87,9 @@ uv run --project qa --locked python -m unittest discover -s tests -v
   `/v1/stableAudio/soundEffect`、`/v1/moss/soundEffect`；BGM 使用 `/v1/aceStep/bgm`；
   语音编辑使用 `/v1/stepAudioEditx/edit`。
 - 后端只注册并使用上述最终接口；不得新增或保留任何旧接口兼容别名。
+- `/v1/audio/export` 只保留预混总线的标准母带兼容；正式 `balanced`/`immersive` 使用
+  `/v1/audio/spatial/render` 的 Manifest v1 和重复 `assets` 字段。正式 Steam Audio pre-master
+  之后只能执行 loudnorm/编码，禁止再叠加 Haas、aecho 或旧空间滤镜。
 - 模型默认值集中放在各服务模块顶部。`start.sh` 只负责路由、路径、端口、环境和共享运行参数，
   不应静默替换推理默认值。
 - `GET /v1/control` 和各服务健康接口可报告存储容量；历史生成文件保留策略默认关闭。只有运维
