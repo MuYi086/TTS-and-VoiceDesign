@@ -20,6 +20,7 @@ MOSS_SOUNDEFFECT_PROJECT_DIR="${MOSS_SOUNDEFFECT_PROJECT_DIR:-$PROJECT_DIR/moss_
 QWEN3_TTS_PROJECT_DIR="${QWEN3_TTS_PROJECT_DIR:-$PROJECT_DIR/qwen3_tts}"
 QWEN3_VOICEDESIGN_PROJECT_DIR="${QWEN3_VOICEDESIGN_PROJECT_DIR:-$PROJECT_DIR/qwen3_voiceDesign}"
 MOSS_VOICEGENERATOR_PROJECT_DIR="${MOSS_VOICEGENERATOR_PROJECT_DIR:-$PROJECT_DIR/moss_voiceGenerator}"
+MOSS_AUDIO_4B_THINKING_PROJECT_DIR="${MOSS_AUDIO_4B_THINKING_PROJECT_DIR:-$PROJECT_DIR/moss_audio_4b_thinking}"
 STEP_AUDIO_EDITX_PROJECT_DIR="${STEP_AUDIO_EDITX_PROJECT_DIR:-$PROJECT_DIR/Step_Audio_EditX}"
 LONGCAT_AUDIODIT_PROJECT_DIR="${LONGCAT_AUDIODIT_PROJECT_DIR:-$PROJECT_DIR/LongCat_AudioDiT_3.5B_bf16}"
 DOTS_TTS_SOAR_PROJECT_DIR="${DOTS_TTS_SOAR_PROJECT_DIR:-$PROJECT_DIR/dots_tts_soar}"
@@ -33,6 +34,9 @@ export QWEN_VOICEDESIGN_MODEL_DIR="${QWEN_VOICEDESIGN_MODEL_DIR:-$HF_MIRROR_DIR/
 export MOSS_VOICEGENERATOR_MODEL_DIR="${MOSS_VOICEGENERATOR_MODEL_DIR:-$HF_MIRROR_DIR/OpenMOSS-Team/MOSS-VoiceGenerator}"
 export MOSS_AUDIO_TOKENIZER_PATH="${MOSS_AUDIO_TOKENIZER_PATH:-$HF_MIRROR_DIR/OpenMOSS-Team/MOSS-Audio-Tokenizer}"
 export MOSS_VOICEGENERATOR_REQUEST_TIMEOUT="${MOSS_VOICEGENERATOR_REQUEST_TIMEOUT:-900}"
+export MOSS_AUDIO_4B_THINKING_MODEL_DIR="${MOSS_AUDIO_4B_THINKING_MODEL_DIR:-$HF_MIRROR_DIR/OpenMOSS-Team/MOSS-Audio-4B-Thinking}"
+export MOSS_AUDIO_4B_THINKING_DEPENDENCY_PATH="${MOSS_AUDIO_4B_THINKING_DEPENDENCY_PATH:-$HOME/tts-depency/MOSS-Audio}"
+export MOSS_AUDIO_4B_THINKING_REQUEST_TIMEOUT="${MOSS_AUDIO_4B_THINKING_REQUEST_TIMEOUT:-900}"
 export STEP_AUDIO_EDITX_MODEL_DIR="${STEP_AUDIO_EDITX_MODEL_DIR:-$HF_MIRROR_DIR/stepfun-ai/Step-Audio-EditX}"
 export STEP_AUDIO_TOKENIZER_PATH="${STEP_AUDIO_TOKENIZER_PATH:-$HF_MIRROR_DIR/stepfun-ai/Step-Audio-Tokenizer}"
 export STEP_AUDIO_EDITX_CODE_PATH="${STEP_AUDIO_EDITX_CODE_PATH:-$HOME/tts-depency/Step-Audio-EditX}"
@@ -158,6 +162,8 @@ export QWEN_VOICEDESIGN_HOST="${QWEN_VOICEDESIGN_HOST:-$HOST}"
 export QWEN_VOICEDESIGN_PORT="${QWEN_VOICEDESIGN_PORT:-8301}"
 export MOSS_VOICEGENERATOR_HOST="${MOSS_VOICEGENERATOR_HOST:-$HOST}"
 export MOSS_VOICEGENERATOR_PORT="${MOSS_VOICEGENERATOR_PORT:-8302}"
+export MOSS_AUDIO_4B_THINKING_HOST="${MOSS_AUDIO_4B_THINKING_HOST:-$HOST}"
+export MOSS_AUDIO_4B_THINKING_PORT="${MOSS_AUDIO_4B_THINKING_PORT:-8341}"
 export ACESTEP_HOST="${ACESTEP_HOST:-$HOST}"
 export ACESTEP_PORT="${ACESTEP_PORT:-8313}"
 
@@ -168,7 +174,7 @@ export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$RUNTIME_CACHE_DIR/xdg}"
 # 先创建运行目录，避免服务第一次接收请求时才触发目录创建竞争。
 mkdir -p "$TIMBRE_STORAGE_DIR" "$SOUNDEFFECT_STORAGE_DIR" "$BGM_STORAGE_DIR" "$CLONE_STORAGE_DIR" "$PROMPTS_DIR" "$SPATIAL_EXPORT_CACHE_DIR" "$STEAM_AUDIO_RENDER_CACHE_DIR" "$HF_MODULES_CACHE" "$NUMBA_CACHE_DIR" "$MPLCONFIGDIR" "$XDG_CACHE_HOME" "$(dirname "$GPU_LOCK_FILE")"
 
-# Steam Audio 是 CPU 正式导出的可选能力；缺失时不阻断 14 个语音/音效进程，健康检查会明确报告 unavailable。
+# Steam Audio 是 CPU 正式导出的可选能力；缺失时不阻断 15 个语音/音效进程，健康检查会明确报告 unavailable。
 if [[ ! -x "$STEAM_AUDIO_RENDERER_BIN" ]]; then
   echo "警告：Steam Audio renderer 不存在或不可执行：$STEAM_AUDIO_RENDERER_BIN" >&2
   echo "      请先运行 scripts/build_steam_audio_renderer.sh；正式空间导出将返回 503。" >&2
@@ -204,6 +210,9 @@ echo "Qwen VoiceDesign model:      $QWEN_VOICEDESIGN_MODEL_DIR"
 echo "MOSS VoiceGenerator uv project: $MOSS_VOICEGENERATOR_PROJECT_DIR"
 echo "MOSS VoiceGenerator model:      $MOSS_VOICEGENERATOR_MODEL_DIR"
 echo "MOSS Audio tokenizer:           $MOSS_AUDIO_TOKENIZER_PATH"
+echo "MOSS-Audio-4B-Thinking uv project: $MOSS_AUDIO_4B_THINKING_PROJECT_DIR"
+echo "MOSS-Audio-4B-Thinking model:      $MOSS_AUDIO_4B_THINKING_MODEL_DIR"
+echo "MOSS-Audio upstream source:         $MOSS_AUDIO_4B_THINKING_DEPENDENCY_PATH"
 echo "VoxCPM2 uv project:  $VOXCPM2_PROJECT_DIR"
 echo "VoxCPM2 model:       $VOXCPM2_MODEL_DIR"
 echo "LongCat uv project:  $LONGCAT_AUDIODIT_PROJECT_DIR"
@@ -250,6 +259,8 @@ echo "Qwen VoiceDesign API: http://$QWEN_VOICEDESIGN_HOST:$QWEN_VOICEDESIGN_PORT
 echo "Qwen VoiceDesign health: http://127.0.0.1:$QWEN_VOICEDESIGN_PORT/v1/health"
 echo "MOSS VoiceGenerator API: http://$MOSS_VOICEGENERATOR_HOST:$MOSS_VOICEGENERATOR_PORT"
 echo "MOSS VoiceGenerator health: http://127.0.0.1:$MOSS_VOICEGENERATOR_PORT/v1/health"
+echo "MOSS-Audio-4B-Thinking API: http://$MOSS_AUDIO_4B_THINKING_HOST:$MOSS_AUDIO_4B_THINKING_PORT"
+echo "MOSS-Audio-4B-Thinking health: http://127.0.0.1:$MOSS_AUDIO_4B_THINKING_PORT/v1/health"
 echo "VoxCPM2 API:         http://$VOXCPM2_HOST:$VOXCPM2_PORT"
 echo "VoxCPM2 health:      http://127.0.0.1:$VOXCPM2_PORT/v1/health"
 echo "LongCat health:      http://127.0.0.1:$LONGCAT_AUDIODIT_PORT/v1/health"
@@ -257,6 +268,7 @@ echo "dots.tts-soar health: http://127.0.0.1:$DOTS_TTS_SOAR_PORT/v1/health"
 echo "FireRedTTS3 timbre health: http://127.0.0.1:$FIRERED_TTS3_TIMBRE_PORT/v1/health"
 echo "FireRedTTS3 clone health: http://127.0.0.1:$FIRERED_TTS3_CLONE_PORT/v1/health"
 echo "MOSS timbre route:   http://127.0.0.1:$MOSS_VOICEGENERATOR_PORT/v1/moss/timbre"
+echo "MOSS-Audio understanding route: http://127.0.0.1:$MOSS_AUDIO_4B_THINKING_PORT/v1/mossAudioThinking/understand"
 echo "MiMo timbre route:   http://127.0.0.1:$MIMO_TTS_PORT/v1/mimo/timbre"
 echo "Step-Audio-EditX route: http://127.0.0.1:$STEP_AUDIO_EDITX_PORT/v1/stepAudioEditx/edit"
 echo "MOSS sound-effect route: http://127.0.0.1:$SOUNDEFFECT_PORT/v1/moss/soundEffect"
@@ -275,6 +287,7 @@ printf '%-24s %-6s %s\n' '服务' '端口' '最终接口'
 printf '%-24s %-6s %s\n' '控制面' "$PORT" '/v1/control'
 printf '%-24s %-6s %s\n' 'Qwen3-TTS VoiceDesign' "$QWEN_VOICEDESIGN_PORT" '/v1/qwen/timbre'
 printf '%-24s %-6s %s\n' 'MOSS VoiceGenerator' "$MOSS_VOICEGENERATOR_PORT" '/v1/moss/timbre'
+printf '%-24s %-6s %s\n' 'MOSS-Audio-4B-Thinking' "$MOSS_AUDIO_4B_THINKING_PORT" '/v1/mossAudioThinking/understand'
 printf '%-24s %-6s %s\n' 'MiMo TTS VoiceDesign' "$MIMO_TTS_PORT" '/v1/mimo/timbre'
 printf '%-24s %-6s %s\n' 'Stable Audio 3 Medium' "$STABLE_AUDIO_3_MEDIUM_PORT" '/v1/stableAudio/soundEffect'
 printf '%-24s %-6s %s\n' 'ACE-Step 1.5 XL Turbo' "$ACESTEP_PORT" '/v1/aceStep/bgm'
@@ -303,6 +316,7 @@ firered_tts3_timbre_pid=""
 firered_tts3_clone_pid=""
 qwen_voicedesign_pid=""
 moss_voicegenerator_pid=""
+moss_audio_4b_thinking_pid=""
 step_audio_editx_pid=""
 
 cleanup() {
@@ -316,6 +330,7 @@ cleanup() {
     "$qwen3_tts_pid"
     "$qwen_voicedesign_pid"
     "$moss_voicegenerator_pid"
+    "$moss_audio_4b_thinking_pid"
     "$step_audio_editx_pid"
     "$voxcpm2_pid"
     "$longcat_audiodit_pid"
@@ -387,6 +402,13 @@ MOSS_VOICEGENERATOR_HOST="$MOSS_VOICEGENERATOR_HOST" MOSS_VOICEGENERATOR_PORT="$
   setsid uv run --no-sync --project "$MOSS_VOICEGENERATOR_PROJECT_DIR" \
   python "$MOSS_VOICEGENERATOR_PROJECT_DIR/main.py" &
 moss_voicegenerator_pid=$!
+# MOSS-Audio-4B-Thinking 独立 uv 服务：上传音频并返回转写、描述或问答文本。
+MOSS_AUDIO_4B_THINKING_HOST="$MOSS_AUDIO_4B_THINKING_HOST" \
+  MOSS_AUDIO_4B_THINKING_PORT="$MOSS_AUDIO_4B_THINKING_PORT" \
+  HOST="$MOSS_AUDIO_4B_THINKING_HOST" PORT="$MOSS_AUDIO_4B_THINKING_PORT" \
+  setsid uv run --no-sync --project "$MOSS_AUDIO_4B_THINKING_PROJECT_DIR" \
+  python "$MOSS_AUDIO_4B_THINKING_PROJECT_DIR/main.py" &
+moss_audio_4b_thinking_pid=$!
 # Step-Audio-EditX 独立 uv 服务：完整提供上传、检查和编辑接口。
 # 依赖由部署前手动执行 `uv sync --project Step_Audio_EditX --locked`；启动阶段不再联网解析。
 STEP_AUDIO_EDITX_HOST="$STEP_AUDIO_EDITX_HOST" STEP_AUDIO_EDITX_PORT="$STEP_AUDIO_EDITX_PORT" \
@@ -421,4 +443,4 @@ FIRERED_TTS3_MODE="clone" FIRERED_TTS3_HOST="$FIRERED_TTS3_CLONE_HOST" \
   python "$FIRERED_TTS3_PROJECT_DIR/main.py" &
 firered_tts3_clone_pid=$!
 
-wait -n "$main_pid" "$mimo_tts_pid" "$soundeffect_pid" "$stable_audio_3_medium_pid" "$acestep_pid" "$qwen3_tts_pid" "$qwen_voicedesign_pid" "$moss_voicegenerator_pid" "$step_audio_editx_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid" "$firered_tts3_timbre_pid" "$firered_tts3_clone_pid"
+wait -n "$main_pid" "$mimo_tts_pid" "$soundeffect_pid" "$stable_audio_3_medium_pid" "$acestep_pid" "$qwen3_tts_pid" "$qwen_voicedesign_pid" "$moss_voicegenerator_pid" "$moss_audio_4b_thinking_pid" "$step_audio_editx_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid" "$firered_tts3_timbre_pid" "$firered_tts3_clone_pid"

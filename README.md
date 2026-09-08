@@ -22,9 +22,11 @@ SoundEffect 生成。仓库采用“一个服务一个 uv 项目”的边界：H
 | dots.tts-soar | 8324 | 参考音频语音克隆 | `/v2/dotsTTS/clone` |
 | FireRedTTS3 Base | 8325 | 参考音频语音克隆 | `/v1/FireRedTTS3/clone` |
 | Step-Audio-EditX | 8331 | 语音编辑 | `/v1/stepAudioEditx/edit` |
+| MOSS-Audio-4B-Thinking | 8341 | 音频转写、描述与问答 | `/v1/mossAudioThinking/understand` |
 
 每个服务都提供 `GET /v1/health`。后端只注册表中列出的最终接口；模型生成接口返回
-`audio/wav`，并在服务端保存一份 WAV。空间音频导出返回 WAV 或 MP3，响应完成后删除临时成品。
+`audio/wav`，并在服务端保存一份 WAV。MOSS-Audio-4B-Thinking 接收音频并返回 JSON 文本，
+不会生成或保留 WAV。空间音频导出返回 WAV 或 MP3，响应完成后删除临时成品。
 
 ## 目录与运行数据
 
@@ -40,6 +42,7 @@ stable_audio_3_medium/        Stable Audio 3 Medium 服务和 worker
 ace_step_1_5/                  ACE-Step 1.5 BGM 服务和 worker
 qwen3_voiceDesign/            Qwen VoiceDesign 服务和 worker
 moss_voiceGenerator/          MOSS VoiceGenerator 服务和 worker
+moss_audio_4b_thinking/       MOSS-Audio-4B-Thinking 服务和 worker
 mimo_tts/                     MiMo 云端编排服务
 Step_Audio_EditX/             Step-Audio-EditX 服务和 worker
 firered_tts3/                 FireRedTTS3 Instruct/Base 服务和 worker
@@ -74,7 +77,7 @@ LongCat、dots.tts-soar 和 FireRedTTS3 会在 `storage/timbre/.references/` 保
 ```bash
 for project in qwen3_tts mimo_tts voxcpm2 LongCat_AudioDiT_3.5B_bf16 \
   dots_tts_soar moss_soundEffect stable_audio_3_medium ace_step_1_5 \
-  qwen3_voiceDesign moss_voiceGenerator Step_Audio_EditX firered_tts3; do
+  qwen3_voiceDesign moss_voiceGenerator moss_audio_4b_thinking Step_Audio_EditX firered_tts3; do
   uv sync --project "$project" --locked
 done
 ```
@@ -96,8 +99,8 @@ Tokenizer 和上游源码就绪后启动全部服务：
 bash start.sh
 ```
 
-`start.sh` 会启动 8300、8301、8302、8303、8304、8311、8312、8313、8321、8322、8323、8324、8325 和
-8331 共 14 个进程；8300 使用 `qwen3_tts` uv 项目中的轻量 HTTP 依赖，其余服务使用
+`start.sh` 会启动 8300、8301、8302、8303、8304、8311、8312、8313、8321、8322、8323、8324、8325、
+8331 和 8341 共 15 个进程；8300 使用 `qwen3_tts` uv 项目中的轻量 HTTP 依赖，其余服务使用
 各自的 uv 项目。启动命令统一使用 `uv run --no-sync`，不会在运行阶段联网解析依赖；
 本地 GPU 服务通过 `GPU_LOCK_FILE` 串行访问 GPU。默认最多排队 900 秒，超过时返回
 `503`；用 `GPU_LOCK_WAIT_TIMEOUT` 调整（设为非正值可关闭时限）。健康检查可结合
@@ -107,7 +110,7 @@ bash start.sh
 健康检查：
 
 ```bash
-for port in 8300 8301 8302 8303 8304 8311 8312 8313 8321 8322 8323 8324 8325 8331; do
+for port in 8300 8301 8302 8303 8304 8311 8312 8313 8321 8322 8323 8324 8325 8331 8341; do
   curl -fsS "http://127.0.0.1:${port}/v1/health" >/dev/null && echo "${port}: ok"
 done
 ```
@@ -129,6 +132,7 @@ HOST=127.0.0.1 PORT=8321 \
 | Qwen3-TTS Base | `$HF_MIRROR_DIR/Qwen/Qwen3-TTS-12Hz-1.7B-Base` | `QWEN3_TTS_MODEL_DIR` |
 | Qwen VoiceDesign | `$HF_MIRROR_DIR/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign` | `QWEN_VOICEDESIGN_MODEL_DIR` |
 | MOSS VoiceGenerator | `$HF_MIRROR_DIR/OpenMOSS-Team/MOSS-VoiceGenerator` | `MOSS_VOICEGENERATOR_MODEL_DIR`、`MOSS_AUDIO_TOKENIZER_PATH` |
+| MOSS-Audio-4B-Thinking | `$HF_MIRROR_DIR/OpenMOSS-Team/MOSS-Audio-4B-Thinking` | `MOSS_AUDIO_4B_THINKING_MODEL_DIR`、`MOSS_AUDIO_4B_THINKING_DEPENDENCY_PATH` |
 | MOSS-SoundEffect | `$HF_MIRROR_DIR/OpenMOSS-Team/MOSS-SoundEffect-v2.0` | `MOSS_SOUNDEFFECT_CODE_PATH`、`MOSS_SOUNDEFFECT_MODEL_DIR` |
 | Stable Audio 3 Medium | `$HF_MIRROR_DIR/stabilityai/stable-audio-3-medium` | `STABLE_AUDIO_3_REPO_PATH`、`STABLE_AUDIO_3_MEDIUM_MODEL_DIR` |
 | ACE-Step 1.5 XL Turbo | `$HF_MIRROR_DIR/ACE-Step/acestep-v15-xl-turbo-diffusers` | `ACESTEP_MODEL_DIR`、`ACESTEP_OFFLOAD`、`ACESTEP_VAE_TILING` |
@@ -149,7 +153,8 @@ HOST=127.0.0.1 PORT=8321 \
 `STEAM_AUDIO_RENDER_THREADS`。服务专用配置使用对应
 前缀，例如 `QWEN3_TTS_*`、`VOXCPM2_*`、`LONGCAT_AUDIODIT_*`、`DOTS_TTS_SOAR_*`、
 `MOSS_SOUNDEFFECT_*`、`STABLE_AUDIO_3_MEDIUM_*`、`ACESTEP_*`、`STEP_AUDIO_EDITX_*`、
-`QWEN_VOICEDESIGN_*`、`MOSS_VOICEGENERATOR_*` 和 `FIRERED_TTS3_*`。每个服务的 `/v1/health` 会报告
+`QWEN_VOICEDESIGN_*`、`MOSS_VOICEGENERATOR_*`、`MOSS_AUDIO_4B_THINKING_*` 和
+`FIRERED_TTS3_*`。每个服务的 `/v1/health` 会报告
 生效的路径、运行时和可用性。
 FireRedTTS3 的官方源码默认位于 `$HOME/tts-depency/FireRedTTS3`，通过
 `FIRERED_TTS3_CODE_PATH` 覆盖；8304 以 `timbre` 模式加载 Instruct，8325 以 `clone` 模式加载
@@ -307,6 +312,27 @@ FireRedTTS3 Instruct 音色设计监听 `8304`，只接收 `voice_description` �
 MOSS VoiceGenerator 必须使用 **MOSS-Audio-Tokenizer v1**（24 kHz、单声道）。
 不要把 48 kHz 双声道的 v2 codec 作为该服务的 tokenizer；8302 的健康检查中
 `available.moss_audio_tokenizer` 应为 `true`。
+
+## 音频理解
+
+MOSS-Audio-4B-Thinking 监听 `8341`，是音频理解模型，不会合成 WAV。它以 multipart
+表单接收 `audio`，可通过 `prompt` 指定转写、描述或问答任务；请求会流式暂存、完成后删除，
+响应返回最终文本和上传摘要。默认以离线模式从
+`$HF_MIRROR_DIR/OpenMOSS-Team/MOSS-Audio-4B-Thinking` 加载，并需要
+`$HOME/tts-depency/MOSS-Audio` 官方源码；可分别通过
+`MOSS_AUDIO_4B_THINKING_MODEL_DIR` 与 `MOSS_AUDIO_4B_THINKING_DEPENDENCY_PATH` 覆盖。
+
+```bash
+curl -X POST http://127.0.0.1:8341/v1/mossAudioThinking/understand \
+  -F 'audio=@reference.mp3;type=audio/mpeg' \
+  -F 'prompt=请准确转写这段音频，仅输出转写文本。' \
+  -F 'strip_thinking=true'
+```
+
+可选字段包括 `max_new_tokens`（1–4096，默认 1024）、`do_sample`、`temperature`、`top_p`、
+`top_k`、`enable_time_marker`、`strip_thinking`、`device` 与 `dtype`（`auto`、`bfloat16` 或
+`float16`）。默认关闭采样；仅当 `do_sample=true` 时才把采样参数传给模型。服务使用共享
+`GPU_LOCK_FILE`，一项请求对应一个 worker，worker 退出后释放显存。
 
 ## SoundEffect 生成
 

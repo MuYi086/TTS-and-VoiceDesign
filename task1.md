@@ -1,2 +1,4 @@
-你先阅读`special-audio-effect/未完成功能.md`,帮我继续完成项目.
-如果最后有超时或者失败的，重试1次后仍然不成功的，则记录到`失败问题.md`，并记录下问题和具体的命令，以方便我后面直接复制后手动执行
+
+你先阅读`qwen3_voiceDesign`这中python项目结构和实现，以及通过start.sh调用的方式，
+然后阅读`~/github/scoring-for-TTS`中`modelScript`目录,
+将moss_audio_4b_thinking的调用在当前项目`moss_audio_4b_thinking`中实现，并暴露在`start.sh`中以端口8341对外暴露服务

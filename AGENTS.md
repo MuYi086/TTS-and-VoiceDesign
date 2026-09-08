@@ -18,12 +18,13 @@ HTTP 入口和 worker。
 - 模型服务位于 `mimo_tts/`、`qwen3_tts/`、`voxcpm2/`、
   `LongCat_AudioDiT_3.5B_bf16/`、`dots_tts_soar/`、`moss_soundEffect/`、
   `stable_audio_3_medium/`、`ace_step_1_5/`、`qwen3_voiceDesign/`、`moss_voiceGenerator/` 和
-  `Step_Audio_EditX/`、`firered_tts3/`。其中 FireRedTTS3 通过两个独立进程分别提供
+  `moss_audio_4b_thinking/`、`Step_Audio_EditX/`、`firered_tts3/`。其中 FireRedTTS3 通过两个独立进程分别提供
   Instruct 音色设计和 Base 参考音频克隆。
 - 最终默认端口：`8300` 控制面、`8301` Qwen VoiceDesign、`8302` MOSS VoiceGenerator、
   `8303` MiMo、`8304` FireRedTTS3 Instruct、`8311` Stable Audio 3 Medium、
   `8312` MOSS-SoundEffect、`8313` ACE-Step BGM、`8321` Qwen3-TTS、`8322` VoxCPM2、
-  `8323` LongCat、`8324` dots.tts-soar、`8325` FireRedTTS3 Base、`8331` Step-Audio-EditX。
+  `8323` LongCat、`8324` dots.tts-soar、`8325` FireRedTTS3 Base、`8331` Step-Audio-EditX、
+  `8341` MOSS-Audio-4B-Thinking。
 - `tests/` 存放无模型 `unittest` 迁移回归测试；ACE-Step 和 Stable Audio 的服务内测试独立存放。
   `soundEffect/` 存放 MOSS GPU 示例；`storage/` 存放运行音频、sidecar、缓存和 GPU 锁，
   不得提交其内容。
@@ -36,7 +37,7 @@ HTTP 入口和 worker。
 源码 `/home/muyi086/tts-depency/MOSS-TTS`，不得改为 Git/PyPI 下载；执行该项目的
 `uv sync` 前先确认该目录存在。
 `bash start.sh` 会在 `qwen3_tts` uv 项目中启动轻量的 8300 控制面，并在各自项目中启动其余
-13 个 HTTP 进程（FireRedTTS3 占用 8304 和 8325 两个模式进程）；共启动 14 个进程。
+14 个 HTTP 进程（FireRedTTS3 占用 8304 和 8325 两个模式进程）；共启动 15 个进程。
 端口、路径、项目和运行参数均通过环境变量覆盖。
 启动脚本使用 `uv run --no-sync`，并将 `unitale_runtime/src` 放入 `PYTHONPATH` 作为共享包的
 离线兜底；新增或变更项目依赖仍必须提前执行对应项目的 `uv sync --locked`。
@@ -85,7 +86,8 @@ uv run --project qa --locked python -m unittest discover -s tests -v
   `/v2/dotsTTS/clone`、`/v1/FireRedTTS3/clone`；音色设计使用 `/v1/qwen/timbre`、
   `/v1/moss/timbre`、`/v1/mimo/timbre` 和 `/v1/FireRedTTS3/timbre`；音效使用
   `/v1/stableAudio/soundEffect`、`/v1/moss/soundEffect`；BGM 使用 `/v1/aceStep/bgm`；
-  语音编辑使用 `/v1/stepAudioEditx/edit`。
+  语音编辑使用 `/v1/stepAudioEditx/edit`；音频理解使用
+  `/v1/mossAudioThinking/understand`。
 - 后端只注册并使用上述最终接口；不得新增或保留任何旧接口兼容别名。
 - `/v1/audio/export` 只保留预混总线的标准母带兼容；正式 `balanced`/`immersive` 使用
   `/v1/audio/spatial/render` 的 Manifest v1 和重复 `assets` 字段。正式 Steam Audio pre-master

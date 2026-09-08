@@ -76,6 +76,7 @@ class FastApiExecutionModelTests(unittest.TestCase):
             },
             "qwen3_voiceDesign/main.py": {"/v1/health"},
             "moss_voiceGenerator/main.py": {"/v1/health"},
+            "moss_audio_4b_thinking/main.py": {"/v1/health"},
             "Step_Audio_EditX/main.py": {"/v1/health", "/v1/check/audio"},
         }
 
@@ -109,6 +110,14 @@ class FastApiExecutionModelTests(unittest.TestCase):
                     "return await run_in_threadpool(store_uploaded_audio,",
                     source,
                 )
+
+        thinking_source = (REPOSITORY_DIR / "moss_audio_4b_thinking" / "main.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "result = await run_in_threadpool(execute_understanding_payload, payload)",
+            thinking_source,
+        )
 
 
 if __name__ == "__main__":
