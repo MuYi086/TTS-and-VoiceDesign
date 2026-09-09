@@ -78,6 +78,7 @@ class FastApiExecutionModelTests(unittest.TestCase):
             "moss_voiceGenerator/main.py": {"/v1/health"},
             "moss_audio_4b_thinking/main.py": {"/v1/health"},
             "Step_Audio_EditX/main.py": {"/v1/health", "/v1/check/audio"},
+            "TIGER-DnR/main.py": {"/v1/health"},
         }
 
         for relative_path, routes in expected_routes.items():

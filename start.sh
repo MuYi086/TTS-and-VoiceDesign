@@ -28,9 +28,12 @@ STABLE_AUDIO_3_MEDIUM_PROJECT_DIR="${STABLE_AUDIO_3_MEDIUM_PROJECT_DIR:-$PROJECT
 ACESTEP_PROJECT_DIR="${ACESTEP_PROJECT_DIR:-$PROJECT_DIR/ace_step_1_5}"
 VOXCPM2_PROJECT_DIR="${VOXCPM2_PROJECT_DIR:-$PROJECT_DIR/voxcpm2}"
 FIRERED_TTS3_PROJECT_DIR="${FIRERED_TTS3_PROJECT_DIR:-$PROJECT_DIR/firered_tts3}"
+TIGER_DNR_PROJECT_DIR="${TIGER_DNR_PROJECT_DIR:-$PROJECT_DIR/TIGER-DnR}"
 
 export HF_MIRROR_DIR="${HF_MIRROR_DIR:-$HOME/hf-mirror}"
 export QWEN_VOICEDESIGN_MODEL_DIR="${QWEN_VOICEDESIGN_MODEL_DIR:-$HF_MIRROR_DIR/Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign}"
+export TIGER_DNR_MODEL_DIR="${TIGER_DNR_MODEL_DIR:-$HF_MIRROR_DIR/JusperLee/TIGER-DnR}"
+export TIGER_DNR_SOURCE_DIR="${TIGER_DNR_SOURCE_DIR:-$HOME/.local/share/tiger-dnr/TIGER}"
 export MOSS_VOICEGENERATOR_MODEL_DIR="${MOSS_VOICEGENERATOR_MODEL_DIR:-$HF_MIRROR_DIR/OpenMOSS-Team/MOSS-VoiceGenerator}"
 export MOSS_AUDIO_TOKENIZER_PATH="${MOSS_AUDIO_TOKENIZER_PATH:-$HF_MIRROR_DIR/OpenMOSS-Team/MOSS-Audio-Tokenizer}"
 export MOSS_VOICEGENERATOR_REQUEST_TIMEOUT="${MOSS_VOICEGENERATOR_REQUEST_TIMEOUT:-900}"
@@ -87,6 +90,7 @@ export QWEN_LIBS="${QWEN_LIBS:-$QWEN3_TTS_PROJECT_DIR/vendor/qwen_libs}"
 export TIMBRE_STORAGE_DIR="${TIMBRE_STORAGE_DIR:-$STORAGE_DIR/timbre}"
 export SOUNDEFFECT_STORAGE_DIR="${SOUNDEFFECT_STORAGE_DIR:-$STORAGE_DIR/soundEffect}"
 export CLONE_STORAGE_DIR="${CLONE_STORAGE_DIR:-$STORAGE_DIR/clone}"
+export TIGER_DNR_OUTPUT_DIR="${TIGER_DNR_OUTPUT_DIR:-$STORAGE_DIR/separation}"
 export STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR="${STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR:-$SOUNDEFFECT_STORAGE_DIR}"
 export QWEN3_TTS_OUTPUT_DIR="${QWEN3_TTS_OUTPUT_DIR:-$CLONE_STORAGE_DIR}"
 export VOXCPM2_OUTPUT_DIR="${VOXCPM2_OUTPUT_DIR:-$CLONE_STORAGE_DIR}"
@@ -160,6 +164,8 @@ export FIRERED_TTS3_CLONE_HOST="${FIRERED_TTS3_CLONE_HOST:-$HOST}"
 export FIRERED_TTS3_CLONE_PORT="${FIRERED_TTS3_CLONE_PORT:-8325}"
 export QWEN_VOICEDESIGN_HOST="${QWEN_VOICEDESIGN_HOST:-$HOST}"
 export QWEN_VOICEDESIGN_PORT="${QWEN_VOICEDESIGN_PORT:-8301}"
+export TIGER_DNR_HOST="${TIGER_DNR_HOST:-$HOST}"
+export TIGER_DNR_PORT="${TIGER_DNR_PORT:-8351}"
 export MOSS_VOICEGENERATOR_HOST="${MOSS_VOICEGENERATOR_HOST:-$HOST}"
 export MOSS_VOICEGENERATOR_PORT="${MOSS_VOICEGENERATOR_PORT:-8302}"
 export MOSS_AUDIO_4B_THINKING_HOST="${MOSS_AUDIO_4B_THINKING_HOST:-$HOST}"
@@ -172,7 +178,7 @@ export NUMBA_CACHE_DIR="${NUMBA_CACHE_DIR:-$RUNTIME_CACHE_DIR/numba}"
 export MPLCONFIGDIR="${MPLCONFIGDIR:-$RUNTIME_CACHE_DIR/matplotlib}"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$RUNTIME_CACHE_DIR/xdg}"
 # 先创建运行目录，避免服务第一次接收请求时才触发目录创建竞争。
-mkdir -p "$TIMBRE_STORAGE_DIR" "$SOUNDEFFECT_STORAGE_DIR" "$BGM_STORAGE_DIR" "$CLONE_STORAGE_DIR" "$PROMPTS_DIR" "$SPATIAL_EXPORT_CACHE_DIR" "$STEAM_AUDIO_RENDER_CACHE_DIR" "$HF_MODULES_CACHE" "$NUMBA_CACHE_DIR" "$MPLCONFIGDIR" "$XDG_CACHE_HOME" "$(dirname "$GPU_LOCK_FILE")"
+mkdir -p "$TIMBRE_STORAGE_DIR" "$SOUNDEFFECT_STORAGE_DIR" "$BGM_STORAGE_DIR" "$CLONE_STORAGE_DIR" "$TIGER_DNR_OUTPUT_DIR" "$PROMPTS_DIR" "$SPATIAL_EXPORT_CACHE_DIR" "$STEAM_AUDIO_RENDER_CACHE_DIR" "$HF_MODULES_CACHE" "$NUMBA_CACHE_DIR" "$MPLCONFIGDIR" "$XDG_CACHE_HOME" "$(dirname "$GPU_LOCK_FILE")"
 
 # Steam Audio 是 CPU 正式导出的可选能力；缺失时不阻断 15 个语音/音效进程，健康检查会明确报告 unavailable。
 if [[ ! -x "$STEAM_AUDIO_RENDERER_BIN" ]]; then
@@ -207,6 +213,9 @@ echo "Qwen3-TTS uv project:  $QWEN3_TTS_PROJECT_DIR"
 echo "Qwen3-TTS model:     $QWEN3_TTS_MODEL_DIR"
 echo "Qwen VoiceDesign uv project: $QWEN3_VOICEDESIGN_PROJECT_DIR"
 echo "Qwen VoiceDesign model:      $QWEN_VOICEDESIGN_MODEL_DIR"
+echo "TIGER-DnR uv project: $TIGER_DNR_PROJECT_DIR"
+echo "TIGER-DnR model:      $TIGER_DNR_MODEL_DIR"
+echo "TIGER-DnR source:     $TIGER_DNR_SOURCE_DIR"
 echo "MOSS VoiceGenerator uv project: $MOSS_VOICEGENERATOR_PROJECT_DIR"
 echo "MOSS VoiceGenerator model:      $MOSS_VOICEGENERATOR_MODEL_DIR"
 echo "MOSS Audio tokenizer:           $MOSS_AUDIO_TOKENIZER_PATH"
@@ -236,6 +245,7 @@ echo "Storage root:        $STORAGE_DIR"
 echo "Timbre storage:      $TIMBRE_STORAGE_DIR"
 echo "SoundEffect storage: $SOUNDEFFECT_STORAGE_DIR"
 echo "Clone storage:       $CLONE_STORAGE_DIR"
+echo "TIGER-DnR storage:   $TIGER_DNR_OUTPUT_DIR"
 echo "Reference audio dir: $PROMPTS_DIR"
 echo "HF modules cache:    $HF_MODULES_CACHE"
 echo "GPU lock file:       $GPU_LOCK_FILE"
@@ -257,6 +267,8 @@ echo "Qwen3-TTS API:       http://$QWEN3_TTS_HOST:$QWEN3_TTS_PORT"
 echo "Qwen3-TTS health:    http://127.0.0.1:$QWEN3_TTS_PORT/v1/health"
 echo "Qwen VoiceDesign API: http://$QWEN_VOICEDESIGN_HOST:$QWEN_VOICEDESIGN_PORT"
 echo "Qwen VoiceDesign health: http://127.0.0.1:$QWEN_VOICEDESIGN_PORT/v1/health"
+echo "TIGER-DnR API: http://$TIGER_DNR_HOST:$TIGER_DNR_PORT"
+echo "TIGER-DnR health: http://127.0.0.1:$TIGER_DNR_PORT/v1/health"
 echo "MOSS VoiceGenerator API: http://$MOSS_VOICEGENERATOR_HOST:$MOSS_VOICEGENERATOR_PORT"
 echo "MOSS VoiceGenerator health: http://127.0.0.1:$MOSS_VOICEGENERATOR_PORT/v1/health"
 echo "MOSS-Audio-4B-Thinking API: http://$MOSS_AUDIO_4B_THINKING_HOST:$MOSS_AUDIO_4B_THINKING_PORT"
@@ -275,6 +287,7 @@ echo "MOSS sound-effect route: http://127.0.0.1:$SOUNDEFFECT_PORT/v1/moss/soundE
 echo "Stable Audio 3 Medium route: http://127.0.0.1:$STABLE_AUDIO_3_MEDIUM_PORT/v1/stableAudio/soundEffect"
 echo "ACE-Step BGM route:     http://127.0.0.1:$ACESTEP_PORT/v1/aceStep/bgm"
 echo "Qwen timbre route:   http://127.0.0.1:$QWEN_VOICEDESIGN_PORT/v1/qwen/timbre"
+echo "TIGER-DnR route:     http://127.0.0.1:$TIGER_DNR_PORT/v1/tigerDnr/separate"
 echo "Qwen3-TTS clone:     http://127.0.0.1:$QWEN3_TTS_PORT/v1/qwen/clone"
 echo "VoxCPM2 clone:       http://127.0.0.1:$VOXCPM2_PORT/v1/voxcpm2/clone"
 echo "LongCat clone:       http://127.0.0.1:$LONGCAT_AUDIODIT_PORT/v1/longCat/clone"
@@ -286,6 +299,7 @@ echo "模型接口与端口映射"
 printf '%-24s %-6s %s\n' '服务' '端口' '最终接口'
 printf '%-24s %-6s %s\n' '控制面' "$PORT" '/v1/control'
 printf '%-24s %-6s %s\n' 'Qwen3-TTS VoiceDesign' "$QWEN_VOICEDESIGN_PORT" '/v1/qwen/timbre'
+printf '%-24s %-6s %s\n' 'TIGER-DnR' "$TIGER_DNR_PORT" '/v1/tigerDnr/separate'
 printf '%-24s %-6s %s\n' 'MOSS VoiceGenerator' "$MOSS_VOICEGENERATOR_PORT" '/v1/moss/timbre'
 printf '%-24s %-6s %s\n' 'MOSS-Audio-4B-Thinking' "$MOSS_AUDIO_4B_THINKING_PORT" '/v1/mossAudioThinking/understand'
 printf '%-24s %-6s %s\n' 'MiMo TTS VoiceDesign' "$MIMO_TTS_PORT" '/v1/mimo/timbre'
@@ -315,6 +329,7 @@ dots_tts_soar_pid=""
 firered_tts3_timbre_pid=""
 firered_tts3_clone_pid=""
 qwen_voicedesign_pid=""
+tiger_dnr_pid=""
 moss_voicegenerator_pid=""
 moss_audio_4b_thinking_pid=""
 step_audio_editx_pid=""
@@ -329,6 +344,7 @@ cleanup() {
     "$acestep_pid"
     "$qwen3_tts_pid"
     "$qwen_voicedesign_pid"
+    "$tiger_dnr_pid"
     "$moss_voicegenerator_pid"
     "$moss_audio_4b_thinking_pid"
     "$step_audio_editx_pid"
@@ -396,6 +412,12 @@ QWEN_VOICEDESIGN_HOST="$QWEN_VOICEDESIGN_HOST" QWEN_VOICEDESIGN_PORT="$QWEN_VOIC
   setsid uv run --no-sync --project "$QWEN3_VOICEDESIGN_PROJECT_DIR" \
   python "$QWEN3_VOICEDESIGN_PROJECT_DIR/main.py" &
 qwen_voicedesign_pid=$!
+# TIGER-DnR 独立 uv 服务：以 8351 提供三 Stem 分离，模型在一次性 worker 中加载。
+TIGER_DNR_HOST="$TIGER_DNR_HOST" TIGER_DNR_PORT="$TIGER_DNR_PORT" \
+  HOST="$TIGER_DNR_HOST" PORT="$TIGER_DNR_PORT" \
+  setsid uv run --no-sync --project "$TIGER_DNR_PROJECT_DIR" \
+  python "$TIGER_DNR_PROJECT_DIR/main.py" &
+tiger_dnr_pid=$!
 # MOSS VoiceGenerator 独立 uv 服务：使用最终约定的 8302 端口。
 MOSS_VOICEGENERATOR_HOST="$MOSS_VOICEGENERATOR_HOST" MOSS_VOICEGENERATOR_PORT="$MOSS_VOICEGENERATOR_PORT" \
   HOST="$MOSS_VOICEGENERATOR_HOST" PORT="$MOSS_VOICEGENERATOR_PORT" \
@@ -443,4 +465,4 @@ FIRERED_TTS3_MODE="clone" FIRERED_TTS3_HOST="$FIRERED_TTS3_CLONE_HOST" \
   python "$FIRERED_TTS3_PROJECT_DIR/main.py" &
 firered_tts3_clone_pid=$!
 
-wait -n "$main_pid" "$mimo_tts_pid" "$soundeffect_pid" "$stable_audio_3_medium_pid" "$acestep_pid" "$qwen3_tts_pid" "$qwen_voicedesign_pid" "$moss_voicegenerator_pid" "$moss_audio_4b_thinking_pid" "$step_audio_editx_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid" "$firered_tts3_timbre_pid" "$firered_tts3_clone_pid"
+wait -n "$main_pid" "$mimo_tts_pid" "$soundeffect_pid" "$stable_audio_3_medium_pid" "$acestep_pid" "$qwen3_tts_pid" "$qwen_voicedesign_pid" "$tiger_dnr_pid" "$moss_voicegenerator_pid" "$moss_audio_4b_thinking_pid" "$step_audio_editx_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid" "$firered_tts3_timbre_pid" "$firered_tts3_clone_pid"

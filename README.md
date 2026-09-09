@@ -23,10 +23,12 @@ SoundEffect 生成。仓库采用“一个服务一个 uv 项目”的边界：H
 | FireRedTTS3 Base | 8325 | 参考音频语音克隆 | `/v1/FireRedTTS3/clone` |
 | Step-Audio-EditX | 8331 | 语音编辑 | `/v1/stepAudioEditx/edit` |
 | MOSS-Audio-4B-Thinking | 8341 | 音频转写、描述与问答 | `/v1/mossAudioThinking/understand` |
+| TIGER-DnR | 8351 | 电影混音的对白、音效、音乐三 Stem 分离 | `/v1/tigerDnr/separate` |
 
 每个服务都提供 `GET /v1/health`。后端只注册表中列出的最终接口；模型生成接口返回
 `audio/wav`，并在服务端保存一份 WAV。MOSS-Audio-4B-Thinking 接收音频并返回 JSON 文本，
-不会生成或保留 WAV。空间音频导出返回 WAV 或 MP3，响应完成后删除临时成品。
+不会生成或保留 WAV。TIGER-DnR 返回含 `dialog.wav`、`effects.wav`、`music.wav` 的 ZIP，并将
+三路 Stem 原子保存。空间音频导出返回 WAV 或 MP3，响应完成后删除临时成品。
 
 ## 目录与运行数据
 
@@ -46,6 +48,7 @@ moss_audio_4b_thinking/       MOSS-Audio-4B-Thinking 服务和 worker
 mimo_tts/                     MiMo 云端编排服务
 Step_Audio_EditX/             Step-Audio-EditX 服务和 worker
 firered_tts3/                 FireRedTTS3 Instruct/Base 服务和 worker
+TIGER-DnR/                    TIGER-DnR 三 Stem 分离服务和 worker
 tests/                        根目录无模型回归测试
 soundEffect/                  MOSS GPU 示例和提示词说明
 storage/                      上传音频、生成音频、sidecar、缓存和 GPU 锁
@@ -59,6 +62,7 @@ storage/                      上传音频、生成音频、sidecar、缓存和 
 | `storage/soundEffect/` | MOSS 和 Stable Audio 生成的声效 | `SOUNDEFFECT_STORAGE_DIR`、`STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR` |
 | `storage/bgm/` | ACE-Step 有声小说 BGM 和 OST | `BGM_STORAGE_DIR`、`ACESTEP_OUTPUT_DIR` |
 | `storage/clone/` | 参考音频、克隆结果和 Step 编辑结果 | `CLONE_STORAGE_DIR`、各服务的 `*_OUTPUT_DIR` |
+| `storage/separation/` | TIGER-DnR 每次分离的 dialog、effects、music Stem 与 ZIP | `TIGER_DNR_OUTPUT_DIR` |
 | `storage/.cache/runtime/` | worker 临时文件、母带/Steam Audio 任务缓存、库缓存和共享 GPU 锁 | `RUNTIME_CACHE_DIR`、`SPATIAL_EXPORT_CACHE_DIR`、`STEAM_AUDIO_RENDER_CACHE_DIR`、`GPU_LOCK_FILE` |
 
 如果上传音频的内容与 `storage/timbre/` 中已有的设计音色一致，Qwen3-TTS、VoxCPM2、
@@ -77,7 +81,7 @@ LongCat、dots.tts-soar 和 FireRedTTS3 会在 `storage/timbre/.references/` 保
 ```bash
 for project in qwen3_tts mimo_tts voxcpm2 LongCat_AudioDiT_3.5B_bf16 \
   dots_tts_soar moss_soundEffect stable_audio_3_medium ace_step_1_5 \
-  qwen3_voiceDesign moss_voiceGenerator moss_audio_4b_thinking Step_Audio_EditX firered_tts3; do
+  qwen3_voiceDesign moss_voiceGenerator moss_audio_4b_thinking Step_Audio_EditX firered_tts3 TIGER-DnR; do
   uv sync --project "$project" --locked
 done
 ```
@@ -100,7 +104,7 @@ bash start.sh
 ```
 
 `start.sh` 会启动 8300、8301、8302、8303、8304、8311、8312、8313、8321、8322、8323、8324、8325、
-8331 和 8341 共 15 个进程；8300 使用 `qwen3_tts` uv 项目中的轻量 HTTP 依赖，其余服务使用
+8331、8341 和 8351 共 16 个进程；8300 使用 `qwen3_tts` uv 项目中的轻量 HTTP 依赖，其余服务使用
 各自的 uv 项目。启动命令统一使用 `uv run --no-sync`，不会在运行阶段联网解析依赖；
 本地 GPU 服务通过 `GPU_LOCK_FILE` 串行访问 GPU。默认最多排队 900 秒，超过时返回
 `503`；用 `GPU_LOCK_WAIT_TIMEOUT` 调整（设为非正值可关闭时限）。健康检查可结合
@@ -110,7 +114,7 @@ bash start.sh
 健康检查：
 
 ```bash
-for port in 8300 8301 8302 8303 8304 8311 8312 8313 8321 8322 8323 8324 8325 8331 8341; do
+for port in 8300 8301 8302 8303 8304 8311 8312 8313 8321 8322 8323 8324 8325 8331 8341 8351; do
   curl -fsS "http://127.0.0.1:${port}/v1/health" >/dev/null && echo "${port}: ok"
 done
 ```
@@ -141,6 +145,7 @@ HOST=127.0.0.1 PORT=8321 \
 | dots.tts-soar | `$HF_MIRROR_DIR/rednote-hilab/dots.tts-soar` | `DOTS_TTS_SOAR_MODEL_DIR` |
 | Step-Audio-EditX | `$HF_MIRROR_DIR/stepfun-ai/Step-Audio-EditX` | `STEP_AUDIO_TOKENIZER_PATH`、`STEP_AUDIO_EDITX_CODE_PATH` |
 | FireRedTTS3 Base/Instruct | `$HF_MIRROR_DIR/drbaph/FireRedTTS3-bf16` | `FIRERED_TTS3_MODEL_DIR`、`FIRERED_TTS3_CODE_PATH` |
+| TIGER-DnR | `$HF_MIRROR_DIR/JusperLee/TIGER-DnR` | `TIGER_DNR_SOURCE_DIR`（默认 `$HOME/.local/share/tiger-dnr/TIGER`） |
 
 通用配置包括 `HOST`、`PORT`、`STORAGE_DIR`、`PROMPTS_DIR`、`RUNTIME_CACHE_DIR`、
 `GPU_LOCK_FILE`、`LOCAL_FILES_ONLY` 和 `CUDA_RELEASE_DELAY`。48 kHz 导出可用
@@ -154,11 +159,16 @@ HOST=127.0.0.1 PORT=8321 \
 前缀，例如 `QWEN3_TTS_*`、`VOXCPM2_*`、`LONGCAT_AUDIODIT_*`、`DOTS_TTS_SOAR_*`、
 `MOSS_SOUNDEFFECT_*`、`STABLE_AUDIO_3_MEDIUM_*`、`ACESTEP_*`、`STEP_AUDIO_EDITX_*`、
 `QWEN_VOICEDESIGN_*`、`MOSS_VOICEGENERATOR_*`、`MOSS_AUDIO_4B_THINKING_*` 和
-`FIRERED_TTS3_*`。每个服务的 `/v1/health` 会报告
+`FIRERED_TTS3_*`、`TIGER_DNR_*`。每个服务的 `/v1/health` 会报告
 生效的路径、运行时和可用性。
 FireRedTTS3 的官方源码默认位于 `$HOME/tts-depency/FireRedTTS3`，通过
 `FIRERED_TTS3_CODE_PATH` 覆盖；8304 以 `timbre` 模式加载 Instruct，8325 以 `clone` 模式加载
 Base，两者不会同时在 worker 中常驻显存。
+
+TIGER-DnR 的官方推理代码不包含在本仓库。默认使用已准备的
+`$HOME/.local/share/tiger-dnr/TIGER`；也可以通过 `TIGER_DNR_SOURCE_DIR` 指向作者的
+`JusperLee/TIGER` 克隆。worker 只使用其中的 `look2hear` DnR 模型代码，并在
+`LOCAL_FILES_ONLY=1` 下从本地 `config.json` 与 `model.safetensors` 加载权重。
 
 ## 48 kHz 母带与 Steam Audio 正式导出
 
@@ -333,6 +343,21 @@ curl -X POST http://127.0.0.1:8341/v1/mossAudioThinking/understand \
 `top_k`、`enable_time_marker`、`strip_thinking`、`device` 与 `dtype`（`auto`、`bfloat16` 或
 `float16`）。默认关闭采样；仅当 `do_sample=true` 时才把采样参数传给模型。服务使用共享
 `GPU_LOCK_FILE`，一项请求对应一个 worker，worker 退出后释放显存。
+
+## TIGER-DnR 三 Stem 分离
+
+TIGER-DnR 监听 `8351`，接收任意支持的音频格式，以 44.1 kHz 按上游模型分离，再恢复输入的
+采样率、声道数和准确采样数。成功响应是 ZIP，固定包含 `dialog.wav`、`effects.wav` 和
+`music.wav`；相同文件也会作为一个原子批次保留在 `storage/separation/`。请求通过共享
+`GPU_LOCK_FILE` 串行化，且每次请求都会启动并退出自己的 worker。默认 `device=cuda`，可在无
+GPU 的调试环境显式使用 `device=cpu`。
+
+```bash
+curl -X POST http://127.0.0.1:8351/v1/tigerDnr/separate \
+  -F 'audio=@cinematic-mix.wav;type=audio/wav' \
+  -F 'device=cuda' \
+  -o tiger-dnr-stems.zip
+```
 
 ## SoundEffect 生成
 
