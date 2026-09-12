@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""独立 MOSS-Audio-4B-Thinking HTTP 服务。"""
+"""独立 MOSS-Audio-4B 音频理解 HTTP 服务。"""
 
 from __future__ import annotations
 
@@ -31,7 +31,24 @@ LOGGER = logging.getLogger(__name__)
 
 PROJECT_DIR = Path(__file__).resolve().parent
 REPOSITORY_DIR = PROJECT_DIR.parent
-DEFAULT_PROMPT = "请准确转写这段音频，仅输出转写文本。"
+requested_variant = os.getenv("MOSS_AUDIO_4B_VARIANT")
+if requested_variant is None:
+    requested_variant = (
+        "instruct"
+        if any(key.startswith("MOSS_AUDIO_4B_INSTRUCT_") for key in os.environ)
+        else "thinking"
+    )
+MODEL_VARIANT = requested_variant.strip().lower()
+if MODEL_VARIANT not in {"thinking", "instruct"}:
+    raise ValueError("MOSS_AUDIO_4B_VARIANT 仅支持 thinking 或 instruct。")
+
+MODEL_VARIANT_LABEL = {
+    "thinking": "Thinking",
+    "instruct": "Instruct",
+}[MODEL_VARIANT]
+MODEL_ENV_PREFIX = f"MOSS_AUDIO_4B_{MODEL_VARIANT.upper()}"
+MODEL_SLUG = f"moss_audio_4b_{MODEL_VARIANT}"
+MODEL_SERVICE_NAME = f"MOSS-Audio-4B-{MODEL_VARIANT_LABEL}"
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -47,37 +64,53 @@ def expand_path(path: str) -> str:
     return os.path.abspath(os.path.expandvars(os.path.expanduser(path)))
 
 
+def variant_env(name: str, default: str) -> str:
+    """读取当前 MOSS-Audio 变体的专用环境变量。"""
+    return os.getenv(f"{MODEL_ENV_PREFIX}_{name}", default)
+
+
 STORAGE_DIR = Path(expand_path(os.getenv("STORAGE_DIR", str(REPOSITORY_DIR / "storage"))))
 HF_MIRROR_DIR = expand_path(os.getenv("HF_MIRROR_DIR", "~/hf-mirror"))
-MOSS_AUDIO_4B_THINKING_MODEL_DIR = expand_path(
-    os.getenv(
-        "MOSS_AUDIO_4B_THINKING_MODEL_DIR",
-        os.path.join(HF_MIRROR_DIR, "OpenMOSS-Team/MOSS-Audio-4B-Thinking"),
-    )
+DEFAULT_MODEL_DIR = os.path.join(
+    HF_MIRROR_DIR,
+    "OpenMOSS-Team",
+    f"MOSS-Audio-4B-{MODEL_VARIANT_LABEL}",
 )
-MOSS_AUDIO_4B_THINKING_DEPENDENCY_PATH = expand_path(
-    os.getenv("MOSS_AUDIO_4B_THINKING_DEPENDENCY_PATH", "~/tts-depency/MOSS-Audio")
-)
+MOSS_AUDIO_MODEL_DIR = expand_path(variant_env("MODEL_DIR", DEFAULT_MODEL_DIR))
+MOSS_AUDIO_DEPENDENCY_PATH = expand_path(variant_env("DEPENDENCY_PATH", "~/tts-depency/MOSS-Audio"))
 RUNTIME_CACHE_DIR = expand_path(os.getenv("RUNTIME_CACHE_DIR", str(STORAGE_DIR / ".cache/runtime")))
 GPU_LOCK_FILE = expand_path(
     os.getenv("GPU_LOCK_FILE", os.path.join(RUNTIME_CACHE_DIR, "gpu-runtime.lock"))
 )
 WORKER_TMP_DIR = expand_path(
     os.getenv(
-        "MOSS_AUDIO_4B_THINKING_WORKER_TMP_DIR",
-        os.path.join(RUNTIME_CACHE_DIR, "moss_audio_4b_thinking_worker"),
+        f"{MODEL_ENV_PREFIX}_WORKER_TMP_DIR",
+        os.path.join(RUNTIME_CACHE_DIR, f"{MODEL_SLUG}_worker"),
     )
 )
 WORKER_SCRIPT = str(PROJECT_DIR / "worker.py")
 LOCAL_FILES_ONLY = env_bool("LOCAL_FILES_ONLY", True)
 CUDA_RELEASE_DELAY = float(os.getenv("CUDA_RELEASE_DELAY", "2.0"))
-API_HOST = os.getenv("MOSS_AUDIO_4B_THINKING_HOST", os.getenv("HOST", "0.0.0.0"))
-API_PORT = int(os.getenv("MOSS_AUDIO_4B_THINKING_PORT", os.getenv("PORT", "8341")))
-REQUEST_TIMEOUT = float(os.getenv("MOSS_AUDIO_4B_THINKING_REQUEST_TIMEOUT", "900"))
-DEVICE = os.getenv("MOSS_AUDIO_4B_THINKING_DEVICE", "cuda:0")
-DTYPE = os.getenv("MOSS_AUDIO_4B_THINKING_DTYPE", "auto")
-MAX_NEW_TOKENS = int(os.getenv("MOSS_AUDIO_4B_THINKING_MAX_NEW_TOKENS", "1024"))
-ENABLE_TIME_MARKER = env_bool("MOSS_AUDIO_4B_THINKING_ENABLE_TIME_MARKER", True)
+API_HOST = variant_env("HOST", os.getenv("HOST", "0.0.0.0"))
+API_PORT = int(variant_env("PORT", os.getenv("PORT", "8341")))
+REQUEST_TIMEOUT = float(variant_env("REQUEST_TIMEOUT", "900"))
+DEVICE = variant_env("DEVICE", "cuda:0")
+DTYPE = variant_env("DTYPE", "auto")
+MAX_NEW_TOKENS = int(variant_env("MAX_NEW_TOKENS", "1024"))
+ENABLE_TIME_MARKER = env_bool(f"{MODEL_ENV_PREFIX}_ENABLE_TIME_MARKER", True)
+DEFAULT_DO_SAMPLE = env_bool(
+    f"{MODEL_ENV_PREFIX}_DO_SAMPLE",
+    MODEL_VARIANT == "instruct",
+)
+DEFAULT_PROMPT = (
+    "Describe this audio."
+    if MODEL_VARIANT == "instruct"
+    else "请准确转写这段音频，仅输出转写文本。"
+)
+
+# 保留原模块变量名，兼容同目录已有的无模型集成测试；实际值由变体配置决定。
+MOSS_AUDIO_4B_THINKING_MODEL_DIR = MOSS_AUDIO_MODEL_DIR
+MOSS_AUDIO_4B_THINKING_DEPENDENCY_PATH = MOSS_AUDIO_DEPENDENCY_PATH
 
 os.environ.setdefault("HF_HOME", HF_MIRROR_DIR)
 os.environ.setdefault("HF_MODULES_CACHE", os.path.join(RUNTIME_CACHE_DIR, "hf_modules"))
@@ -99,7 +132,7 @@ for path in (
 ):
     os.makedirs(path, exist_ok=True)
 
-app = FastAPI(title="Unitale MOSS-Audio-4B-Thinking API")
+app = FastAPI(title=f"Unitale {MODEL_SERVICE_NAME} API")
 
 
 class ForceCORS(BaseHTTPMiddleware):
@@ -125,11 +158,11 @@ app.add_middleware(ForceCORS)
 
 
 class MossAudioThinkingRequest(BaseModel):
-    """MOSS-Audio-4B-Thinking 的音频理解请求字段。"""
+    """MOSS-Audio 音频理解请求字段。"""
 
     prompt: str = Field(default=DEFAULT_PROMPT, min_length=1, max_length=4_000)
     max_new_tokens: int = Field(default=MAX_NEW_TOKENS, ge=1, le=4_096)
-    do_sample: bool = False
+    do_sample: bool = DEFAULT_DO_SAMPLE
     temperature: float = Field(default=1.0, gt=0, le=5)
     top_p: float = Field(default=1.0, gt=0, le=1)
     top_k: int = Field(default=50, ge=1, le=500)
@@ -149,7 +182,7 @@ def module_available(module_name: str) -> bool:
 
 def moss_audio_source_is_ready() -> bool:
     """检查外部 MOSS-Audio 源码结构，不在 API 进程导入上游模块。"""
-    source_path = Path(MOSS_AUDIO_4B_THINKING_DEPENDENCY_PATH) / "src"
+    source_path = Path(MOSS_AUDIO_DEPENDENCY_PATH) / "src"
     return all(
         (source_path / name).is_file()
         for name in ("audio_io.py", "modeling_moss_audio.py", "processing_moss_audio.py")
@@ -174,7 +207,7 @@ def worker_error_excerpt(output: str) -> str:
     """提取 worker 最后的可读错误行，避免将过长回溯直接回传客户端。"""
     lines = [line.strip() for line in output.splitlines() if line.strip()]
     if not lines:
-        return "MOSS-Audio-4B-Thinking worker 未输出错误信息。"
+        return f"{MODEL_SERVICE_NAME} worker 未输出错误信息。"
     return " | ".join(lines[-8:])
 
 
@@ -194,22 +227,18 @@ class MossAudioThinkingWorkerManager:
         if not audio_path.is_file():
             raise FileNotFoundError(f"待理解音频不存在: {audio_path}")
         if not os.path.isfile(WORKER_SCRIPT):
-            raise RuntimeError(f"MOSS-Audio-4B-Thinking worker 脚本不存在: {WORKER_SCRIPT}")
-        if not os.path.isdir(MOSS_AUDIO_4B_THINKING_MODEL_DIR):
-            raise FileNotFoundError(
-                f"MOSS-Audio-4B-Thinking 模型目录不存在: {MOSS_AUDIO_4B_THINKING_MODEL_DIR}"
-            )
+            raise RuntimeError(f"{MODEL_SERVICE_NAME} worker 脚本不存在: {WORKER_SCRIPT}")
+        if not os.path.isdir(MOSS_AUDIO_MODEL_DIR):
+            raise FileNotFoundError(f"{MODEL_SERVICE_NAME} 模型目录不存在: {MOSS_AUDIO_MODEL_DIR}")
         if not moss_audio_source_is_ready():
-            raise FileNotFoundError(
-                f"MOSS-Audio 依赖源码不完整: {MOSS_AUDIO_4B_THINKING_DEPENDENCY_PATH}/src"
-            )
+            raise FileNotFoundError(f"MOSS-Audio 依赖源码不完整: {MOSS_AUDIO_DEPENDENCY_PATH}/src")
 
         payload = request.model_dump()
         payload.update(
             {
                 "audio_path": str(audio_path),
-                "model_path": MOSS_AUDIO_4B_THINKING_MODEL_DIR,
-                "dependency_path": MOSS_AUDIO_4B_THINKING_DEPENDENCY_PATH,
+                "model_path": MOSS_AUDIO_MODEL_DIR,
+                "dependency_path": MOSS_AUDIO_DEPENDENCY_PATH,
                 "local_files_only": LOCAL_FILES_ONLY,
             }
         )
@@ -219,18 +248,18 @@ class MossAudioThinkingWorkerManager:
         """在本服务的 uv 解释器中执行一次隔离音频理解任务。"""
         python_executable = sys.executable
         if not python_executable or not os.path.isfile(python_executable):
-            raise RuntimeError("未找到 moss_audio_4b_thinking uv 环境的 Python 解释器。")
+            raise RuntimeError(f"未找到 {MODEL_SLUG} uv 环境的 Python 解释器。")
         if not os.path.isfile(WORKER_SCRIPT):
-            raise RuntimeError(f"MOSS-Audio-4B-Thinking worker 脚本不存在: {WORKER_SCRIPT}")
+            raise RuntimeError(f"{MODEL_SERVICE_NAME} worker 脚本不存在: {WORKER_SCRIPT}")
 
         request_fd, request_path = tempfile.mkstemp(
             dir=WORKER_TMP_DIR,
-            prefix="moss_audio_4b_thinking_req_",
+            prefix=f"{MODEL_SLUG}_req_",
             suffix=".json",
         )
         output_fd, output_path = tempfile.mkstemp(
             dir=WORKER_TMP_DIR,
-            prefix="moss_audio_4b_thinking_out_",
+            prefix=f"{MODEL_SLUG}_out_",
             suffix=".json",
         )
         os.close(request_fd)
@@ -252,7 +281,7 @@ class MossAudioThinkingWorkerManager:
             if LOCAL_FILES_ONLY:
                 worker_env["HF_HUB_OFFLINE"] = "1"
                 worker_env["TRANSFORMERS_OFFLINE"] = "1"
-            print(f"[MOSS-Audio-4B-Thinking] 启动 worker: python={python_executable}")
+            print(f"[{MODEL_SERVICE_NAME}] 启动 worker: python={python_executable}")
             started = time.perf_counter()
             process = subprocess.Popen(
                 command,
@@ -265,10 +294,10 @@ class MossAudioThinkingWorkerManager:
             try:
                 stdout, stderr = process.communicate(timeout=REQUEST_TIMEOUT)
             except subprocess.TimeoutExpired as exc:
-                terminate_process_group(process, "MOSS-Audio-4B-Thinking")
+                terminate_process_group(process, MODEL_SERVICE_NAME)
                 stdout, stderr = process.communicate()
                 raise RuntimeError(
-                    f"MOSS-Audio-4B-Thinking worker 超时（>{REQUEST_TIMEOUT:.0f}s）"
+                    f"{MODEL_SERVICE_NAME} worker 超时（>{REQUEST_TIMEOUT:.0f}s）"
                 ) from exc
 
             elapsed = time.perf_counter() - started
@@ -276,26 +305,24 @@ class MossAudioThinkingWorkerManager:
                 print(stdout.rstrip())
             if stderr.strip():
                 print(stderr.rstrip())
-            print(
-                f"[MOSS-Audio-4B-Thinking] worker 退出码={process.returncode}，耗时 {elapsed:.2f}s"
-            )
+            print(f"[{MODEL_SERVICE_NAME}] worker 退出码={process.returncode}，耗时 {elapsed:.2f}s")
             if process.returncode != 0:
                 raise RuntimeError(worker_error_excerpt(stderr or stdout))
             if not os.path.isfile(output_path) or os.path.getsize(output_path) == 0:
-                raise RuntimeError("MOSS-Audio-4B-Thinking worker 未生成结果 JSON。")
+                raise RuntimeError(f"{MODEL_SERVICE_NAME} worker 未生成结果 JSON。")
             with open(output_path, encoding="utf-8") as file:
                 result = json.load(file)
             if not isinstance(result, dict) or not isinstance(result.get("text"), str):
-                raise RuntimeError("MOSS-Audio-4B-Thinking worker 返回了非法结果 JSON。")
+                raise RuntimeError(f"{MODEL_SERVICE_NAME} worker 返回了非法结果 JSON。")
             if not result["text"].strip():
-                raise RuntimeError("MOSS-Audio-4B-Thinking worker 返回空文本。")
+                raise RuntimeError(f"{MODEL_SERVICE_NAME} worker 返回空文本。")
             self.last_error = None
             return result
         except Exception as exc:
             self.last_error = str(exc)
             raise
         finally:
-            terminate_process_group(process, "MOSS-Audio-4B-Thinking")
+            terminate_process_group(process, MODEL_SERVICE_NAME)
             for path in (request_path, output_path):
                 try:
                     os.remove(path)
@@ -310,24 +337,26 @@ manager = MossAudioThinkingWorkerManager()
 
 def execute_understanding_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """持有共享 GPU 锁执行 worker；此函数在线程池中调用。"""
-    with gpu_runtime_lock("moss-audio-4b-thinking/understand"):
+    with gpu_runtime_lock(f"{MODEL_SLUG}/understand"):
         with manager.lock:
             try:
                 return manager.run_worker(payload)
             finally:
-                wait_after_cuda_release("after MOSS-Audio-4B-Thinking worker")
+                wait_after_cuda_release(f"after {MODEL_SERVICE_NAME} worker")
 
 
 @app.get("/v1/health")
 def health():
     """返回模型、源码、worker 与 GPU 的就绪状态，不加载任何权重。"""
     cuda = cuda_status()
+    model_path_key = f"{MODEL_SLUG}_model_dir"
+    dependency_path_key = f"{MODEL_SLUG}_dependency_path"
     return {
         "code": 200,
         "paths": {
             "hf_mirror_dir": HF_MIRROR_DIR,
-            "moss_audio_4b_thinking_model_dir": MOSS_AUDIO_4B_THINKING_MODEL_DIR,
-            "moss_audio_4b_thinking_dependency_path": MOSS_AUDIO_4B_THINKING_DEPENDENCY_PATH,
+            model_path_key: MOSS_AUDIO_MODEL_DIR,
+            dependency_path_key: MOSS_AUDIO_DEPENDENCY_PATH,
             "worker_script": WORKER_SCRIPT,
             "worker_tmp_dir": WORKER_TMP_DIR,
             "gpu_lock_file": GPU_LOCK_FILE,
@@ -335,7 +364,7 @@ def health():
         "available": {
             "python": sys.executable,
             "worker_script": os.path.isfile(WORKER_SCRIPT),
-            "moss_audio_4b_thinking_model_dir": os.path.isdir(MOSS_AUDIO_4B_THINKING_MODEL_DIR),
+            model_path_key: os.path.isdir(MOSS_AUDIO_MODEL_DIR),
             "moss_audio_source": moss_audio_source_is_ready(),
             "torch": module_available("torch"),
             "torchaudio": module_available("torchaudio"),
@@ -347,16 +376,19 @@ def health():
         "runtime": {
             "worker_runtime": "uv",
             "worker_python": sys.executable,
+            "model_variant": MODEL_VARIANT,
+            "model_name": MODEL_SERVICE_NAME,
             "model_lifecycle": "one request -> one worker -> process exit releases VRAM",
             "local_files_only": LOCAL_FILES_ONLY,
             "request_timeout": REQUEST_TIMEOUT,
             "device": DEVICE,
             "dtype": DTYPE,
             "max_new_tokens": MAX_NEW_TOKENS,
+            "do_sample": DEFAULT_DO_SAMPLE,
             "enable_time_marker": ENABLE_TIME_MARKER,
             "gpu_scheduling": "shared exclusive file lock",
         },
-        "last_errors": {"moss_audio_4b_thinking": manager.last_error},
+        "last_errors": {MODEL_SLUG: manager.last_error},
     }
 
 
@@ -365,7 +397,7 @@ async def understand(
     audio: UploadFile = File(...),
     prompt: str = Form(DEFAULT_PROMPT),
     max_new_tokens: int = Form(MAX_NEW_TOKENS),
-    do_sample: bool = Form(False),
+    do_sample: bool = Form(DEFAULT_DO_SAMPLE),
     temperature: float = Form(1.0),
     top_p: float = Form(1.0),
     top_k: int = Form(50),
@@ -414,7 +446,7 @@ async def understand(
     except GpuLockTimeoutError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
-        LOGGER.exception("MOSS-Audio-4B-Thinking request failed")
+        LOGGER.exception("%s request failed", MODEL_SERVICE_NAME)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     finally:
         staged.path.unlink(missing_ok=True)
@@ -422,15 +454,18 @@ async def understand(
 
 if __name__ == "__main__":
     print("==================================================")
-    print("   Unitale AI 本地后端 MOSS-Audio-4B-Thinking")
+    print(f"   Unitale AI 本地后端 {MODEL_SERVICE_NAME}")
     print("==================================================")
-    print(f"[配置] 模型目录: {MOSS_AUDIO_4B_THINKING_MODEL_DIR}")
-    print(f"[配置] MOSS-Audio 源码: {MOSS_AUDIO_4B_THINKING_DEPENDENCY_PATH}")
+    print(f"[配置] 模型目录: {MOSS_AUDIO_MODEL_DIR}")
+    print(f"[配置] MOSS-Audio 源码: {MOSS_AUDIO_DEPENDENCY_PATH}")
     print(f"[配置] worker: {WORKER_SCRIPT}")
     print(f"[配置] GPU 锁文件: {GPU_LOCK_FILE}")
     print(
         f"[配置] host={API_HOST}, port={API_PORT}, device={DEVICE}, dtype={DTYPE}, "
         f"max_new_tokens={MAX_NEW_TOKENS}"
     )
-    print(f"[配置] local_files_only={LOCAL_FILES_ONLY}, request_timeout={REQUEST_TIMEOUT}")
+    print(
+        f"[配置] variant={MODEL_VARIANT}, local_files_only={LOCAL_FILES_ONLY}, "
+        f"request_timeout={REQUEST_TIMEOUT}"
+    )
     uvicorn.run(app, host=API_HOST, port=API_PORT)

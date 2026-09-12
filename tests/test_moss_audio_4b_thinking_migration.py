@@ -52,6 +52,67 @@ spec.loader.exec_module(main)
 class MossAudio4BThinkingMigrationTests(unittest.TestCase):
     """验证 HTTP 契约、临时文件回收和 worker 启动边界。"""
 
+    def test_instruct_variant_uses_instruct_model_and_upstream_defaults(self) -> None:
+        """验证同一项目以 Instruct 变体启动时不会回退到 Thinking 权重。"""
+        instruct_root = TEST_ROOT / "instruct-variant"
+        instruct_model_dir = instruct_root / "model"
+        instruct_dependency_dir = instruct_root / "moss-audio"
+        instruct_model_dir.mkdir(parents=True, exist_ok=True)
+        source_dir = instruct_dependency_dir / "src"
+        source_dir.mkdir(parents=True, exist_ok=True)
+        for filename in ("audio_io.py", "modeling_moss_audio.py", "processing_moss_audio.py"):
+            (source_dir / filename).touch()
+
+        environment = {
+            "MOSS_AUDIO_4B_VARIANT": "instruct",
+            "MOSS_AUDIO_4B_INSTRUCT_MODEL_DIR": str(instruct_model_dir),
+            "MOSS_AUDIO_4B_INSTRUCT_DEPENDENCY_PATH": str(instruct_dependency_dir),
+            "MOSS_AUDIO_4B_INSTRUCT_PORT": "8342",
+            "RUNTIME_CACHE_DIR": str(instruct_root / "cache"),
+            "MOSS_AUDIO_4B_INSTRUCT_WORKER_TMP_DIR": str(instruct_root / "cache" / "worker"),
+            "CUDA_RELEASE_DELAY": "0",
+        }
+        module_name = "moss_audio_4b_instruct_service_for_test"
+        with patch.dict(os.environ, environment, clear=False):
+            instruct_spec = importlib.util.spec_from_file_location(
+                module_name,
+                SERVICE_DIR / "main.py",
+            )
+            assert instruct_spec and instruct_spec.loader
+            instruct = importlib.util.module_from_spec(instruct_spec)
+            sys.modules[module_name] = instruct
+            try:
+                instruct_spec.loader.exec_module(instruct)
+                request = instruct.MossAudioThinkingRequest()
+                audio_path = instruct_root / "input.wav"
+                audio_path.write_bytes(b"RIFF" + b"\0" * 40)
+                payload = instruct.manager.build_worker_payload(request, audio_path)
+
+                self.assertEqual(instruct.API_PORT, 8342)
+                self.assertEqual(instruct.MODEL_VARIANT, "instruct")
+                self.assertEqual(instruct.MODEL_SERVICE_NAME, "MOSS-Audio-4B-Instruct")
+                self.assertEqual(request.prompt, "Describe this audio.")
+                self.assertTrue(request.do_sample)
+                self.assertEqual(payload["model_path"], str(instruct_model_dir))
+                self.assertEqual(payload["dependency_path"], str(instruct_dependency_dir))
+            finally:
+                sys.modules.pop(module_name, None)
+
+    def test_start_script_exposes_instruct_service_on_8342(self) -> None:
+        """验证 start.sh 传入 Instruct 变体和独立 8342 端口。"""
+        source = (REPOSITORY_DIR / "start.sh").read_text(encoding="utf-8")
+
+        self.assertIn(
+            'MOSS_AUDIO_4B_INSTRUCT_PORT="${MOSS_AUDIO_4B_INSTRUCT_PORT:-8342}"',
+            source,
+        )
+        self.assertIn(
+            'MOSS_AUDIO_4B_INSTRUCT_MODEL_DIR="${MOSS_AUDIO_4B_INSTRUCT_MODEL_DIR:-$HF_MIRROR_DIR/OpenMOSS-Team/MOSS-Audio-4B-Instruct}"',
+            source,
+        )
+        self.assertIn('MOSS_AUDIO_4B_VARIANT="instruct"', source)
+        self.assertIn("moss_audio_4b_instruct_pid", source)
+
     def test_route_and_health_contract(self) -> None:
         from fastapi.testclient import TestClient
 

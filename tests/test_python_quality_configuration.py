@@ -72,7 +72,7 @@ class PythonQualityConfigurationTests(unittest.TestCase):
     def test_startup_uses_locked_environments_without_runtime_sync(self) -> None:
         start_script = (REPOSITORY_DIR / "start.sh").read_text(encoding="utf-8")
 
-        self.assertEqual(start_script.count("setsid uv run --no-sync --project"), 16)
+        self.assertEqual(start_script.count("setsid uv run --no-sync --project"), 17)
         self.assertNotIn("setsid uv run --project", start_script)
         self.assertEqual(start_script.count('for pid in "${pids[@]}"; do'), 3)
         self.assertNotIn('wait "$qwen3_tts_pid"', start_script)

@@ -1,7 +1,7 @@
 [project]
 name = "moss-audio-4b-thinking-service"
 version = "0.1.0"
-description = "Unitale MOSS-Audio-4B-Thinking audio understanding HTTP service"
+description = "Unitale MOSS-Audio-4B Thinking/Instruct audio understanding HTTP service"
 requires-python = "==3.12.13"
 dependencies = [
     "fastapi==0.136.3",

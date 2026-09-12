@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MOSS-Audio-4B-Thinking 一次性音频理解 worker。"""
+"""MOSS-Audio-4B Thinking/Instruct 一次性音频理解 worker。"""
 
 from __future__ import annotations
 
@@ -20,7 +20,9 @@ def parse_args():
     """解析 worker JSON 输入和文本结果输出路径。"""
     import argparse
 
-    parser = argparse.ArgumentParser(description="One-shot MOSS-Audio-4B-Thinking worker")
+    parser = argparse.ArgumentParser(
+        description="One-shot MOSS-Audio-4B audio understanding worker"
+    )
     parser.add_argument("--input-json", required=True)
     parser.add_argument("--output-json", required=True)
     return parser.parse_args()
@@ -82,7 +84,7 @@ def load_runtime(dependency_path: Path):
     except ImportError as exc:
         raise RuntimeError(
             "MOSS-Audio 运行时导入失败，请先为 moss_audio_4b_thinking 执行 uv sync，"
-            "并确认 MOSS_AUDIO_4B_THINKING_DEPENDENCY_PATH 指向官方源码。"
+            "并确认 worker 的 dependency_path 指向官方源码。"
             f"缺少或无法导入: {exc.name or exc}"
         ) from exc
     return torch, load_audio, MossAudioModel, MossAudioProcessor
@@ -91,7 +93,7 @@ def load_runtime(dependency_path: Path):
 def resolve_device(torch, device: str) -> str:
     """验证请求设备可用性，避免加载 4B 模型后才暴露配置错误。"""
     if device.startswith("cuda") and not torch.cuda.is_available():
-        raise RuntimeError("CUDA 不可用，MOSS-Audio-4B-Thinking 默认要求 GPU。")
+        raise RuntimeError("CUDA 不可用，MOSS-Audio-4B 默认要求 GPU。")
     if device == "mps" and not torch.backends.mps.is_available():
         raise RuntimeError("请求使用 MPS，但当前 PyTorch 未检测到可用的 MPS 设备。")
     return device
@@ -180,14 +182,14 @@ def write_result(path: Path, payload: dict[str, Any]) -> None:
 
 
 def understand_audio(request: dict[str, Any]) -> dict[str, Any]:
-    """加载 MOSS-Audio-4B-Thinking，理解一个音频文件并返回文本结果。"""
+    """加载 MOSS-Audio-4B Thinking/Instruct 权重，理解音频并返回文本结果。"""
     if parse_bool(request.get("local_files_only"), True):
         os.environ["HF_HUB_OFFLINE"] = "1"
         os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
     model_path = require_path(
         str(request.get("model_path") or ""),
-        "MOSS-Audio-4B-Thinking 模型",
+        "MOSS-Audio-4B 模型",
         directory=True,
     )
     audio_path = require_path(str(request.get("audio_path") or ""), "待理解音频")
@@ -232,7 +234,7 @@ def understand_audio(request: dict[str, Any]) -> dict[str, Any]:
         if parse_bool(request.get("strip_thinking"), False):
             answer = strip_thinking(answer)
         if not answer:
-            raise RuntimeError("MOSS-Audio-4B-Thinking 返回了空文本。")
+            raise RuntimeError("MOSS-Audio-4B 返回了空文本。")
         return {
             "text": answer,
             "elapsed_seconds": round(time.perf_counter() - started, 3),
@@ -247,7 +249,7 @@ def understand_audio(request: dict[str, Any]) -> dict[str, Any]:
             try:
                 torch.cuda.synchronize()
             except RuntimeError as exc:
-                print(f"[MOSS-Audio-4B-Thinking worker] CUDA synchronize 跳过: {exc}")
+                print(f"[MOSS-Audio-4B worker] CUDA synchronize 跳过: {exc}")
             torch.cuda.empty_cache()
             torch.cuda.ipc_collect()
 
