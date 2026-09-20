@@ -1,6 +1,3 @@
-你先阅读`~/github/TTS-and-VoiceDesign`和`~/github/TTS-Studio-WebUI`项目
-然后阅读`模型微调学习路径.md`和`Easy Dataset 与 LLaMA-Factory 训练操作指南.md`
-这是完整聊天对话记录: https://chatgpt.com/share/6a9150cd-c0bc-83ec-a454-a8b91dcf14d9
-目前我已经在`~/github/easy-dataset`准备好了训练微调的如软件和工具,
-第一步我打算利用项目~/github/scoring-for-TTS目录`training/悚族`找10篇先简单训练，熟悉流程和尝试效果。
-你帮我制定一份完善的`微调步骤操作文档.md`，然后能按照文档一步一步直到完成。
+你先访问 https://www.modelscope.cn/models/audio-cpp/audio.cpp-gguf
+1. 然后将文档中描述的"文件"所有的模型找出，模型名称需要处理，比如"ACE-Step1.5-GGUF"真实模型名称为"ACE-Step1.5"，将真实名称存储为列表a中
+2. 然后遍历列表a的每一个模型，然后依次找到该模型再modelscope的仓库地址，进入仓库主页的模型介绍一栏，查看"译文"所属区域的内容，将它的简介或者顶部模型详情记录，依次写入到`流行语音模型功能简介.md`中的标题"列表"下方内容。比如"ACE-Step1.5"模型的介绍就是“ACE-Step v1.5 是一款高效开源的音乐基础模型，旨在将商用级音乐生成能力带入消费级硬件。”
