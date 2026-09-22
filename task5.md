@@ -1,10 +1,7 @@
 我的设备情况：win11+wsl、4070tiSuper、48g内存、13600kf。我测试大模型一般在wsl的ubuntu体验
 你先访问
-https://www.modelscope.cn/models?page=1&tabKey=task&tasks=text-to-speech&type=audio
-https://www.modelscope.cn/models?page=1&tabKey=task&tasks=auto-speech-recognition&type=audio
-https://www.modelscope.cn/models?page=1&tabKey=task&tasks=text-to-audio-synthesis&type=multi-modal
-https://www.modelscope.cn/models?page=1&tabKey=task&tasks=audio-generation&type=audio
-1. 你从中根据所有的分页信息，要记录总平台总共有多少条结果。找出平台中所有满足下载量超过200的模型，和它对应的modelscope的仓库地址，最近更新时间，整理到表格a中。写入到`流行语音合成模型功能简介.md`标题"完整流行模型"下
+https://www.modelscope.cn/models?page=1&tabKey=task&tasks=text-to-image-synthesis&type=multi-modal
+1. 你从中根据所有的分页信息，要记录总平台总共有多少条结果。找出平台中所有满足下载量超过200的模型，和它对应的modelscope的仓库地址，最近更新时间，整理到表格a中。写入到`流行文生图模型功能简介.md`标题"完整流行模型"下
 2. 然后你遍历所有表格a的模型列表，然后依次进入仓库主页的模型介绍一栏，查看"译文"所属区域的内容，将它的内容简介和主要的功能介绍补全到表格内，这部分不要省略，不然我看到介绍无法知晓模型介绍以及主要支持什么功能。比如"OpenBMB/VoxCPM2"模型要补全的内容就是"VoxCPM2 是一个无需分词器的扩散自回归文本到语音（Text-to-Speech）模型——拥有 20 亿参数、支持 30 种语言、输出 48kHz 音频，基于超过 200 万小时 的多语言语音数据训练而成。
 🌍 30 种语言多语种支持 —— 无需语言标签；直接输入任意支持语言的文本
 🎨 语音设计 —— 仅凭自然语言描述（性别、年龄、音色、情感、语速等）即可生成全新语音；无需参考音频
