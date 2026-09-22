@@ -40,3 +40,6 @@ vendor/
 .DS_Store
 .idea/
 .vscode/
+
+tests/testConfucius4TTS/*.wav
+tests/testConfucius4TTS/output/

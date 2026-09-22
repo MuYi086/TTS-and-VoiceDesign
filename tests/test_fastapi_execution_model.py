@@ -77,6 +77,11 @@ class FastApiExecutionModelTests(unittest.TestCase):
             "qwen3_voiceDesign/main.py": {"/v1/health"},
             "moss_voiceGenerator/main.py": {"/v1/health"},
             "moss_audio_4b_thinking/main.py": {"/v1/health"},
+            "Confucius4_TTS/main.py": {
+                "/v1/health",
+                "/v1/check/audio",
+                "/v1/confucius4TTS/generate",
+            },
             "Step_Audio_EditX/main.py": {"/v1/health", "/v1/check/audio"},
             "TIGER-DnR/main.py": {"/v1/health"},
         }
@@ -102,6 +107,7 @@ class FastApiExecutionModelTests(unittest.TestCase):
             "LongCat_AudioDiT_3.5B_bf16/main.py",
             "dots_tts_soar/main.py",
             "Step_Audio_EditX/main.py",
+            "Confucius4_TTS/main.py",
         }
 
         for relative_path in upload_sources:

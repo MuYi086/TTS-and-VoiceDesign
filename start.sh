@@ -21,6 +21,7 @@ QWEN3_TTS_PROJECT_DIR="${QWEN3_TTS_PROJECT_DIR:-$PROJECT_DIR/qwen3_tts}"
 QWEN3_VOICEDESIGN_PROJECT_DIR="${QWEN3_VOICEDESIGN_PROJECT_DIR:-$PROJECT_DIR/qwen3_voiceDesign}"
 MOSS_VOICEGENERATOR_PROJECT_DIR="${MOSS_VOICEGENERATOR_PROJECT_DIR:-$PROJECT_DIR/moss_voiceGenerator}"
 MOSS_AUDIO_4B_THINKING_PROJECT_DIR="${MOSS_AUDIO_4B_THINKING_PROJECT_DIR:-$PROJECT_DIR/moss_audio_4b_thinking}"
+CONFUCIUS4_TTS_PROJECT_DIR="${CONFUCIUS4_TTS_PROJECT_DIR:-$PROJECT_DIR/Confucius4_TTS}"
 STEP_AUDIO_EDITX_PROJECT_DIR="${STEP_AUDIO_EDITX_PROJECT_DIR:-$PROJECT_DIR/Step_Audio_EditX}"
 LONGCAT_AUDIODIT_PROJECT_DIR="${LONGCAT_AUDIODIT_PROJECT_DIR:-$PROJECT_DIR/LongCat_AudioDiT_3.5B_bf16}"
 DOTS_TTS_SOAR_PROJECT_DIR="${DOTS_TTS_SOAR_PROJECT_DIR:-$PROJECT_DIR/dots_tts_soar}"
@@ -43,6 +44,13 @@ export MOSS_AUDIO_4B_THINKING_REQUEST_TIMEOUT="${MOSS_AUDIO_4B_THINKING_REQUEST_
 export MOSS_AUDIO_4B_INSTRUCT_MODEL_DIR="${MOSS_AUDIO_4B_INSTRUCT_MODEL_DIR:-$HF_MIRROR_DIR/OpenMOSS-Team/MOSS-Audio-4B-Instruct}"
 export MOSS_AUDIO_4B_INSTRUCT_DEPENDENCY_PATH="${MOSS_AUDIO_4B_INSTRUCT_DEPENDENCY_PATH:-$HOME/tts-depency/MOSS-Audio}"
 export MOSS_AUDIO_4B_INSTRUCT_REQUEST_TIMEOUT="${MOSS_AUDIO_4B_INSTRUCT_REQUEST_TIMEOUT:-900}"
+export CONFUCIUS4_TTS_MODEL_DIR="${CONFUCIUS4_TTS_MODEL_DIR:-$HF_MIRROR_DIR/netease-youdao/Confucius4-TTS}"
+export CONFUCIUS4_TTS_CODE_PATH="${CONFUCIUS4_TTS_CODE_PATH:-$HOME/tts-depency/Confucius4-TTS}"
+export CONFUCIUS4_TTS_W2V_BERT_MODEL_DIR="${CONFUCIUS4_TTS_W2V_BERT_MODEL_DIR:-$HF_MIRROR_DIR/netease-youdao/facebook/w2v-bert-2.0}"
+export CONFUCIUS4_TTS_VOCODER_MODEL_DIR="${CONFUCIUS4_TTS_VOCODER_MODEL_DIR:-$HF_MIRROR_DIR/netease-youdao/nv-community/bigvgan_v2_22khz_80band_256x}"
+export CONFUCIUS4_TTS_STYLE_ENCODER_CHECKPOINT="${CONFUCIUS4_TTS_STYLE_ENCODER_CHECKPOINT:-$HF_MIRROR_DIR/netease-youdao/funasr/campplus/campplus_cn_common.bin}"
+export CONFUCIUS4_TTS_REQUEST_TIMEOUT="${CONFUCIUS4_TTS_REQUEST_TIMEOUT:-900}"
+export CONFUCIUS4_TTS_DEVICE="${CONFUCIUS4_TTS_DEVICE:-cuda:0}"
 export STEP_AUDIO_EDITX_MODEL_DIR="${STEP_AUDIO_EDITX_MODEL_DIR:-$HF_MIRROR_DIR/stepfun-ai/Step-Audio-EditX}"
 export STEP_AUDIO_TOKENIZER_PATH="${STEP_AUDIO_TOKENIZER_PATH:-$HF_MIRROR_DIR/stepfun-ai/Step-Audio-Tokenizer}"
 export STEP_AUDIO_EDITX_CODE_PATH="${STEP_AUDIO_EDITX_CODE_PATH:-$HOME/tts-depency/Step-Audio-EditX}"
@@ -93,6 +101,7 @@ export QWEN_LIBS="${QWEN_LIBS:-$QWEN3_TTS_PROJECT_DIR/vendor/qwen_libs}"
 export TIMBRE_STORAGE_DIR="${TIMBRE_STORAGE_DIR:-$STORAGE_DIR/timbre}"
 export SOUNDEFFECT_STORAGE_DIR="${SOUNDEFFECT_STORAGE_DIR:-$STORAGE_DIR/soundEffect}"
 export CLONE_STORAGE_DIR="${CLONE_STORAGE_DIR:-$STORAGE_DIR/clone}"
+export CONFUCIUS4_TTS_OUTPUT_DIR="${CONFUCIUS4_TTS_OUTPUT_DIR:-$CLONE_STORAGE_DIR}"
 export TIGER_DNR_OUTPUT_DIR="${TIGER_DNR_OUTPUT_DIR:-$STORAGE_DIR/separation}"
 export STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR="${STABLE_AUDIO_3_MEDIUM_OUTPUT_DIR:-$SOUNDEFFECT_STORAGE_DIR}"
 export QWEN3_TTS_OUTPUT_DIR="${QWEN3_TTS_OUTPUT_DIR:-$CLONE_STORAGE_DIR}"
@@ -175,6 +184,8 @@ export MOSS_AUDIO_4B_THINKING_HOST="${MOSS_AUDIO_4B_THINKING_HOST:-$HOST}"
 export MOSS_AUDIO_4B_THINKING_PORT="${MOSS_AUDIO_4B_THINKING_PORT:-8341}"
 export MOSS_AUDIO_4B_INSTRUCT_HOST="${MOSS_AUDIO_4B_INSTRUCT_HOST:-$HOST}"
 export MOSS_AUDIO_4B_INSTRUCT_PORT="${MOSS_AUDIO_4B_INSTRUCT_PORT:-8342}"
+export CONFUCIUS4_TTS_HOST="${CONFUCIUS4_TTS_HOST:-$HOST}"
+export CONFUCIUS4_TTS_PORT="${CONFUCIUS4_TTS_PORT:-8361}"
 export ACESTEP_HOST="${ACESTEP_HOST:-$HOST}"
 export ACESTEP_PORT="${ACESTEP_PORT:-8313}"
 
@@ -185,7 +196,7 @@ export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$RUNTIME_CACHE_DIR/xdg}"
 # 先创建运行目录，避免服务第一次接收请求时才触发目录创建竞争。
 mkdir -p "$TIMBRE_STORAGE_DIR" "$SOUNDEFFECT_STORAGE_DIR" "$BGM_STORAGE_DIR" "$CLONE_STORAGE_DIR" "$TIGER_DNR_OUTPUT_DIR" "$PROMPTS_DIR" "$SPATIAL_EXPORT_CACHE_DIR" "$STEAM_AUDIO_RENDER_CACHE_DIR" "$HF_MODULES_CACHE" "$NUMBA_CACHE_DIR" "$MPLCONFIGDIR" "$XDG_CACHE_HOME" "$(dirname "$GPU_LOCK_FILE")"
 
-# Steam Audio 是 CPU 正式导出的可选能力；缺失时不阻断 16 个语音/音效进程，健康检查会明确报告 unavailable。
+# Steam Audio 是 CPU 正式导出的可选能力；缺失时不阻断 17 个语音/音效进程，健康检查会明确报告 unavailable。
 if [[ ! -x "$STEAM_AUDIO_RENDERER_BIN" ]]; then
   echo "警告：Steam Audio renderer 不存在或不可执行：$STEAM_AUDIO_RENDERER_BIN" >&2
   echo "      请先运行 scripts/build_steam_audio_renderer.sh；正式空间导出将返回 503。" >&2
@@ -230,6 +241,11 @@ echo "MOSS-Audio upstream source:         $MOSS_AUDIO_4B_THINKING_DEPENDENCY_PAT
 echo "MOSS-Audio-4B-Instruct uv project:  $MOSS_AUDIO_4B_THINKING_PROJECT_DIR"
 echo "MOSS-Audio-4B-Instruct model:       $MOSS_AUDIO_4B_INSTRUCT_MODEL_DIR"
 echo "MOSS-Audio upstream source:         $MOSS_AUDIO_4B_INSTRUCT_DEPENDENCY_PATH"
+echo "Confucius4-TTS uv project:           $CONFUCIUS4_TTS_PROJECT_DIR"
+echo "Confucius4-TTS model:                $CONFUCIUS4_TTS_MODEL_DIR"
+echo "Confucius4-TTS source:               $CONFUCIUS4_TTS_CODE_PATH"
+echo "Confucius4-TTS Wav2Vec2-BERT:        $CONFUCIUS4_TTS_W2V_BERT_MODEL_DIR"
+echo "Confucius4-TTS BigVGAN:              $CONFUCIUS4_TTS_VOCODER_MODEL_DIR"
 echo "VoxCPM2 uv project:  $VOXCPM2_PROJECT_DIR"
 echo "VoxCPM2 model:       $VOXCPM2_MODEL_DIR"
 echo "LongCat uv project:  $LONGCAT_AUDIODIT_PROJECT_DIR"
@@ -283,6 +299,8 @@ echo "MOSS-Audio-4B-Thinking API: http://$MOSS_AUDIO_4B_THINKING_HOST:$MOSS_AUDI
 echo "MOSS-Audio-4B-Thinking health: http://127.0.0.1:$MOSS_AUDIO_4B_THINKING_PORT/v1/health"
 echo "MOSS-Audio-4B-Instruct API: http://$MOSS_AUDIO_4B_INSTRUCT_HOST:$MOSS_AUDIO_4B_INSTRUCT_PORT"
 echo "MOSS-Audio-4B-Instruct health: http://127.0.0.1:$MOSS_AUDIO_4B_INSTRUCT_PORT/v1/health"
+echo "Confucius4-TTS API: http://$CONFUCIUS4_TTS_HOST:$CONFUCIUS4_TTS_PORT"
+echo "Confucius4-TTS health: http://127.0.0.1:$CONFUCIUS4_TTS_PORT/v1/health"
 echo "VoxCPM2 API:         http://$VOXCPM2_HOST:$VOXCPM2_PORT"
 echo "VoxCPM2 health:      http://127.0.0.1:$VOXCPM2_PORT/v1/health"
 echo "LongCat health:      http://127.0.0.1:$LONGCAT_AUDIODIT_PORT/v1/health"
@@ -292,6 +310,7 @@ echo "FireRedTTS3 clone health: http://127.0.0.1:$FIRERED_TTS3_CLONE_PORT/v1/hea
 echo "MOSS timbre route:   http://127.0.0.1:$MOSS_VOICEGENERATOR_PORT/v1/moss/timbre"
 echo "MOSS-Audio understanding route: http://127.0.0.1:$MOSS_AUDIO_4B_THINKING_PORT/v1/mossAudioThinking/understand"
 echo "MOSS-Audio Instruct route: http://127.0.0.1:$MOSS_AUDIO_4B_INSTRUCT_PORT/v1/mossAudioThinking/understand"
+echo "Confucius4-TTS route: http://127.0.0.1:$CONFUCIUS4_TTS_PORT/v1/confucius4TTS/generate"
 echo "MiMo timbre route:   http://127.0.0.1:$MIMO_TTS_PORT/v1/mimo/timbre"
 echo "Step-Audio-EditX route: http://127.0.0.1:$STEP_AUDIO_EDITX_PORT/v1/stepAudioEditx/edit"
 echo "MOSS sound-effect route: http://127.0.0.1:$SOUNDEFFECT_PORT/v1/moss/soundEffect"
@@ -314,6 +333,7 @@ printf '%-24s %-6s %s\n' 'TIGER-DnR' "$TIGER_DNR_PORT" '/v1/tigerDnr/separate'
 printf '%-24s %-6s %s\n' 'MOSS VoiceGenerator' "$MOSS_VOICEGENERATOR_PORT" '/v1/moss/timbre'
 printf '%-24s %-6s %s\n' 'MOSS-Audio-4B-Thinking' "$MOSS_AUDIO_4B_THINKING_PORT" '/v1/mossAudioThinking/understand'
 printf '%-24s %-6s %s\n' 'MOSS-Audio-4B-Instruct' "$MOSS_AUDIO_4B_INSTRUCT_PORT" '/v1/mossAudioThinking/understand'
+printf '%-24s %-6s %s\n' 'Confucius4-TTS' "$CONFUCIUS4_TTS_PORT" '/v1/confucius4TTS/generate'
 printf '%-24s %-6s %s\n' 'MiMo TTS VoiceDesign' "$MIMO_TTS_PORT" '/v1/mimo/timbre'
 printf '%-24s %-6s %s\n' 'Stable Audio 3 Medium' "$STABLE_AUDIO_3_MEDIUM_PORT" '/v1/stableAudio/soundEffect'
 printf '%-24s %-6s %s\n' 'ACE-Step 1.5 XL Turbo' "$ACESTEP_PORT" '/v1/aceStep/bgm'
@@ -345,6 +365,7 @@ tiger_dnr_pid=""
 moss_voicegenerator_pid=""
 moss_audio_4b_thinking_pid=""
 moss_audio_4b_instruct_pid=""
+confucius4_tts_pid=""
 step_audio_editx_pid=""
 
 cleanup() {
@@ -361,6 +382,7 @@ cleanup() {
     "$moss_voicegenerator_pid"
     "$moss_audio_4b_thinking_pid"
     "$moss_audio_4b_instruct_pid"
+    "$confucius4_tts_pid"
     "$step_audio_editx_pid"
     "$voxcpm2_pid"
     "$longcat_audiodit_pid"
@@ -457,6 +479,20 @@ MOSS_AUDIO_4B_VARIANT="instruct" \
   setsid uv run --no-sync --project "$MOSS_AUDIO_4B_THINKING_PROJECT_DIR" \
   python "$MOSS_AUDIO_4B_THINKING_PROJECT_DIR/main.py" &
 moss_audio_4b_instruct_pid=$!
+# Confucius4-TTS 独立 uv 服务：使用 8361 端口提供参考音频零样本克隆。
+CONFUCIUS4_TTS_HOST="$CONFUCIUS4_TTS_HOST" CONFUCIUS4_TTS_PORT="$CONFUCIUS4_TTS_PORT" \
+  CONFUCIUS4_TTS_MODEL_DIR="$CONFUCIUS4_TTS_MODEL_DIR" \
+  CONFUCIUS4_TTS_CODE_PATH="$CONFUCIUS4_TTS_CODE_PATH" \
+  CONFUCIUS4_TTS_W2V_BERT_MODEL_DIR="$CONFUCIUS4_TTS_W2V_BERT_MODEL_DIR" \
+  CONFUCIUS4_TTS_VOCODER_MODEL_DIR="$CONFUCIUS4_TTS_VOCODER_MODEL_DIR" \
+  CONFUCIUS4_TTS_STYLE_ENCODER_CHECKPOINT="$CONFUCIUS4_TTS_STYLE_ENCODER_CHECKPOINT" \
+  CONFUCIUS4_TTS_REQUEST_TIMEOUT="$CONFUCIUS4_TTS_REQUEST_TIMEOUT" \
+  CONFUCIUS4_TTS_DEVICE="$CONFUCIUS4_TTS_DEVICE" \
+  CONFUCIUS4_TTS_OUTPUT_DIR="$CONFUCIUS4_TTS_OUTPUT_DIR" \
+  HOST="$CONFUCIUS4_TTS_HOST" PORT="$CONFUCIUS4_TTS_PORT" \
+  setsid uv run --no-sync --project "$CONFUCIUS4_TTS_PROJECT_DIR" \
+  python "$CONFUCIUS4_TTS_PROJECT_DIR/main.py" &
+confucius4_tts_pid=$!
 # Step-Audio-EditX 独立 uv 服务：完整提供上传、检查和编辑接口。
 # 依赖由部署前手动执行 `uv sync --project Step_Audio_EditX --locked`；启动阶段不再联网解析。
 STEP_AUDIO_EDITX_HOST="$STEP_AUDIO_EDITX_HOST" STEP_AUDIO_EDITX_PORT="$STEP_AUDIO_EDITX_PORT" \
@@ -491,4 +527,4 @@ FIRERED_TTS3_MODE="clone" FIRERED_TTS3_HOST="$FIRERED_TTS3_CLONE_HOST" \
   python "$FIRERED_TTS3_PROJECT_DIR/main.py" &
 firered_tts3_clone_pid=$!
 
-wait -n "$main_pid" "$mimo_tts_pid" "$soundeffect_pid" "$stable_audio_3_medium_pid" "$acestep_pid" "$qwen3_tts_pid" "$qwen_voicedesign_pid" "$tiger_dnr_pid" "$moss_voicegenerator_pid" "$moss_audio_4b_thinking_pid" "$moss_audio_4b_instruct_pid" "$step_audio_editx_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid" "$firered_tts3_timbre_pid" "$firered_tts3_clone_pid"
+wait -n "$main_pid" "$mimo_tts_pid" "$soundeffect_pid" "$stable_audio_3_medium_pid" "$acestep_pid" "$qwen3_tts_pid" "$qwen_voicedesign_pid" "$tiger_dnr_pid" "$moss_voicegenerator_pid" "$moss_audio_4b_thinking_pid" "$moss_audio_4b_instruct_pid" "$confucius4_tts_pid" "$step_audio_editx_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid" "$firered_tts3_timbre_pid" "$firered_tts3_clone_pid"
