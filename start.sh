@@ -22,6 +22,7 @@ QWEN3_VOICEDESIGN_PROJECT_DIR="${QWEN3_VOICEDESIGN_PROJECT_DIR:-$PROJECT_DIR/qwe
 MOSS_VOICEGENERATOR_PROJECT_DIR="${MOSS_VOICEGENERATOR_PROJECT_DIR:-$PROJECT_DIR/moss_voiceGenerator}"
 MOSS_AUDIO_4B_THINKING_PROJECT_DIR="${MOSS_AUDIO_4B_THINKING_PROJECT_DIR:-$PROJECT_DIR/moss_audio_4b_thinking}"
 CONFUCIUS4_TTS_PROJECT_DIR="${CONFUCIUS4_TTS_PROJECT_DIR:-$PROJECT_DIR/Confucius4_TTS}"
+QWEN3_ASR_PROJECT_DIR="${QWEN3_ASR_PROJECT_DIR:-$PROJECT_DIR/Qwen3_ASR_1.7B}"
 STEP_AUDIO_EDITX_PROJECT_DIR="${STEP_AUDIO_EDITX_PROJECT_DIR:-$PROJECT_DIR/Step_Audio_EditX}"
 LONGCAT_AUDIODIT_PROJECT_DIR="${LONGCAT_AUDIODIT_PROJECT_DIR:-$PROJECT_DIR/LongCat_AudioDiT_3.5B_bf16}"
 DOTS_TTS_SOAR_PROJECT_DIR="${DOTS_TTS_SOAR_PROJECT_DIR:-$PROJECT_DIR/dots_tts_soar}"
@@ -51,6 +52,8 @@ export CONFUCIUS4_TTS_VOCODER_MODEL_DIR="${CONFUCIUS4_TTS_VOCODER_MODEL_DIR:-$HF
 export CONFUCIUS4_TTS_STYLE_ENCODER_CHECKPOINT="${CONFUCIUS4_TTS_STYLE_ENCODER_CHECKPOINT:-$HF_MIRROR_DIR/netease-youdao/funasr/campplus/campplus_cn_common.bin}"
 export CONFUCIUS4_TTS_REQUEST_TIMEOUT="${CONFUCIUS4_TTS_REQUEST_TIMEOUT:-900}"
 export CONFUCIUS4_TTS_DEVICE="${CONFUCIUS4_TTS_DEVICE:-cuda:0}"
+export QWEN3_ASR_MODEL_DIR="${QWEN3_ASR_MODEL_DIR:-$HF_MIRROR_DIR/Qwen/Qwen3-ASR-1.7B}"
+export QWEN3_ASR_REQUEST_TIMEOUT="${QWEN3_ASR_REQUEST_TIMEOUT:-900}"
 export STEP_AUDIO_EDITX_MODEL_DIR="${STEP_AUDIO_EDITX_MODEL_DIR:-$HF_MIRROR_DIR/stepfun-ai/Step-Audio-EditX}"
 export STEP_AUDIO_TOKENIZER_PATH="${STEP_AUDIO_TOKENIZER_PATH:-$HF_MIRROR_DIR/stepfun-ai/Step-Audio-Tokenizer}"
 export STEP_AUDIO_EDITX_CODE_PATH="${STEP_AUDIO_EDITX_CODE_PATH:-$HOME/tts-depency/Step-Audio-EditX}"
@@ -186,6 +189,8 @@ export MOSS_AUDIO_4B_INSTRUCT_HOST="${MOSS_AUDIO_4B_INSTRUCT_HOST:-$HOST}"
 export MOSS_AUDIO_4B_INSTRUCT_PORT="${MOSS_AUDIO_4B_INSTRUCT_PORT:-8342}"
 export CONFUCIUS4_TTS_HOST="${CONFUCIUS4_TTS_HOST:-$HOST}"
 export CONFUCIUS4_TTS_PORT="${CONFUCIUS4_TTS_PORT:-8361}"
+export QWEN3_ASR_HOST="${QWEN3_ASR_HOST:-$HOST}"
+export QWEN3_ASR_PORT="${QWEN3_ASR_PORT:-8371}"
 export ACESTEP_HOST="${ACESTEP_HOST:-$HOST}"
 export ACESTEP_PORT="${ACESTEP_PORT:-8313}"
 
@@ -246,6 +251,8 @@ echo "Confucius4-TTS model:                $CONFUCIUS4_TTS_MODEL_DIR"
 echo "Confucius4-TTS source:               $CONFUCIUS4_TTS_CODE_PATH"
 echo "Confucius4-TTS Wav2Vec2-BERT:        $CONFUCIUS4_TTS_W2V_BERT_MODEL_DIR"
 echo "Confucius4-TTS BigVGAN:              $CONFUCIUS4_TTS_VOCODER_MODEL_DIR"
+echo "Qwen3-ASR uv project:                $QWEN3_ASR_PROJECT_DIR"
+echo "Qwen3-ASR model:                     $QWEN3_ASR_MODEL_DIR"
 echo "VoxCPM2 uv project:  $VOXCPM2_PROJECT_DIR"
 echo "VoxCPM2 model:       $VOXCPM2_MODEL_DIR"
 echo "LongCat uv project:  $LONGCAT_AUDIODIT_PROJECT_DIR"
@@ -301,6 +308,8 @@ echo "MOSS-Audio-4B-Instruct API: http://$MOSS_AUDIO_4B_INSTRUCT_HOST:$MOSS_AUDI
 echo "MOSS-Audio-4B-Instruct health: http://127.0.0.1:$MOSS_AUDIO_4B_INSTRUCT_PORT/v1/health"
 echo "Confucius4-TTS API: http://$CONFUCIUS4_TTS_HOST:$CONFUCIUS4_TTS_PORT"
 echo "Confucius4-TTS health: http://127.0.0.1:$CONFUCIUS4_TTS_PORT/v1/health"
+echo "Qwen3-ASR API: http://$QWEN3_ASR_HOST:$QWEN3_ASR_PORT"
+echo "Qwen3-ASR health: http://127.0.0.1:$QWEN3_ASR_PORT/v1/health"
 echo "VoxCPM2 API:         http://$VOXCPM2_HOST:$VOXCPM2_PORT"
 echo "VoxCPM2 health:      http://127.0.0.1:$VOXCPM2_PORT/v1/health"
 echo "LongCat health:      http://127.0.0.1:$LONGCAT_AUDIODIT_PORT/v1/health"
@@ -311,6 +320,7 @@ echo "MOSS timbre route:   http://127.0.0.1:$MOSS_VOICEGENERATOR_PORT/v1/moss/ti
 echo "MOSS-Audio understanding route: http://127.0.0.1:$MOSS_AUDIO_4B_THINKING_PORT/v1/mossAudioThinking/understand"
 echo "MOSS-Audio Instruct route: http://127.0.0.1:$MOSS_AUDIO_4B_INSTRUCT_PORT/v1/mossAudioThinking/understand"
 echo "Confucius4-TTS route: http://127.0.0.1:$CONFUCIUS4_TTS_PORT/v1/confucius4TTS/generate"
+echo "Qwen3-ASR route: http://127.0.0.1:$QWEN3_ASR_PORT/v1/qwen3/asr"
 echo "MiMo timbre route:   http://127.0.0.1:$MIMO_TTS_PORT/v1/mimo/timbre"
 echo "Step-Audio-EditX route: http://127.0.0.1:$STEP_AUDIO_EDITX_PORT/v1/stepAudioEditx/edit"
 echo "MOSS sound-effect route: http://127.0.0.1:$SOUNDEFFECT_PORT/v1/moss/soundEffect"
@@ -334,6 +344,7 @@ printf '%-24s %-6s %s\n' 'MOSS VoiceGenerator' "$MOSS_VOICEGENERATOR_PORT" '/v1/
 printf '%-24s %-6s %s\n' 'MOSS-Audio-4B-Thinking' "$MOSS_AUDIO_4B_THINKING_PORT" '/v1/mossAudioThinking/understand'
 printf '%-24s %-6s %s\n' 'MOSS-Audio-4B-Instruct' "$MOSS_AUDIO_4B_INSTRUCT_PORT" '/v1/mossAudioThinking/understand'
 printf '%-24s %-6s %s\n' 'Confucius4-TTS' "$CONFUCIUS4_TTS_PORT" '/v1/confucius4TTS/generate'
+printf '%-24s %-6s %s\n' 'Qwen3-ASR-1.7B' "$QWEN3_ASR_PORT" '/v1/qwen3/asr'
 printf '%-24s %-6s %s\n' 'MiMo TTS VoiceDesign' "$MIMO_TTS_PORT" '/v1/mimo/timbre'
 printf '%-24s %-6s %s\n' 'Stable Audio 3 Medium' "$STABLE_AUDIO_3_MEDIUM_PORT" '/v1/stableAudio/soundEffect'
 printf '%-24s %-6s %s\n' 'ACE-Step 1.5 XL Turbo' "$ACESTEP_PORT" '/v1/aceStep/bgm'
@@ -366,6 +377,7 @@ moss_voicegenerator_pid=""
 moss_audio_4b_thinking_pid=""
 moss_audio_4b_instruct_pid=""
 confucius4_tts_pid=""
+qwen3_asr_pid=""
 step_audio_editx_pid=""
 
 cleanup() {
@@ -383,6 +395,7 @@ cleanup() {
     "$moss_audio_4b_thinking_pid"
     "$moss_audio_4b_instruct_pid"
     "$confucius4_tts_pid"
+    "$qwen3_asr_pid"
     "$step_audio_editx_pid"
     "$voxcpm2_pid"
     "$longcat_audiodit_pid"
@@ -493,6 +506,14 @@ CONFUCIUS4_TTS_HOST="$CONFUCIUS4_TTS_HOST" CONFUCIUS4_TTS_PORT="$CONFUCIUS4_TTS_
   setsid uv run --no-sync --project "$CONFUCIUS4_TTS_PROJECT_DIR" \
   python "$CONFUCIUS4_TTS_PROJECT_DIR/main.py" &
 confucius4_tts_pid=$!
+# Qwen3-ASR 独立 uv 服务：使用 8371 端口提供本地音频转写。
+QWEN3_ASR_HOST="$QWEN3_ASR_HOST" QWEN3_ASR_PORT="$QWEN3_ASR_PORT" \
+  QWEN3_ASR_MODEL_DIR="$QWEN3_ASR_MODEL_DIR" \
+  QWEN3_ASR_REQUEST_TIMEOUT="$QWEN3_ASR_REQUEST_TIMEOUT" \
+  HOST="$QWEN3_ASR_HOST" PORT="$QWEN3_ASR_PORT" \
+  setsid uv run --no-sync --project "$QWEN3_ASR_PROJECT_DIR" \
+  python "$QWEN3_ASR_PROJECT_DIR/main.py" &
+qwen3_asr_pid=$!
 # Step-Audio-EditX 独立 uv 服务：完整提供上传、检查和编辑接口。
 # 依赖由部署前手动执行 `uv sync --project Step_Audio_EditX --locked`；启动阶段不再联网解析。
 STEP_AUDIO_EDITX_HOST="$STEP_AUDIO_EDITX_HOST" STEP_AUDIO_EDITX_PORT="$STEP_AUDIO_EDITX_PORT" \
@@ -527,4 +548,4 @@ FIRERED_TTS3_MODE="clone" FIRERED_TTS3_HOST="$FIRERED_TTS3_CLONE_HOST" \
   python "$FIRERED_TTS3_PROJECT_DIR/main.py" &
 firered_tts3_clone_pid=$!
 
-wait -n "$main_pid" "$mimo_tts_pid" "$soundeffect_pid" "$stable_audio_3_medium_pid" "$acestep_pid" "$qwen3_tts_pid" "$qwen_voicedesign_pid" "$tiger_dnr_pid" "$moss_voicegenerator_pid" "$moss_audio_4b_thinking_pid" "$moss_audio_4b_instruct_pid" "$confucius4_tts_pid" "$step_audio_editx_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid" "$firered_tts3_timbre_pid" "$firered_tts3_clone_pid"
+wait -n "$main_pid" "$mimo_tts_pid" "$soundeffect_pid" "$stable_audio_3_medium_pid" "$acestep_pid" "$qwen3_tts_pid" "$qwen_voicedesign_pid" "$tiger_dnr_pid" "$moss_voicegenerator_pid" "$moss_audio_4b_thinking_pid" "$moss_audio_4b_instruct_pid" "$confucius4_tts_pid" "$qwen3_asr_pid" "$step_audio_editx_pid" "$voxcpm2_pid" "$longcat_audiodit_pid" "$dots_tts_soar_pid" "$firered_tts3_timbre_pid" "$firered_tts3_clone_pid"

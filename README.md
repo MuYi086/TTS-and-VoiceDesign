@@ -26,9 +26,10 @@ SoundEffect 生成。仓库采用“一个服务一个 uv 项目”的边界：H
 | MOSS-Audio-4B-Instruct | 8342 | 音频转写、描述与问答 | `/v1/mossAudioThinking/understand` |
 | Confucius4-TTS | 8361 | 参考音频零样本、多语言语音克隆 | `/v1/confucius4TTS/generate` |
 | TIGER-DnR | 8351 | 电影混音的对白、音效、音乐三 Stem 分离 | `/v1/tigerDnr/separate` |
+| Qwen3-ASR-1.7B | 8371 | 本地多语言音频识别 | `/v1/qwen3/asr` |
 
 每个服务都提供 `GET /v1/health`。后端只注册表中列出的最终接口；模型生成接口返回
-`audio/wav`，并在服务端保存一份 WAV。MOSS-Audio-4B Thinking/Instruct 接收音频并返回 JSON 文本，
+`audio/wav`，并在服务端保存一份 WAV。MOSS-Audio-4B Thinking/Instruct 与 Qwen3-ASR 接收音频并返回 JSON 文本，
 不会生成或保留 WAV。TIGER-DnR 返回含 `dialog.wav`、`effects.wav`、`music.wav` 的 ZIP，并将
 三路 Stem 原子保存。空间音频导出返回 WAV 或 MP3，响应完成后删除临时成品。
 
@@ -52,6 +53,7 @@ mimo_tts/                     MiMo 云端编排服务
 Step_Audio_EditX/             Step-Audio-EditX 服务和 worker
 firered_tts3/                 FireRedTTS3 Instruct/Base 服务和 worker
 TIGER-DnR/                    TIGER-DnR 三 Stem 分离服务和 worker
+Qwen3_ASR_1.7B/               Qwen3-ASR-1.7B 语音识别服务和 worker
 tests/                        根目录无模型回归测试
 soundEffect/                  MOSS GPU 示例和提示词说明
 storage/                      上传音频、生成音频、sidecar、缓存和 GPU 锁
@@ -84,7 +86,7 @@ LongCat、dots.tts-soar 和 FireRedTTS3 会在 `storage/timbre/.references/` 保
 ```bash
 for project in qwen3_tts mimo_tts voxcpm2 LongCat_AudioDiT_3.5B_bf16 \
   dots_tts_soar moss_soundEffect stable_audio_3_medium ace_step_1_5 \
-  qwen3_voiceDesign moss_voiceGenerator moss_audio_4b_thinking Confucius4_TTS Step_Audio_EditX firered_tts3 TIGER-DnR; do
+  qwen3_voiceDesign moss_voiceGenerator moss_audio_4b_thinking Confucius4_TTS Qwen3_ASR_1.7B Step_Audio_EditX firered_tts3 TIGER-DnR; do
   uv sync --project "$project" --locked
 done
 ```
@@ -107,7 +109,7 @@ bash start.sh
 ```
 
 `start.sh` 会启动 8300、8301、8302、8303、8304、8311、8312、8313、8321、8322、8323、8324、8325、
-8331、8341、8342、8351 和 8361 共 18 个进程；8300 使用 `qwen3_tts` uv 项目中的轻量 HTTP 依赖，其余服务使用
+8331、8341、8342、8351、8361 和 8371 共 19 个进程；8300 使用 `qwen3_tts` uv 项目中的轻量 HTTP 依赖，其余服务使用
 各自的 uv 项目。启动命令统一使用 `uv run --no-sync`，不会在运行阶段联网解析依赖；
 本地 GPU 服务通过 `GPU_LOCK_FILE` 串行访问 GPU。默认最多排队 900 秒，超过时返回
 `503`；用 `GPU_LOCK_WAIT_TIMEOUT` 调整（设为非正值可关闭时限）。健康检查可结合
@@ -117,7 +119,7 @@ bash start.sh
 健康检查：
 
 ```bash
-for port in 8300 8301 8302 8303 8304 8311 8312 8313 8321 8322 8323 8324 8325 8331 8341 8342 8351 8361; do
+for port in 8300 8301 8302 8303 8304 8311 8312 8313 8321 8322 8323 8324 8325 8331 8341 8342 8351 8361 8371; do
   curl -fsS "http://127.0.0.1:${port}/v1/health" >/dev/null && echo "${port}: ok"
 done
 ```
@@ -142,6 +144,7 @@ HOST=127.0.0.1 PORT=8321 \
 | MOSS-Audio-4B-Thinking | `$HF_MIRROR_DIR/OpenMOSS-Team/MOSS-Audio-4B-Thinking` | `MOSS_AUDIO_4B_THINKING_MODEL_DIR`、`MOSS_AUDIO_4B_THINKING_DEPENDENCY_PATH` |
 | MOSS-Audio-4B-Instruct | `$HF_MIRROR_DIR/OpenMOSS-Team/MOSS-Audio-4B-Instruct` | `MOSS_AUDIO_4B_INSTRUCT_MODEL_DIR`、`MOSS_AUDIO_4B_INSTRUCT_DEPENDENCY_PATH` |
 | Confucius4-TTS | `$HF_MIRROR_DIR/netease-youdao/Confucius4-TTS` | `CONFUCIUS4_TTS_MODEL_DIR`、`CONFUCIUS4_TTS_CODE_PATH`、`CONFUCIUS4_TTS_W2V_BERT_MODEL_DIR`、`CONFUCIUS4_TTS_VOCODER_MODEL_DIR`、`CONFUCIUS4_TTS_STYLE_ENCODER_CHECKPOINT` |
+| Qwen3-ASR-1.7B | `$HF_MIRROR_DIR/Qwen/Qwen3-ASR-1.7B` | `QWEN3_ASR_MODEL_DIR` |
 | MOSS-SoundEffect | `$HF_MIRROR_DIR/OpenMOSS-Team/MOSS-SoundEffect-v2.0` | `MOSS_SOUNDEFFECT_CODE_PATH`、`MOSS_SOUNDEFFECT_MODEL_DIR` |
 | Stable Audio 3 Medium | `$HF_MIRROR_DIR/stabilityai/stable-audio-3-medium` | `STABLE_AUDIO_3_REPO_PATH`、`STABLE_AUDIO_3_MEDIUM_MODEL_DIR` |
 | ACE-Step 1.5 XL Turbo | `$HF_MIRROR_DIR/ACE-Step/acestep-v15-xl-turbo-diffusers` | `ACESTEP_MODEL_DIR`、`ACESTEP_OFFLOAD`、`ACESTEP_VAE_TILING` |
@@ -161,7 +164,7 @@ HOST=127.0.0.1 PORT=8321 \
 `STEAM_AUDIO_RENDER_MAX_ASSETS`、`STEAM_AUDIO_RENDER_MAX_MANIFEST_BYTES`、
 `STEAM_AUDIO_RENDER_MAX_BYTES` 和
 `STEAM_AUDIO_RENDER_THREADS`。服务专用配置使用对应
-前缀，例如 `QWEN3_TTS_*`、`VOXCPM2_*`、`LONGCAT_AUDIODIT_*`、`DOTS_TTS_SOAR_*`、
+前缀，例如 `QWEN3_TTS_*`、`QWEN3_ASR_*`、`VOXCPM2_*`、`LONGCAT_AUDIODIT_*`、`DOTS_TTS_SOAR_*`、
 `MOSS_SOUNDEFFECT_*`、`STABLE_AUDIO_3_MEDIUM_*`、`ACESTEP_*`、`STEP_AUDIO_EDITX_*`、
 `QWEN_VOICEDESIGN_*`、`MOSS_VOICEGENERATOR_*`、`MOSS_AUDIO_4B_THINKING_*`、
 `MOSS_AUDIO_4B_INSTRUCT_*` 和
@@ -187,6 +190,22 @@ Wav2Vec2-BERT、BigVGAN 和 CAMPPlus 权重；当前默认目录分别是
 `CONFUCIUS4_TTS_W2V_BERT_MODEL_DIR`、`CONFUCIUS4_TTS_VOCODER_MODEL_DIR` 和
 `CONFUCIUS4_TTS_STYLE_ENCODER_CHECKPOINT` 覆盖；`LOCAL_FILES_ONLY=1` 时 worker 不会隐式下载。
 Confucius4-TTS 项目固定使用 TorchAudio 2.11，需先按锁文件同步其中声明的 `torchcodec` 依赖。
+
+Qwen3-ASR 使用官方 `qwen-asr` Transformers 后端和题目指定的本地模型目录。项目锁定了 `qwen-asr`
+及其 Transformers 依赖；`LOCAL_FILES_ONLY=1` 时不会隐式下载模型。服务通过一次性 worker 执行识别，
+并使用与其他本地 GPU 服务共享的排他锁。
+
+调用 `POST http://127.0.0.1:8371/v1/qwen3/asr` 时以 multipart/form-data 发送 `audio` 文件；
+可选传入 `language` 强制指定识别语言、`context` 提供识别上下文、`max_new_tokens` 设置生成上限。
+省略 `language` 时自动识别。成功响应为 JSON，包含 `text`、识别出的 `language`、耗时和上传文件摘要：
+
+```bash
+curl -X POST http://127.0.0.1:8371/v1/qwen3/asr \
+  -F 'audio=@speech.wav;type=audio/wav' \
+  -F 'language=Chinese' \
+  -F 'context=人名：张三' \
+  -F 'max_new_tokens=512'
+```
 
 Confucius4-TTS 使用与其他克隆服务相同的上传和检查流程：先调用 `POST /v1/upload_audio`，
 再以保存后的 `audio_path` 调用 `POST http://127.0.0.1:8361/v1/confucius4TTS/generate`。
